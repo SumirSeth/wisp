@@ -20,19 +20,24 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, Result, w};
 
 use crate::config::{Backdrop, Config, Theme};
+use crate::files::{FileResults, FileSearch};
 use crate::history::History;
 use crate::indexer::{AppEntry, IconPixels, IndexEvent, Indexer};
 use crate::render::{Frame, Renderer, layout};
-use crate::search::{Action, Kind, ResultItem, Searcher};
+use crate::search::{self, FileScope, Kind, ResultItem, Searcher};
 use crate::theme::Palette;
 use crate::{hotkey, launch, system, tray, util};
 
 const WM_APP_INDEX: u32 = WM_APP + 2;
+const WM_APP_FILES: u32 = WM_APP + 5;
 const WM_APP_SHOW: u32 = WM_APP + 3;
 const WM_APP_QUIT: u32 = WM_APP + 4;
 const CLASS_NAME: PCWSTR = w!("Wisp.Launcher");
 const HOTKEY_ID: i32 = 1;
 const CARET_TIMER: usize = 1;
+/// File results shown after apps, and for a query that starts with `?`.
+const MIXED_FILE_RESULTS: usize = 5;
+const ONLY_FILE_RESULTS: usize = 30;
 const RESCAN_AFTER: Duration = Duration::from_secs(120);
 const PLACEHOLDER: &str = "Search apps, calculate, or run a command with >";
 
@@ -40,6 +45,7 @@ static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 
 // Preserve index updates and hide requests during reentrant message handling.
 const DEFER_INDEX: u8 = 1;
+const DEFER_FILES: u8 = 4;
 const DEFER_HIDE: u8 = 2;
 
 thread_local! {
@@ -78,6 +84,9 @@ fn run_deferred() {
             if let Some(l) = launcher.as_mut() {
                 if work & DEFER_INDEX != 0 {
                     l.drain_index_events();
+                }
+                if work & DEFER_FILES != 0 {
+                    l.drain_file_results();
                 }
                 if work & DEFER_HIDE != 0 {
                     l.hide();
@@ -186,6 +195,7 @@ pub fn run() -> Result<()> {
 
         let (config, config_error) = Config::load();
         let (events_tx, events_rx) = channel();
+        let (files_tx, files_rx) = channel();
         // Icons are drawn at 32 DIPs; extract them at the system DPI's pixel size.
         let icon_size = (32 * system_dpi as i32 + 95) / 96;
         let launcher = Launcher {
@@ -203,6 +213,9 @@ pub fn run() -> Result<()> {
             editor: crate::editor::Editor::default(),
             searcher: Searcher::new(),
             results: Vec::new(),
+            base_results: Vec::new(),
+            file_results: Vec::new(),
+            file_query: None,
             selected: 0,
             scroll: 0,
             caret_visible: true,
@@ -212,6 +225,8 @@ pub fn run() -> Result<()> {
             history: History::load(),
             indexer: Indexer::spawn(hwnd, WM_APP_INDEX, events_tx, icon_size),
             index_events: events_rx,
+            file_search: FileSearch::spawn(hwnd, WM_APP_FILES, files_tx, icon_size),
+            file_events: files_rx,
             last_scan: Instant::now(),
         };
         LAUNCHER.with(|cell| *cell.borrow_mut() = Some(launcher));
@@ -253,7 +268,15 @@ struct Launcher {
 
     editor: crate::editor::Editor,
     searcher: Searcher,
+    /// What the launcher shows: `base_results` with `file_results` inserted
+    /// before the web search result.
     results: Vec<ResultItem>,
+    /// Results computed on the UI thread: apps, calculator, URL, command, web search.
+    base_results: Vec<ResultItem>,
+    /// File search results, which arrive later from the file search worker.
+    file_results: Vec<ResultItem>,
+    /// The file query sent to the worker, if the current query searches files.
+    file_query: Option<String>,
     selected: usize,
     scroll: usize,
     caret_visible: bool,
@@ -264,6 +287,8 @@ struct Launcher {
     history: History,
     indexer: Indexer,
     index_events: Receiver<IndexEvent>,
+    file_search: FileSearch,
+    file_events: Receiver<FileResults>,
     last_scan: Instant,
 }
 
@@ -501,11 +526,82 @@ impl Launcher {
 
     fn update_results(&mut self) {
         let rows_before = self.window_rows();
-        self.results = self
+        self.base_results = self
             .searcher
             .search(self.editor.text(), &self.apps, &self.history, &self.config);
+
+        let scope = if self.config.file_search {
+            FileScope::of(self.editor.text(), &self.base_results)
+        } else {
+            FileScope::None
+        };
+        let (file_query, limit) = match scope {
+            FileScope::None => (None, 0),
+            FileScope::Mixed(query) => (Some(query), MIXED_FILE_RESULTS),
+            FileScope::Only(query) => (Some(query), ONLY_FILE_RESULTS),
+        };
+        match file_query {
+            None => {
+                self.file_query = None;
+                self.file_results.clear();
+            }
+            // Keep the previous file results until the new ones arrive, so the
+            // results below the apps don't flicker on each keystroke.
+            Some(query) if self.file_query.as_deref() != Some(query) => {
+                let exclude = Arc::from(self.config.file_search_exclude.as_slice());
+                self.file_search.search(query, limit, exclude);
+                self.file_query = Some(query.to_string());
+            }
+            Some(_) => {}
+        }
+
+        self.merge_results();
         self.selected = 0;
         self.scroll = 0;
+        if self.window_rows() != rows_before {
+            self.apply_size();
+        }
+        self.invalidate();
+    }
+
+    /// Rebuilds `results` from `base_results` and `file_results`.
+    fn merge_results(&mut self) {
+        let base = std::mem::take(&mut self.base_results);
+        let web = base.iter().position(|r| r.kind == Kind::Web).unwrap_or(base.len());
+        self.results = Vec::with_capacity(base.len() + self.file_results.len());
+        self.results.extend(base[..web].iter().cloned());
+        self.results.extend(self.file_results.iter().cloned());
+        self.results.extend(base[web..].iter().cloned());
+        self.base_results = base;
+    }
+
+    fn drain_file_results(&mut self) {
+        let mut latest = None;
+        while let Ok(results) = self.file_events.try_recv() {
+            // Icons are cached even for results that are already outdated.
+            self.icons.extend(results.icons);
+            if let Some(hits) = results.hits
+                && self.file_query.as_deref() == Some(results.query.as_str())
+            {
+                latest = Some(hits);
+            }
+        }
+        let Some(hits) = latest else {
+            self.invalidate();
+            return;
+        };
+
+        let rows_before = self.window_rows();
+        // Keep the web search result selected only if the user selected it.
+        // When it is the first result, the top result stays selected instead.
+        let web_selected = self.selected > 0 && self.results.get(self.selected).is_some_and(|r| r.kind == Kind::Web);
+        self.file_results = hits.into_iter().map(search::file_result).collect();
+        self.merge_results();
+        if web_selected {
+            self.selected = self.results.iter().position(|r| r.kind == Kind::Web).unwrap_or(0);
+        }
+        self.selected = self.selected.min(self.results.len().saturating_sub(1));
+        self.move_selection(0, false);
         if self.window_rows() != rows_before {
             self.apply_size();
         }
@@ -537,17 +633,17 @@ impl Launcher {
             return;
         };
         let outcome = match &result.action {
-            Action::Launch { id, path } => {
+            search::Action::Launch { id, path } => {
                 let result = launch::app(id, path.as_deref(), admin);
                 if result.is_ok() {
                     self.history.record(id);
                 }
                 result
             }
-            Action::Copy(text) => system::set_clipboard(self.hwnd, text),
-            Action::Open(target) => launch::open(target),
-            Action::Shell(command) if command.is_empty() => return,
-            Action::Shell(command) => launch::shell(command, admin),
+            search::Action::Copy(text) => system::set_clipboard(self.hwnd, text),
+            search::Action::Open(target) => launch::open(target),
+            search::Action::Shell(command) if command.is_empty() => return,
+            search::Action::Shell(command) => launch::shell(command, admin),
         };
         match outcome {
             Ok(()) => self.hide(),
@@ -562,13 +658,16 @@ impl Launcher {
     }
 
     fn reveal_selected(&mut self) {
-        if let Some(ResultItem {
-            action: Action::Launch { path: Some(path), .. },
-            ..
-        }) = self.results.get(self.selected)
+        if let Some(path) = self.results.get(self.selected).and_then(ResultItem::path)
             && launch::reveal(path).is_ok()
         {
             self.hide();
+        }
+    }
+
+    fn copy_selected_path(&mut self) {
+        if let Some(path) = self.results.get(self.selected).and_then(ResultItem::path) {
+            let _ = system::set_clipboard(self.hwnd, path);
         }
     }
 
@@ -622,6 +721,7 @@ impl Launcher {
             VK_BACK => edited = self.editor.backspace(ctrl),
             VK_DELETE => edited = self.editor.delete(ctrl),
             VK_A if ctrl => self.editor.select_all(),
+            VK_C if ctrl && shift => self.copy_selected_path(),
             VK_C if ctrl => self.copy(),
             VK_X if ctrl && self.editor.has_selection() => {
                 self.copy();
@@ -800,6 +900,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let _ = DestroyWindow(hwnd);
         },
         WM_APP_INDEX => with_launcher_or_defer(DEFER_INDEX, Launcher::drain_index_events),
+        WM_APP_FILES => with_launcher_or_defer(DEFER_FILES, Launcher::drain_file_results),
         WM_ACTIVATE if loword(wparam.0) == WA_INACTIVE => with_launcher_or_defer(DEFER_HIDE, Launcher::hide),
         WM_DPICHANGED => {
             with_launcher(|l| l.on_dpi_changed(loword(wparam.0)));

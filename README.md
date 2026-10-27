@@ -44,12 +44,13 @@ Wisp and PowerToys Run 0.94 ran on the same machine (i5-12500H, 144 Hz display),
 
 - **App search**: desktop and Microsoft Store apps from Start's "All apps", with their icons. Wisp excludes uninstallers, documents and web links.
 - **Fuzzy search** uses [nucleo](https://github.com/helix-editor/nucleo), the Helix editor's matcher. `vsc` finds **V**isual **S**tudio **C**ode. Wisp rejects scattered matches such as `code` for Recorder.
+- **File search**: Wisp searches file and folder names in the Windows Search index. For queries of 3 or more characters, up to 5 files appear after the apps. Start a query with `?` to search files only. Wisp skips dependency and cache folders such as `node_modules`, and any file or folder whose name starts with a dot. It ranks files in Desktop, Documents, Downloads, Pictures, Videos, Music and OneDrive higher.
 - **Launch history**: frequently and recently launched apps rank higher. Wisp lists them when the search box is empty.
 - **Calculator**: `sqrt(2) * 10`, `2^10`, `(3 + 4) % 5`, `2pi + 1`. Press <kbd>Enter</kbd> to copy the result.
 - **Shell commands**: `> ipconfig /all` runs in Command Prompt.
 - **URLs and web search**: open `https://…` and `www.…` links in your browser, or search the web for the query.
 - **Appearance**: acrylic backdrop, rounded corners, light and dark themes that follow Windows, and drawing that scales with display DPI.
-- **Idle CPU use**: 0 ms of CPU time in the 10 s benchmark. A worker thread indexes apps and loads icons.
+- **Idle CPU use**: 0 ms of CPU time in the 10 s benchmark. Worker threads index apps, query the file index and load icons.
 
 <p align="center">
   <img src="assets/screenshot-calc.png" width="700" alt="Wisp calculator">
@@ -63,18 +64,19 @@ Wisp and PowerToys Run 0.94 ran on the same machine (i5-12500H, 144 Hz display),
 - Searches on each keystroke without an input delay. PowerToys Run waits 50–150 ms after you type before it searches.
 - fzf-style query operators: `^start`, `end$`, `'exact`, `!exclude`.
 - Lists recently launched apps when the search box is empty.
+- Skips dependency and cache folders in file results, with a configurable list.
 - Stores the config as plain-text TOML that you can keep with your dotfiles.
 
 **In both**
 
 - App search with icons and fuzzy matching, with frequently launched apps ranked higher
+- File search through the Windows Search index, also with the `?` prefix
 - Calculator, web search, URLs, shell commands
 - Run as administrator, open the file location
 - Light and dark themes, multiple monitors, per-monitor DPI
 
 **Only in PowerToys Run** (planned for Wisp)
 
-- File search through the Windows Search index
 - Switching between open windows (Window Walker)
 - System commands (shut down, sleep, lock, empty Recycle Bin)
 - Unit conversion, time and date, value generation (GUIDs, hashes, Base64)
@@ -101,7 +103,8 @@ Wisp and PowerToys Run 0.94 ran on the same machine (i5-12500H, 144 Hz display),
 | <kbd>Alt</kbd>+<kbd>Space</kbd> | Show or hide the launcher |
 | <kbd>Enter</kbd> | Open an app or URL, copy a calculator result, run a command, or search the web |
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd> | Run as administrator |
-| <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> | Show the app in File Explorer |
+| <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> | Show the app, file or folder in File Explorer |
+| <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> | Copy the path of the app, file or folder |
 | <kbd>↑</kbd> <kbd>↓</kbd> · <kbd>Tab</kbd> · <kbd>PgUp</kbd> <kbd>PgDn</kbd> · mouse wheel | Move the selection |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | Copy the selected text, or the calculator result |
 | <kbd>Esc</kbd> | Hide the launcher |
@@ -110,7 +113,8 @@ In the search box, press <kbd>Ctrl</kbd>+<kbd>←</kbd> or <kbd>Ctrl</kbd>+<kbd>
 
 | Type | Get |
 | --- | --- |
-| `code` | Apps matching "code" |
+| `code` | Apps matching "code", then files whose names start with "code" |
+| `?invoice` | Files and folders only |
 | `^vis` · `term$` · `'note` · `!edge` | Starts with · ends with · exact substring · exclude |
 | `12 * (3 + 4)` | Calculator result (<kbd>Enter</kbd> copies it) |
 | `> winget upgrade` | Run in Command Prompt |
@@ -130,6 +134,8 @@ theme = "system"            # "system" | "dark" | "light"
 backdrop = "acrylic"        # "acrylic" | "mica" | "solid"
 show_recent = true          # recently launched apps when the search box is empty
 search_url = "https://www.google.com/search?q={query}"
+file_search = true          # search the Windows Search index; prefix a query with ? for files only
+file_search_exclude = ["node_modules", "AppData", "site-packages", "__pycache__", "venv", "target", "dist", "build", "Cache", "Code Cache", "GPUCache", "Service Worker", "IndexedDB", "Extensions"]
 ```
 
 Wisp stores launch history in `history.toml` beside the config. It uses this history to rank apps.
@@ -155,6 +161,7 @@ Debug builds keep a console window open for logs. Release builds run without one
 | [`src/render.rs`](src/render.rs) | Direct2D/DirectWrite drawing and layout |
 | [`src/search.rs`](src/search.rs) | Ranks app, calculator, URL, command and web search results |
 | [`src/indexer.rs`](src/indexer.rs) | Indexes apps and loads icons from `shell:AppsFolder` on a worker thread |
+| [`src/files.rs`](src/files.rs) | Queries the Windows Search index for files over OLE DB on a worker thread |
 | [`src/calc.rs`](src/calc.rs) | Calculator expression parser |
 | [`src/editor.rs`](src/editor.rs) | Text editing for the search box |
 | [`src/launch.rs`](src/launch.rs) | Opens apps and URLs and runs commands through the Windows shell |
@@ -162,6 +169,7 @@ Debug builds keep a console window open for logs. Release builds run without one
 | [`src/config.rs`](src/config.rs), [`src/history.rs`](src/history.rs) | Config and launch history |
 
 - **Apps come from `shell:AppsFolder`**, the source for Start's "All apps". One scan covers desktop and Microsoft Store apps. Wisp uses the Windows shell to open both.
+- **File search queries the Windows Search index directly** through OLE DB, as PowerToys Run does. A new query takes about 100–160 ms. It runs on a worker thread, so app results appear first and file results follow. The worker sends results before it loads icons for new file types. When you type faster than queries finish, the worker skips to the latest query.
 - **Direct2D uses software rendering.** At this window size, a frame takes about 1 ms of CPU time. Avoiding the GPU driver saves about 30 MB of private memory.
 - **The launcher window keeps its caption style but removes the visible frame** (`WM_NCCALCSIZE`). DWM needs the frame style to render acrylic. A borderless popup gets a flat grey backdrop.
 - **The launcher keeps a fixed height while results are present.** Resizing a window with an acrylic or mica backdrop makes DWM recalculate the blur. It takes about 250 ms to settle. At a fixed height, each keystroke needs one repaint.

@@ -5,6 +5,7 @@ mod app;
 mod calc;
 mod config;
 mod editor;
+mod files;
 mod history;
 mod hotkey;
 mod indexer;

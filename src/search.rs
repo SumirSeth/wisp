@@ -1,19 +1,24 @@
-//! Ranks app, calculator, URL, command and web search results.
+//! Ranks app, file, calculator, URL, command and web search results.
 
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config as MatcherConfig, Matcher, Utf32Str};
 
 use crate::calc;
 use crate::config::Config;
+use crate::files::FileHit;
 use crate::history::History;
 use crate::indexer::AppEntry;
 use crate::util;
 
 const MAX_APP_RESULTS: usize = 40;
+/// Shortest query that also searches files when it has no `?` prefix.
+const MIN_MIXED_FILE_QUERY: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     App,
+    File,
+    Folder,
     Calc,
     Url,
     Shell,
@@ -24,7 +29,7 @@ impl Kind {
     /// Enter action shown beside the selected result.
     pub fn verb(self) -> &'static str {
         match self {
-            Kind::App | Kind::Url => "Open",
+            Kind::App | Kind::File | Kind::Folder | Kind::Url => "Open",
             Kind::Calc => "Copy",
             Kind::Shell => "Run",
             Kind::Web => "Search",
@@ -32,7 +37,7 @@ impl Kind {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Action {
     Launch { id: String, path: Option<String> },
     Copy(String),
@@ -40,7 +45,7 @@ pub enum Action {
     Shell(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ResultItem {
     pub kind: Kind,
     pub title: String,
@@ -48,20 +53,90 @@ pub struct ResultItem {
     /// DirectWrite highlights use UTF-16 `(start, len)` ranges in `title`.
     pub highlights: Vec<(u32, u32)>,
     pub action: Action,
+    /// Key into the icon map. Results without an icon show a glyph.
+    pub icon: Option<String>,
 }
 
-pub struct Searcher {
+impl ResultItem {
+    /// Filesystem path of the result, for "Show in File Explorer" and "Copy path".
+    pub fn path(&self) -> Option<&str> {
+        match (&self.kind, &self.action) {
+            (Kind::App, Action::Launch { path, .. }) => path.as_deref(),
+            (Kind::File | Kind::Folder, Action::Open(path)) => Some(path),
+            _ => None,
+        }
+    }
+}
+
+/// Which files a query searches, besides its other results.
+#[derive(Debug, PartialEq, Eq)]
+pub enum FileScope<'a> {
+    None,
+    /// Files appear after apps.
+    Mixed(&'a str),
+    /// The query starts with `?`: files only.
+    Only(&'a str),
+}
+
+impl<'a> FileScope<'a> {
+    /// `results` are the query's results without files. A query that already
+    /// produced a calculator, URL or command result does not search files.
+    pub fn of(query: &'a str, results: &[ResultItem]) -> FileScope<'a> {
+        let query = query.trim();
+        if let Some(rest) = query.strip_prefix('?') {
+            let rest = rest.trim();
+            return if rest.is_empty() {
+                FileScope::None
+            } else {
+                FileScope::Only(rest)
+            };
+        }
+        let special = results
+            .iter()
+            .any(|r| matches!(r.kind, Kind::Calc | Kind::Url | Kind::Shell));
+        if special || query.chars().count() < MIN_MIXED_FILE_QUERY {
+            FileScope::None
+        } else {
+            FileScope::Mixed(query)
+        }
+    }
+}
+
+/// Fuzzy name matching shared by app and file search.
+pub struct NameMatcher {
     matcher: Matcher,
     buf: Vec<char>,
     indices: Vec<u32>,
 }
 
-impl Searcher {
+impl NameMatcher {
     pub fn new() -> Self {
         Self {
             matcher: Matcher::new(MatcherConfig::DEFAULT),
             buf: Vec::new(),
             indices: Vec::new(),
+        }
+    }
+
+    /// Scores `text` against `pattern`. Returns `None` for no match or a
+    /// scattered match; otherwise the score and the UTF-16 highlight ranges.
+    pub fn score(&mut self, pattern: &Pattern, text: &str) -> Option<(u32, Vec<(u32, u32)>)> {
+        self.indices.clear();
+        let score = pattern.indices(haystack(text, &mut self.buf), &mut self.matcher, &mut self.indices)?;
+        self.indices.sort_unstable();
+        self.indices.dedup();
+        is_clean_match(text, &self.indices).then(|| (score, utf16_ranges(text, &self.indices)))
+    }
+}
+
+pub struct Searcher {
+    names: NameMatcher,
+}
+
+impl Searcher {
+    pub fn new() -> Self {
+        Self {
+            names: NameMatcher::new(),
         }
     }
 
@@ -88,6 +163,11 @@ impl Searcher {
             return results;
         }
 
+        // File-only queries get their results from the file search worker.
+        if query.starts_with('?') {
+            return results;
+        }
+
         if let Some(command) = query.strip_prefix('>') {
             let command = command.trim();
             results.push(ResultItem {
@@ -100,6 +180,7 @@ impl Searcher {
                 subtitle: "Command Prompt · Ctrl+Shift+Enter to run as administrator".into(),
                 highlights: Vec::new(),
                 action: Action::Shell(command.into()),
+                icon: None,
             });
             return results;
         }
@@ -112,6 +193,7 @@ impl Searcher {
                 subtitle: format!("{query} · Enter to copy"),
                 highlights: Vec::new(),
                 action: Action::Copy(text),
+                icon: None,
             });
         }
 
@@ -122,6 +204,7 @@ impl Searcher {
                 subtitle: "Open in browser".into(),
                 highlights: Vec::new(),
                 action: Action::Open(url),
+                icon: None,
             });
         }
 
@@ -130,24 +213,13 @@ impl Searcher {
         let mut scored: Vec<_> = apps
             .iter()
             .filter_map(|app| {
-                self.indices.clear();
-                let score =
-                    pattern.indices(haystack(&app.name, &mut self.buf), &mut self.matcher, &mut self.indices)?;
-                self.indices.sort_unstable();
-                self.indices.dedup();
-                if !is_clean_match(&app.name, &self.indices) {
-                    return None;
-                }
+                let (score, highlights) = self.names.score(&pattern, &app.name)?;
                 let prefix = if app.name.to_lowercase().starts_with(&lower) {
                     40
                 } else {
                     0
                 };
-                Some((
-                    score + prefix + history.boost(&app.id, now),
-                    app,
-                    utf16_ranges(&app.name, &self.indices),
-                ))
+                Some((score + prefix + history.boost(&app.id, now), app, highlights))
             })
             .collect();
         scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.name.len().cmp(&b.1.name.len())));
@@ -161,6 +233,7 @@ impl Searcher {
             subtitle: host(&config.search_url).unwrap_or("Web search").to_string(),
             highlights: Vec::new(),
             action: Action::Open(config.search_url.replace("{query}", &url_encode(query))),
+            icon: None,
         });
         results
     }
@@ -176,6 +249,18 @@ fn app_result(app: &AppEntry, highlights: Vec<(u32, u32)>) -> ResultItem {
             id: app.id.clone(),
             path: app.path.clone(),
         },
+        icon: Some(app.id.clone()),
+    }
+}
+
+pub fn file_result(hit: FileHit) -> ResultItem {
+    ResultItem {
+        kind: if hit.is_folder { Kind::Folder } else { Kind::File },
+        title: hit.name,
+        subtitle: hit.path.clone(),
+        highlights: hit.highlights,
+        action: Action::Open(hit.path),
+        icon: Some(hit.icon_key),
     }
 }
 
@@ -303,6 +388,28 @@ mod tests {
         assert_eq!(titles("pad"), ["Notepad"]);
         assert_eq!(titles("chr"), ["Google Chrome", "Character Map"]);
         assert_eq!(titles("chrme"), ["Google Chrome"]);
+    }
+
+    #[test]
+    fn chooses_when_queries_search_files() {
+        let mut searcher = Searcher::new();
+        let (h, c) = (History::default(), Config::default());
+        let scope = |q: &'static str, s: &mut Searcher| {
+            let results = s.search(q, &[], &h, &c);
+            match FileScope::of(q, &results) {
+                FileScope::None => "none".to_string(),
+                FileScope::Mixed(f) => format!("mixed:{f}"),
+                FileScope::Only(f) => format!("only:{f}"),
+            }
+        };
+        assert_eq!(scope("readme", &mut searcher), "mixed:readme");
+        assert_eq!(scope("re", &mut searcher), "none");
+        assert_eq!(scope("? re", &mut searcher), "only:re");
+        assert_eq!(scope("?", &mut searcher), "none");
+        assert_eq!(scope("2 + 2", &mut searcher), "none");
+        assert_eq!(scope("> dir", &mut searcher), "none");
+        assert_eq!(scope("www.example.com", &mut searcher), "none");
+        assert!(searcher.search("?resume", &[app("Resume Builder")], &h, &c).is_empty());
     }
 
     #[test]

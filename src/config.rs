@@ -27,6 +27,14 @@ show_recent = true
 
 # Web search URL. Wisp replaces {query} with the encoded search text.
 search_url = "https://www.google.com/search?q={query}"
+
+# Search file names in the Windows Search index. Start a query with ? to
+# search files only.
+file_search = true
+
+# Folder names that file search skips. It always skips files and folders
+# whose names start with a dot, such as .git.
+file_search_exclude = ["node_modules", "AppData", "site-packages", "__pycache__", "venv", "target", "dist", "build", "Cache", "Code Cache", "GPUCache", "Service Worker", "IndexedDB", "Extensions"]
 "#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -54,6 +62,8 @@ pub struct Config {
     pub backdrop: Backdrop,
     pub show_recent: bool,
     pub search_url: String,
+    pub file_search: bool,
+    pub file_search_exclude: Vec<String>,
 }
 
 impl Default for Config {
@@ -65,6 +75,25 @@ impl Default for Config {
             backdrop: Backdrop::Acrylic,
             show_recent: true,
             search_url: "https://www.google.com/search?q={query}".into(),
+            file_search: true,
+            file_search_exclude: [
+                "node_modules",
+                "AppData",
+                "site-packages",
+                "__pycache__",
+                "venv",
+                "target",
+                "dist",
+                "build",
+                "Cache",
+                "Code Cache",
+                "GPUCache",
+                "Service Worker",
+                "IndexedDB",
+                "Extensions",
+            ]
+            .map(String::from)
+            .to_vec(),
         }
     }
 }

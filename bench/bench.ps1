@@ -20,6 +20,8 @@
   .\bench\bench.ps1 -Hotkey "Ctrl+Alt+F9"
 #>
 param(
+    # Measure only the launcher under test, for example when PowerToys Run is turned off.
+    [switch]$SkipPowerToys,
     [string]$Process = "wisp",
     [string]$Hotkey = "Ctrl+Alt+F9",
     [int]$Trials = 20,
@@ -28,7 +30,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$Queries = $Queries.Split(",")
+# A new variable: $Queries keeps its [string] type, so assigning the array back
+# to it would join the words into one string again.
+$queryList = $Queries.Split(",")
 Add-Type -Path (Join-Path $PSScriptRoot "Native.cs")
 [Native]::SetProcessDPIAware() | Out-Null
 
@@ -71,7 +75,7 @@ function Bench-Launcher([string]$name, [string]$processName, [string[]]$hotkey) 
     for ($i = 0; $i -lt $Trials; $i++) {
         $o = [Native]::Measure({ Chord $hotkey }.GetNewClosure(), $region, $proc.Id, 150, 2000)
         Start-Sleep -Milliseconds 250
-        $text = $Queries[$i % $Queries.Count]
+        $text = $queryList[$i % $queryList.Count]
         $q = [Native]::Measure({ Chord @("Ctrl", "A"); [Native]::Type($text) }.GetNewClosure(), $region, 0, 350, 3000)
         Chord @("Esc")
         Start-Sleep -Milliseconds 450
@@ -113,9 +117,31 @@ $backdrop = Start-Process powershell -PassThru -WindowStyle Hidden -ArgumentList
 Start-Sleep -Seconds 3
 try {
     $ours = Bench-Launcher $Process $Process $Hotkey.Split("+")
-    $pt = Bench-Launcher "PowerToys Run" "PowerToys.PowerLauncher" @("Alt", "Space")
+    if (-not $SkipPowerToys) {
+        $pt = Bench-Launcher "PowerToys Run" "PowerToys.PowerLauncher" @("Alt", "Space")
+    }
 } finally {
     Stop-Process -Id $backdrop.Id -ErrorAction SilentlyContinue
+}
+
+if ($SkipPowerToys) {
+    function Ms($s) { "{0:0} / {1:0}" -f $s.Median, $s.P90 }
+    $md = @"
+| $Process | median / p90 |
+| --- | --- |
+| Shortcut → launcher drawn | $(Ms $ours.Open) ms |
+| Shortcut → launcher settled | $(Ms $ours.OpenSettled) ms |
+| Shortcut → keyboard focus | $(Ms $ours.Focus) ms |
+| Typing → first results | $(Ms $ours.Query) ms |
+| Typing → results settled | $(Ms $ours.QuerySettled) ms |
+| Private memory | $($ours.PrivateMB) MB |
+| Working set | $($ours.WorkingSetMB) MB |
+| Threads | $($ours.Threads) |
+| CPU time while idle (10 s) | $($ours.IdleCpuMs) ms |
+"@
+    $md | Set-Content -Encoding utf8 $Out
+    $md
+    return
 }
 
 $ptHost = Get-Process PowerToys -ErrorAction SilentlyContinue | Select-Object -First 1

@@ -175,7 +175,7 @@ fn resolve_path(id: &str) -> Option<String> {
     Some(format!("{folder}{}", &rest[close + 1..]))
 }
 
-unsafe fn load_icon(item: &IShellItem, size: i32) -> Option<IconPixels> {
+pub(crate) unsafe fn load_icon(item: &IShellItem, size: i32) -> Option<IconPixels> {
     unsafe {
         let factory: IShellItemImageFactory = item.cast().ok()?;
         let bitmap = factory

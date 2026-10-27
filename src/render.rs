@@ -371,12 +371,10 @@ unsafe fn draw_frame(
                 }
 
                 let icon_rect = rect(ICON_X, mid - ICON / 2.0, ICON_X + ICON, mid + ICON / 2.0);
-                let icon = match (&item.kind, &item.action) {
-                    (Kind::App, crate::search::Action::Launch { id, .. }) => {
-                        f.icons.get(id).and_then(|px| bitmap(&mut t.bitmaps, rt, id, px))
-                    }
-                    _ => None,
-                };
+                let icon = item
+                    .icon
+                    .as_ref()
+                    .and_then(|key| f.icons.get(key).and_then(|px| bitmap(&mut t.bitmaps, rt, key, px)));
                 if let Some(icon) = icon {
                     rt.DrawBitmap(
                         &icon,
@@ -401,6 +399,8 @@ unsafe fn draw_frame(
                         }
                         kind => {
                             let glyph = match kind {
+                                Kind::File => "\u{E8A5}",
+                                Kind::Folder => "\u{E8B7}",
                                 Kind::Calc => "\u{E8EF}",
                                 Kind::Url => "\u{E71B}",
                                 Kind::Shell => "\u{E756}",
