@@ -2,7 +2,7 @@
 name = "wisp"
 version = "0.1.0"
 edition = "2024"
-description = "A tiny, instant keyboard launcher for Windows"
+description = "An app launcher for Windows"
 license = "MIT"
 authors = ["Sumir Seth"]
 repository = "https://github.com/SumirSeth/wisp"

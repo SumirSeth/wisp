@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
 use windows::core::{HSTRING, w};
 
-/// `%APPDATA%\wisp`, created on demand.
+/// Creates `%APPDATA%\wisp` when first needed.
 pub fn data_dir() -> PathBuf {
     let base = std::env::var_os("APPDATA")
         .map(PathBuf::from)
@@ -25,12 +25,12 @@ pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().collect()
 }
 
-/// UTF-16 offset of byte offset `byte` in `s` (DirectWrite positions are UTF-16).
+/// DirectWrite needs UTF-16 offsets; the text editor uses byte offsets.
 pub fn utf16_offset(s: &str, byte: usize) -> u32 {
     s[..byte].encode_utf16().count() as u32
 }
 
-/// Copies `s` into a fixed-size, NUL-terminated wide buffer, truncating if needed.
+/// Reserves one UTF-16 unit for the NUL terminator and truncates text to fit.
 pub fn copy_wide(dst: &mut [u16], s: &str) {
     let max = dst.len() - 1;
     let mut n = 0;

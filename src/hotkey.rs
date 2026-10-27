@@ -1,4 +1,4 @@
-//! Parses hotkey strings like `"Alt+Space"` into `RegisterHotKey` arguments.
+//! Parses shortcuts such as `"Alt+Space"` into `RegisterHotKey` arguments.
 
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
@@ -18,13 +18,13 @@ pub fn parse(spec: &str) -> Result<Hotkey, String> {
             "win" | "super" | "meta" => modifiers |= MOD_WIN,
             key => {
                 if vk.is_some() {
-                    return Err(format!("hotkey \"{spec}\" has more than one key"));
+                    return Err(format!("shortcut \"{spec}\" has more than one non-modifier key"));
                 }
-                vk = Some(key_code(key).ok_or_else(|| format!("unknown key \"{part}\" in hotkey"))?);
+                vk = Some(key_code(key).ok_or_else(|| format!("unknown key \"{part}\" in shortcut \"{spec}\""))?);
             }
         }
     }
-    let vk = vk.ok_or_else(|| format!("hotkey \"{spec}\" has no key"))?;
+    let vk = vk.ok_or_else(|| format!("shortcut \"{spec}\" has no non-modifier key"))?;
     Ok(Hotkey { modifiers, vk })
 }
 
@@ -75,7 +75,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_common_hotkeys() {
+    fn parses_shortcuts_and_rejects_invalid_keys() {
         let hk = parse("Alt+Space").unwrap();
         assert_eq!(hk.modifiers, MOD_ALT | MOD_NOREPEAT);
         assert_eq!(hk.vk, VK_SPACE.0 as u32);

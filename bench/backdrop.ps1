@@ -1,5 +1,5 @@
-# A still, full-screen gradient shown behind the launchers while benchmarking,
-# so nothing changing on screen bleeds through their translucent backdrops.
+# A static gradient prevents other screen changes from affecting measurements
+# through the launchers' translucent backdrops.
 param([int]$Seconds = 300)
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 Add-Type -Name Dpi -Namespace Bench -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();'

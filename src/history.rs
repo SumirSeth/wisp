@@ -1,4 +1,4 @@
-//! Launch history, used to rank frequently and recently used apps higher.
+//! Launch history for ranking frequently and recently launched apps higher.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -36,7 +36,7 @@ impl History {
         let usage = self.apps.entry(id.to_string()).or_default();
         usage.count += 1;
         usage.last = util::now_secs();
-        // Write-then-rename, so a crash mid-write can't wipe the existing history.
+        // Write to a temporary file so a crash during the write preserves existing history.
         if let Ok(text) = toml::to_string(self) {
             let tmp = self.path.with_extension("toml.tmp");
             if std::fs::write(&tmp, text).is_ok() {
@@ -45,7 +45,7 @@ impl History {
         }
     }
 
-    /// Score bonus for an app: grows with launch count, weighted by recency.
+    /// Increases an app's score with its launch count and recent use.
     pub fn boost(&self, id: &str, now: u64) -> u32 {
         let Some(usage) = self.apps.get(id) else { return 0 };
         let recency = match now.saturating_sub(usage.last) {

@@ -1,4 +1,4 @@
-//! Turns a query into ranked results from all providers.
+//! Ranks app, calculator, URL, command and web search results.
 
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config as MatcherConfig, Matcher, Utf32Str};
@@ -21,7 +21,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// Label of the Enter action, shown on the selected row.
+    /// Enter action shown beside the selected result.
     pub fn verb(self) -> &'static str {
         match self {
             Kind::App | Kind::Url => "Open",
@@ -32,7 +32,7 @@ impl Kind {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum Action {
     Launch { id: String, path: Option<String> },
     Copy(String),
@@ -40,12 +40,12 @@ pub enum Action {
     Shell(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ResultItem {
     pub kind: Kind,
     pub title: String,
     pub subtitle: String,
-    /// Matched ranges in `title` as UTF-16 `(start, len)`, for highlighting.
+    /// DirectWrite highlights use UTF-16 `(start, len)` ranges in `title`.
     pub highlights: Vec<(u32, u32)>,
     pub action: Action,
 }
@@ -97,7 +97,7 @@ impl Searcher {
                 } else {
                     command.into()
                 },
-                subtitle: "Run in Command Prompt · Ctrl+Shift+Enter to run as administrator".into(),
+                subtitle: "Command Prompt · Ctrl+Shift+Enter to run as administrator".into(),
                 highlights: Vec::new(),
                 action: Action::Shell(command.into()),
             });
@@ -179,9 +179,8 @@ fn app_result(app: &AppEntry, highlights: Vec<(u32, u32)>) -> ResultItem {
     }
 }
 
-/// Builds a haystack whose match indices are `char` positions in `text`.
-/// (`Utf32Str::new` segments by grapheme instead, which would desync the
-/// indices from `text.chars()` for names with combining marks.)
+/// Uses `char` indices to match `text.chars()` when computing highlights.
+/// `Utf32Str::new` uses grapheme indices, which differ for combining marks.
 fn haystack<'a>(text: &'a str, buf: &'a mut Vec<char>) -> Utf32Str<'a> {
     if text.is_ascii() {
         Utf32Str::Ascii(text.as_bytes())
@@ -192,9 +191,8 @@ fn haystack<'a>(text: &'a str, buf: &'a mut Vec<char>) -> Utf32Str<'a> {
     }
 }
 
-/// Rejects scattered matches: every run of matched chars must start at a word
-/// boundary, except at most one. `vsc` → **V**isual **S**tudio **C**ode is
-/// clean; `code` → Re**co**r**d**e**r** is not.
+/// Allows at most one group of consecutive matched characters to start within
+/// a word. Accepts `vsc` for Visual Studio Code; rejects `code` for Recorder.
 fn is_clean_match(text: &str, char_indices: &[u32]) -> bool {
     let chars: Vec<char> = text.chars().collect();
     let word_start = |i: usize| {
@@ -209,7 +207,7 @@ fn is_clean_match(text: &str, char_indices: &[u32]) -> bool {
     mid_word_runs <= 1
 }
 
-/// Converts sorted char indices into merged UTF-16 `(start, len)` ranges.
+/// DirectWrite needs UTF-16 ranges rather than the matcher's `char` indices.
 fn utf16_ranges(text: &str, char_indices: &[u32]) -> Vec<(u32, u32)> {
     let mut ranges: Vec<(u32, u32)> = Vec::new();
     let mut wanted = char_indices.iter().peekable();
@@ -308,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn fzf_style_operators() {
+    fn matches_fzf_style_operators() {
         let apps = [
             app("Visual Studio Code"),
             app("Windows Terminal"),
@@ -331,9 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn unicode_names() {
-        // Combining marks: nucleo segments graphemes, so its indices must not be
-        // mistaken for char indices.
+    fn highlights_unicode_app_names() {
         let apps = [app("e\u{301}ab"), app("Café Tools"), app("日本語 Editor")];
         let mut searcher = Searcher::new();
         let (h, c) = (History::default(), Config::default());
@@ -346,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn special_queries() {
+    fn handles_calculations_commands_urls_and_empty_queries() {
         let mut searcher = Searcher::new();
         let (h, c) = (History::default(), Config::default());
         assert_eq!(searcher.search("2+2", &[], &h, &c)[0].title, "4");
@@ -359,7 +355,7 @@ mod tests {
     }
 
     #[test]
-    fn helpers() {
+    fn encodes_urls_extracts_hosts_and_converts_highlights() {
         assert_eq!(url_encode("a b&c"), "a+b%26c");
         assert_eq!(host("https://www.google.com/search?q={query}"), Some("www.google.com"));
         assert_eq!(utf16_ranges("a🎉bc", &[0, 2, 3]), vec![(0, 1), (3, 2)]);

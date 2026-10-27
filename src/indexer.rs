@@ -1,9 +1,7 @@
-//! Background app indexing.
-//!
-//! Apps come from the shell's `AppsFolder` (what Start's "All apps" shows),
-//! which covers Start Menu shortcuts and Store/packaged apps in one place.
-//! The worker thread enumerates it, sends the list to the UI, then extracts
-//! icons, caching them across rescans.
+//! Indexes desktop and Microsoft Store apps from `shell:AppsFolder`,
+//! the source for Start's "All apps". The worker thread sends the app list
+//! before loading icons so the launcher can show results sooner.
+//! Loaded icons stay cached across rescans.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -19,9 +17,9 @@ use windows::core::{HSTRING, Interface, PWSTR, Result};
 #[derive(Debug, Clone)]
 pub struct AppEntry {
     pub name: String,
-    /// Parsing name inside `shell:AppsFolder` — a path or an AppUserModelID.
+    /// Windows shell parsing name in `shell:AppsFolder`: a path or an AppUserModelID.
     pub id: String,
-    /// Filesystem path for desktop apps, when it can be resolved.
+    /// File path for desktop apps, if Windows can resolve it.
     pub path: Option<String>,
 }
 
@@ -42,7 +40,7 @@ pub struct Indexer {
 }
 
 impl Indexer {
-    /// Starts the worker. Each event is followed by a `notify_msg` post to `hwnd`.
+    /// Posts `notify_msg` to `hwnd` after each event to wake the message loop.
     pub fn spawn(hwnd: HWND, notify_msg: u32, events: Sender<IndexEvent>, icon_size: i32) -> Indexer {
         let (requests, rx) = channel();
         let hwnd = hwnd.0 as isize;
@@ -53,7 +51,7 @@ impl Indexer {
                     let _ = PostMessageW(Some(HWND(hwnd as _)), notify_msg, WPARAM(0), LPARAM(0));
                 })
             })
-            .expect("failed to start indexer thread");
+            .expect("could not start app indexing thread");
         Indexer { requests }
     }
 
@@ -68,13 +66,13 @@ fn worker(requests: Receiver<()>, events: Sender<IndexEvent>, icon_size: i32, no
     }
     let mut icons_loaded = HashSet::new();
     while requests.recv().is_ok() {
-        // Collapse a burst of rescan requests into one scan.
+        // One scan handles all pending requests.
         while requests.try_recv().is_ok() {}
 
         let items = match unsafe { enumerate_apps() } {
             Ok(items) => items,
             Err(e) => {
-                eprintln!("app enumeration failed: {e}");
+                eprintln!("could not list apps: {e}");
                 continue;
             }
         };
@@ -89,7 +87,7 @@ fn worker(requests: Receiver<()>, events: Sender<IndexEvent>, icon_size: i32, no
             if icons_loaded.contains(&app.id) {
                 continue;
             }
-            // Failures aren't remembered, so the next rescan tries again.
+            // Cache only loaded icons so the next rescan retries failed loads.
             if let Some(pixels) = unsafe { load_icon(item, icon_size) } {
                 icons_loaded.insert(app.id.clone());
                 batch.push((app.id.clone(), Arc::new(pixels)));
@@ -138,7 +136,7 @@ unsafe fn enumerate_apps() -> Result<Vec<(AppEntry, IShellItem)>> {
     }
 }
 
-/// Filters out uninstallers, docs and web links that Start menu folders tend to collect.
+/// Excludes uninstallers, documents and web links from app results.
 fn is_launchable(name: &str, id: &str) -> bool {
     const SKIP_EXTENSIONS: &[&str] = &[
         ".url", ".txt", ".chm", ".pdf", ".htm", ".html", ".rtf", ".ini", ".log", ".md", ".xml",
@@ -160,7 +158,7 @@ unsafe fn display_name(item: &IShellItem, kind: SIGDN) -> Option<String> {
     }
 }
 
-/// Desktop app ids look like `{KnownFolderGUID}\sub\app.exe` or `C:\path\app.exe`.
+/// Desktop app IDs use paths such as `{KnownFolderGUID}\sub\app.exe` or `C:\path\app.exe`.
 fn resolve_path(id: &str) -> Option<String> {
     if id.as_bytes().get(1..3) == Some(b":\\") {
         return Some(id.to_string());
@@ -205,7 +203,7 @@ unsafe fn bitmap_pixels(bitmap: HBITMAP) -> Option<IconPixels> {
             bmiHeader: BITMAPINFOHEADER {
                 biSize: size_of::<BITMAPINFOHEADER>() as u32,
                 biWidth: width,
-                biHeight: -height, // top-down
+                biHeight: -height, // Negative height stores pixels from top to bottom.
                 biPlanes: 1,
                 biBitCount: 32,
                 biCompression: BI_RGB.0,
@@ -230,10 +228,10 @@ unsafe fn bitmap_pixels(bitmap: HBITMAP) -> Option<IconPixels> {
         }
 
         if bgra.chunks_exact(4).all(|p| p[3] == 0) {
-            // No alpha channel at all: treat as opaque.
+            // Icons without an alpha channel would be invisible unless made opaque.
             bgra.chunks_exact_mut(4).for_each(|p| p[3] = 255);
         } else if bgra.chunks_exact(4).any(|p| p[0] > p[3] || p[1] > p[3] || p[2] > p[3]) {
-            // Straight alpha; Direct2D wants premultiplied.
+            // Direct2D needs premultiplied alpha for these icons.
             for p in bgra.chunks_exact_mut(4) {
                 let a = p[3] as u32;
                 for c in &mut p[..3] {

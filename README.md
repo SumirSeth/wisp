@@ -5,8 +5,8 @@
 <h1 align="center">Wisp</h1>
 
 <p align="center">
-  <b>A tiny, instant app launcher for Windows.</b><br>
-  A standalone alternative to PowerToys Run in a single ~0.8 MB executable.
+  <b>An app launcher for Windows.</b><br>
+  Runs without PowerToys as one ~0.8 MB executable.
 </p>
 
 <p align="center">
@@ -20,36 +20,36 @@
   <img src="assets/screenshot-apps.png" width="700" alt="Wisp searching for apps">
 </p>
 
-Press <kbd>Alt</kbd>+<kbd>Space</kbd>, type a few letters, hit <kbd>Enter</kbd>. Wisp is written in Rust directly on Win32, Direct2D and DirectWrite. There's no .NET, no web view and no UI framework, and it doesn't need PowerToys installed.
+Press <kbd>Alt</kbd>+<kbd>Space</kbd>, type an app name, then press <kbd>Enter</kbd>. Wisp uses Rust, Win32, Direct2D and DirectWrite. It needs no .NET runtime, web view, UI framework or PowerToys install.
 
 ## Benchmarks
 
-Measured against PowerToys Run 0.94 with its default settings, on the same machine (i5-12500H, 144 Hz display), 30 trials each. Times are median / p90:
+Wisp and PowerToys Run 0.94 ran on the same machine (i5-12500H, 144 Hz display), with 30 trials each. PowerToys Run used its default config. Times are median / p90:
 
 | | **Wisp** | PowerToys Run | |
 | --- | --- | --- | --- |
-| Typing → results on screen | **21 / 21 ms** | 333 / 356 ms | **~16× faster** |
-| Hotkey → window on screen | **11 / 23 ms** | 29 / 35 ms | **~2.5× faster** |
-| Memory (private bytes) | **18 MB** | 298 MB + 13 MB PowerToys host | **~16× less** |
+| Typing → results settled | **21 / 21 ms** | 333 / 356 ms | **~16× faster** |
+| Shortcut → launcher drawn | **11 / 23 ms** | 29 / 35 ms | **~2.5× faster** |
+| Memory (private bytes) | **18 MB** | 298 MB + 13 MB PowerToys host | **~16× less memory** |
 | CPU time while idle (10 s) | **0 ms** | 63 ms | |
 | Download / install size | **0.8 MB** | 794 MB (PowerToys install) | |
 | Threads | **14** | 47 | |
 
-Both launchers are measured the same way, from outside the process. [`bench/bench.ps1`](bench/bench.ps1) sends real keystrokes and polls the screen until the pixels stop changing, so the numbers include rendering and compositor time, not just internal search time. Both run over the same still background, and changes too faint to see are ignored. Full results are in [`bench/RESULTS.md`](bench/RESULTS.md). You can rerun it on your own machine.
+[`bench/bench.ps1`](bench/bench.ps1) measures both launchers from outside their processes. It sends keystrokes and polls the screen for visible changes. The times include search, rendering and compositor time. Both launchers run over the same static backdrop window. The benchmark ignores changes below its visibility threshold. See [`bench/RESULTS.md`](bench/RESULTS.md) for the full results, or run the script on your machine.
 
 > [!NOTE]
-> With the default acrylic backdrop, Wisp's window and results appear in ~11 ms, but Windows then fades the blur in over ~0.25 s, as it does for the Start menu. PowerToys Run's own backdrop finishes in ~42 ms. If you'd rather everything land at once, set `backdrop = "solid"`: the window is then fully drawn in ~25 ms.
+> With the default acrylic backdrop, Wisp's launcher and results appear in ~11 ms. Windows then fades in the blur over ~0.25 s, as it does for the Start menu. PowerToys Run's backdrop settles in ~42 ms. Set `backdrop = "solid"` to remove the fade-in. The launcher then draws fully in ~25 ms.
 
 ## Features
 
-- **Apps**: everything in Start's "All apps", both desktop programs and Microsoft Store apps, with their real icons.
-- **Fuzzy search** powered by [nucleo](https://github.com/helix-editor/nucleo), the matcher from the Helix editor. `vsc` finds **V**isual **S**tudio **C**ode, and scattered junk matches are filtered out.
-- **Learns what you use**: frequently and recently launched apps rank higher, and they're listed as soon as Wisp opens.
+- **App search**: desktop and Microsoft Store apps from Start's "All apps", with their icons. Wisp excludes uninstallers, documents and web links.
+- **Fuzzy search** uses [nucleo](https://github.com/helix-editor/nucleo), the Helix editor's matcher. `vsc` finds **V**isual **S**tudio **C**ode. Wisp rejects scattered matches such as `code` for Recorder.
+- **Launch history**: frequently and recently launched apps rank higher. Wisp lists them when the search box is empty.
 - **Calculator**: `sqrt(2) * 10`, `2^10`, `(3 + 4) % 5`, `2pi + 1`. Press <kbd>Enter</kbd> to copy the result.
 - **Shell commands**: `> ipconfig /all` runs in Command Prompt.
-- **URLs and web search**: `https://…` and `www.…` links open in your browser, and anything else can be searched on the web.
-- **Native look**: acrylic backdrop, rounded corners, light and dark themes that follow Windows, sharp at any display scaling.
-- **Lightweight**: zero CPU while idle. Indexing and icon loading run on a background thread.
+- **URLs and web search**: open `https://…` and `www.…` links in your browser, or search the web for the query.
+- **Appearance**: acrylic backdrop, rounded corners, light and dark themes that follow Windows, and drawing that scales with display DPI.
+- **Idle CPU use**: 0 ms of CPU time in the 10 s benchmark. A worker thread indexes apps and loads icons.
 
 <p align="center">
   <img src="assets/screenshot-calc.png" width="700" alt="Wisp calculator">
@@ -57,29 +57,30 @@ Both launchers are measured the same way, from outside the process. [`bench/benc
 
 ## Wisp vs PowerToys Run
 
-PowerToys Run is excellent and does much more. Wisp trades breadth for speed and independence. An honest comparison:
-
 **Only in Wisp**
+
 - Runs on its own as one portable `.exe`, with no PowerToys install and no .NET runtime.
-- Instant results on every keystroke. PowerToys Run waits 50–150 ms after you type before it searches.
+- Searches on each keystroke without an input delay. PowerToys Run waits 50–150 ms after you type before it searches.
 - fzf-style query operators: `^start`, `end$`, `'exact`, `!exclude`.
-- Recently used apps are shown on an empty query.
-- Plain-text TOML config that's easy to keep in your dotfiles.
+- Lists recently launched apps when the search box is empty.
+- Stores the config as plain-text TOML that you can keep with your dotfiles.
 
 **In both**
-- App search with icons and fuzzy matching, with frequently used apps ranked higher
+
+- App search with icons and fuzzy matching, with frequently launched apps ranked higher
 - Calculator, web search, URLs, shell commands
 - Run as administrator, open the file location
-- Light/dark theme, multi-monitor, per-monitor DPI
+- Light and dark themes, multiple monitors, per-monitor DPI
 
-**Only in PowerToys Run** (Wisp's roadmap)
+**Only in PowerToys Run** (planned for Wisp)
+
 - File search through the Windows Search index
 - Switching between open windows (Window Walker)
 - System commands (shut down, sleep, lock, empty Recycle Bin)
-- Unit converter, time & date, value generator (GUIDs, hashes, Base64)
+- Unit conversion, time and date, value generation (GUIDs, hashes, Base64)
 - Windows Settings, services and registry search, folder browsing
 - VS Code workspaces, Windows Terminal profiles, OneNote
-- A third-party plugin ecosystem, plugin action keywords, and a settings UI
+- Third-party plugins, plugin action keywords, and a config UI
 
 ## Install
 
@@ -88,24 +89,24 @@ PowerToys Run is excellent and does much more. Wisp trades breadth for speed and
 3. Optional: right-click the tray icon and choose **Start with Windows**.
 
 > [!NOTE]
-> **Already using PowerToys Run?** It also uses <kbd>Alt</kbd>+<kbd>Space</kbd>, and only one app can have a shortcut. Either turn off PowerToys Run in PowerToys Settings, or give Wisp a different `hotkey` (see [Configuration](#configuration)). Wisp shows a notification if its shortcut is taken.
+> PowerToys Run also uses <kbd>Alt</kbd>+<kbd>Space</kbd>. Only one app can register a given shortcut. Turn off PowerToys Run in PowerToys Settings, or change Wisp's `hotkey` (see [Config](#config)). Wisp shows a notification if another app uses its shortcut.
 
 > [!NOTE]
-> Release builds aren't code-signed yet, so Windows SmartScreen may warn the first time you run Wisp. Choose **More info → Run anyway**, or [build it yourself](#building-from-source).
+> Release builds are not code-signed. Windows SmartScreen may warn you the first time you run Wisp. Choose **More info → Run anyway**, or [build from source](#building-from-source).
 
 ## Usage
 
 | Keys | Action |
 | --- | --- |
-| <kbd>Alt</kbd>+<kbd>Space</kbd> | Show / hide Wisp |
-| <kbd>Enter</kbd> | Open the selected result |
+| <kbd>Alt</kbd>+<kbd>Space</kbd> | Show or hide the launcher |
+| <kbd>Enter</kbd> | Open an app or URL, copy a calculator result, run a command, or search the web |
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd> | Run as administrator |
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> | Show the app in File Explorer |
 | <kbd>↑</kbd> <kbd>↓</kbd> · <kbd>Tab</kbd> · <kbd>PgUp</kbd> <kbd>PgDn</kbd> · mouse wheel | Move the selection |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | Copy the selected text, or the calculator result |
-| <kbd>Esc</kbd> | Hide |
+| <kbd>Esc</kbd> | Hide the launcher |
 
-The search box supports the usual text editing: <kbd>Ctrl</kbd>+<kbd>←</kbd>/<kbd>→</kbd> to jump words, <kbd>Ctrl</kbd>+<kbd>Backspace</kbd> to delete a word, <kbd>Shift</kbd> to select, and <kbd>Ctrl</kbd>+<kbd>A</kbd>/<kbd>V</kbd>/<kbd>X</kbd>.
+In the search box, press <kbd>Ctrl</kbd>+<kbd>←</kbd> or <kbd>Ctrl</kbd>+<kbd>→</kbd> to move by word. Press <kbd>Ctrl</kbd>+<kbd>Backspace</kbd> to delete a word. Hold <kbd>Shift</kbd> while moving to select text. Use <kbd>Ctrl</kbd>+<kbd>A</kbd> to select all, <kbd>Ctrl</kbd>+<kbd>V</kbd> to paste, and <kbd>Ctrl</kbd>+<kbd>X</kbd> to cut.
 
 | Type | Get |
 | --- | --- |
@@ -116,26 +117,26 @@ The search box supports the usual text editing: <kbd>Ctrl</kbd>+<kbd>←</kbd>/<
 | `https://…` or `www.…` | Open in your browser |
 | anything else | "Search the web for …" |
 
-Command line: `wisp.exe --show` opens the running instance (or starts one with the window visible), and `wisp.exe --quit` stops it. Only one instance runs at a time.
+Run `wisp.exe --show` to show the launcher in the running instance, or start one with the launcher visible. Run `wisp.exe --quit` to stop the running instance. Only one instance runs at a time.
 
-## Configuration
+## Config
 
-Open the config from the tray menu with **Edit settings**, or edit `%APPDATA%\wisp\config.toml` directly. It's created with comments on first run, and changes apply the next time Wisp opens.
+Choose **Edit config** in the tray menu, or edit `%APPDATA%\wisp\config.toml` directly. Wisp creates this file with comments on first run. Changes apply the next time the launcher opens.
 
 ```toml
-hotkey = "Alt+Space"        # e.g. "Ctrl+Shift+Space", "Win+Alt+W", "Ctrl+F12"
-max_results = 8             # rows in the result list
+hotkey = "Alt+Space"        # examples: "Ctrl+Shift+Space", "Win+Alt+W", "Ctrl+F12"
+max_results = 8             # results visible at once; scroll to see more
 theme = "system"            # "system" | "dark" | "light"
 backdrop = "acrylic"        # "acrylic" | "mica" | "solid"
-show_recent = true          # recently used apps on an empty query
+show_recent = true          # recently launched apps when the search box is empty
 search_url = "https://www.google.com/search?q={query}"
 ```
 
-Launch history, which drives the ranking, is stored next to it in `history.toml`.
+Wisp stores launch history in `history.toml` beside the config. It uses this history to rank apps.
 
 ## Building from source
 
-You need [Rust](https://rustup.rs) (stable, MSVC toolchain) and the Windows SDK, which comes with Visual Studio Build Tools.
+Install [Rust](https://rustup.rs) (stable, MSVC toolchain) and the Windows SDK from Visual Studio Build Tools.
 
 ```sh
 git clone https://github.com/SumirSeth/wisp
@@ -150,26 +151,24 @@ Debug builds keep a console window open for logs. Release builds run without one
 
 | File | What it does |
 | --- | --- |
-| [`src/app.rs`](src/app.rs) | Window, message loop, keyboard and mouse input, show/hide |
+| [`src/app.rs`](src/app.rs) | Launcher, message loop, keyboard and mouse input, showing and hiding |
 | [`src/render.rs`](src/render.rs) | Direct2D/DirectWrite drawing and layout |
-| [`src/search.rs`](src/search.rs) | Turns a query into ranked results from all sources |
-| [`src/indexer.rs`](src/indexer.rs) | Background app and icon indexing from `shell:AppsFolder` |
+| [`src/search.rs`](src/search.rs) | Ranks app, calculator, URL, command and web search results |
+| [`src/indexer.rs`](src/indexer.rs) | Indexes apps and loads icons from `shell:AppsFolder` on a worker thread |
 | [`src/calc.rs`](src/calc.rs) | Calculator expression parser |
 | [`src/editor.rs`](src/editor.rs) | Text editing for the search box |
-| [`src/launch.rs`](src/launch.rs) | Starting apps, URLs and commands through the shell |
+| [`src/launch.rs`](src/launch.rs) | Opens apps and URLs and runs commands through the Windows shell |
 | [`src/tray.rs`](src/tray.rs) | Tray icon, menu and notifications |
-| [`src/config.rs`](src/config.rs), [`src/history.rs`](src/history.rs) | Settings and launch history |
+| [`src/config.rs`](src/config.rs), [`src/history.rs`](src/history.rs) | Config and launch history |
 
-A few decisions that keep it fast:
-
-- **Apps come from `shell:AppsFolder`**, the same source as Start's "All apps". One enumeration covers desktop and Store apps, and every entry launches the same way.
-- **Rendering uses Direct2D's software rasterizer.** At this window size a frame takes about a millisecond on the CPU, and not loading the GPU driver saves about 30 MB of memory.
-- **The window has a caption style with its frame removed** (`WM_NCCALCSIZE`). Windows only renders real acrylic for windows that have a DWM frame; a plain borderless popup gets a flat grey fallback.
-- **The window keeps a fixed height while you type.** Resizing a window that has an acrylic or mica backdrop makes Windows redo the blur, which takes about 250 ms to settle. At a fixed height, each keystroke is a single repaint.
+- **Apps come from `shell:AppsFolder`**, the source for Start's "All apps". One scan covers desktop and Microsoft Store apps. Wisp uses the Windows shell to open both.
+- **Direct2D uses software rendering.** At this window size, a frame takes about 1 ms of CPU time. Avoiding the GPU driver saves about 30 MB of private memory.
+- **The launcher window keeps its caption style but removes the visible frame** (`WM_NCCALCSIZE`). DWM needs the frame style to render acrylic. A borderless popup gets a flat grey backdrop.
+- **The launcher keeps a fixed height while results are present.** Resizing a window with an acrylic or mica backdrop makes DWM recalculate the blur. It takes about 250 ms to settle. At a fixed height, each keystroke needs one repaint.
 
 ## Contributing
 
-Issues and pull requests are welcome. Before opening a PR, please run `cargo fmt`, `cargo clippy --all-targets` and `cargo test`. CI checks all three. For performance-related changes, include before/after numbers from `bench/bench.ps1`.
+Before opening a pull request, run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test`. CI runs these checks. For changes that affect performance, include measurements from `bench/bench.ps1` before and after the change. Report bugs and request features through GitHub issues.
 
 ## License
 

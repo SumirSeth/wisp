@@ -1,5 +1,5 @@
-//! Single-line text editing for the search box: caret, selection, word jumps.
-//! Positions are byte offsets that always sit on char boundaries.
+//! Search box text editing: caret, selection and movement by word.
+//! Positions use byte offsets at character boundaries.
 
 use std::ops::Range;
 
@@ -41,7 +41,6 @@ impl Editor {
         self.caret = self.text.len();
     }
 
-    /// Replaces the selection with `s`.
     pub fn insert(&mut self, s: &str) {
         let range = self.selection();
         self.text.replace_range(range.clone(), s);
@@ -49,7 +48,8 @@ impl Editor {
         self.anchor = self.caret;
     }
 
-    /// Feeds one UTF-16 unit from `WM_CHAR`. Returns true if the text changed.
+    /// Buffers UTF-16 surrogate pairs from separate `WM_CHAR` messages.
+    /// Returns true when a complete character changes the text.
     pub fn push_utf16(&mut self, unit: u16) -> bool {
         match unit {
             0xD800..=0xDBFF => {
@@ -205,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn typing_and_deleting() {
+    fn types_and_deletes_characters_and_words() {
         let mut e = typed("hello wörld 🎉");
         assert_eq!(e.text(), "hello wörld 🎉");
         e.backspace(false);
@@ -218,7 +218,7 @@ mod tests {
     }
 
     #[test]
-    fn selection_replaces() {
+    fn typing_replaces_selected_text() {
         let mut e = typed("notepad");
         e.select_all();
         assert_eq!(e.selected_text(), "notepad");

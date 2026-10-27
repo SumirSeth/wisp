@@ -1,4 +1,4 @@
-//! The launcher window: lifecycle, input handling and the message loop.
+//! Launcher lifecycle, input and message loop.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -34,11 +34,11 @@ const CLASS_NAME: PCWSTR = w!("Wisp.Launcher");
 const HOTKEY_ID: i32 = 1;
 const CARET_TIMER: usize = 1;
 const RESCAN_AFTER: Duration = Duration::from_secs(120);
-const PLACEHOLDER: &str = "Search apps, calculate, or type > to run a command";
+const PLACEHOLDER: &str = "Search apps, calculate, or run a command with >";
 
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 
-/// Work that arrived while the launcher was busy and must not be dropped.
+// Preserve index updates and hide requests during reentrant message handling.
 const DEFER_INDEX: u8 = 1;
 const DEFER_HIDE: u8 = 2;
 
@@ -47,10 +47,9 @@ thread_local! {
     static DEFERRED: Cell<u8> = const { Cell::new(0) };
 }
 
-/// Runs `f` against the launcher. Returns `None` when it's already borrowed,
-/// i.e. for messages Windows sends re-entrantly while we're handling another
-/// one (activation during `ShowWindow`, a modal loop inside `ShellExecuteEx`,
-/// ...). Work deferred meanwhile runs as soon as the outer handler finishes.
+/// Returns `None` if the launcher is already borrowed. Windows can send
+/// reentrant messages during `ShowWindow` or a modal `ShellExecuteEx` call.
+/// Runs deferred work after the outer handler releases the borrow.
 fn with_launcher<R>(f: impl FnOnce(&mut Launcher) -> R) -> Option<R> {
     let result = LAUNCHER.with(|cell| cell.try_borrow_mut().ok().and_then(|mut l| l.as_mut().map(f)));
     if result.is_some() {
@@ -59,8 +58,7 @@ fn with_launcher<R>(f: impl FnOnce(&mut Launcher) -> R) -> Option<R> {
     result
 }
 
-/// Like `with_launcher`, but if the launcher is busy, remembers `work` for
-/// later instead of dropping it.
+/// Defers `work` if a reentrant call cannot borrow the launcher.
 fn with_launcher_or_defer(work: u8, f: impl FnOnce(&mut Launcher)) {
     if with_launcher(f).is_none() {
         DEFERRED.with(|d| d.set(d.get() | work));
@@ -102,10 +100,10 @@ pub fn run() -> Result<()> {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
 
-        // One instance at a time; launching again just opens (or quits) the running one.
+        // The mutex limits Wisp to one running instance.
         let _mutex = CreateMutexW(None, true, w!("Local\\Wisp.Launcher.SingleInstance"))?;
         if GetLastError() == ERROR_ALREADY_EXISTS {
-            // The other instance may still be starting up; give its window a moment to appear.
+            // Wait up to 3 s for a starting instance to create its window.
             for _ in 0..30 {
                 if let Ok(existing) = FindWindowW(CLASS_NAME, PCWSTR::null()) {
                     let mut pid = 0;
@@ -119,7 +117,7 @@ pub fn run() -> Result<()> {
             }
             return Err(windows::core::Error::new(
                 E_FAIL,
-                "Wisp is already running but not responding.",
+                "Wisp is running, but its launcher window was not found within 3 s.",
             ));
         }
         if flag("--quit") {
@@ -129,7 +127,7 @@ pub fn run() -> Result<()> {
         let renderer = Renderer::new()?;
         let system_dpi = GetDpiForSystem();
         let instance = GetModuleHandleW(None)?;
-        // The app icon is embedded by build.rs as resource 1.
+        // build.rs embeds the icon as resource ID 1.
         let load_icon = |metric| -> Result<HICON> {
             let size = GetSystemMetricsForDpi(metric, system_dpi);
             let icon = LoadImageW(
@@ -175,7 +173,7 @@ pub fn run() -> Result<()> {
             None,
         )?;
 
-        // Recalculate the client area with the standard frame removed.
+        // Apply WM_NCCALCSIZE before the first draw to remove the visible frame.
         SetWindowPos(
             hwnd,
             None,
@@ -220,7 +218,7 @@ pub fn run() -> Result<()> {
         with_launcher(|l| {
             l.start();
             if let Some(error) = config_error {
-                tray::notify(l.hwnd, "Wisp settings", &error, true);
+                tray::notify(l.hwnd, "Wisp config", &error, true);
             }
             if flag("--show") {
                 l.show();
@@ -241,15 +239,15 @@ struct Launcher {
     hwnd: HWND,
     config: Config,
     config_mtime: Option<SystemTime>,
-    /// The shortcut actually registered right now, which can lag behind `config.hotkey`.
+    /// Registered shortcut; may differ from `config.hotkey` if registration fails.
     registered_hotkey: Option<String>,
     tray_icon: HICON,
     palette: Palette,
     renderer: Renderer,
     dpi: u32,
-    /// Top-left of the window in physical pixels.
+    /// Screen coordinates of the launcher's top-left corner, in physical pixels.
     position: (i32, i32),
-    /// Result rows that fit on the current monitor's work area.
+    /// Number of results that fit in the current monitor's work area.
     rows_that_fit: usize,
     visible: bool,
 
@@ -272,7 +270,7 @@ struct Launcher {
 impl Launcher {
     fn start(&mut self) {
         self.apply_theme();
-        // The tray icon must exist before any balloon notification can be shown.
+        // Windows needs the tray icon before it can show notifications.
         tray::add(self.hwnd, self.tray_icon, &self.tooltip());
         self.register_hotkey(true);
         self.indexer.rescan();
@@ -286,9 +284,8 @@ impl Launcher {
         }
     }
 
-    /// Makes `config.hotkey` the active shortcut. On failure, the previously
-    /// working shortcut stays registered, so a typo in the settings never
-    /// leaves you without one.
+    /// Tries to restore the previous shortcut if the new shortcut cannot be
+    /// registered, so an invalid config does not disable access to the launcher.
     fn register_hotkey(&mut self, report_errors: bool) {
         if self.registered_hotkey.as_deref() == Some(self.config.hotkey.as_str()) {
             return;
@@ -297,7 +294,7 @@ impl Launcher {
             Ok(hotkey) => hotkey,
             Err(error) => {
                 if report_errors {
-                    tray::notify(self.hwnd, "Wisp settings", &error, true);
+                    tray::notify(self.hwnd, "Wisp config", &error, true);
                 }
                 return;
             }
@@ -322,10 +319,10 @@ impl Launcher {
             }
             if report_errors {
                 let message = format!(
-                    "{} is already used by another app. Change \"hotkey\" in the settings.",
+                    "Windows could not register {}. Another app may use it. Change \"hotkey\" in the config.",
                     self.config.hotkey
                 );
-                tray::notify(hwnd, "Couldn't register shortcut", &message, true);
+                tray::notify(hwnd, "Could not register shortcut", &message, true);
             }
         }
         tray::set_tip(hwnd, &self.tooltip());
@@ -339,8 +336,8 @@ impl Launcher {
         self.config_mtime = mtime;
         let (config, error) = Config::load();
         if let Some(error) = error {
-            // Keep running with the last good settings.
-            tray::notify(self.hwnd, "Wisp settings", &error, true);
+            // Keep the last valid config so a read or parse error does not change it.
+            tray::notify(self.hwnd, "Wisp config", &error, true);
             return;
         }
         self.config = config;
@@ -379,8 +376,6 @@ impl Launcher {
         self.invalidate();
     }
 
-    // ---- showing and hiding -------------------------------------------------
-
     fn toggle(&mut self) {
         if self.visible { self.hide() } else { self.show() }
     }
@@ -392,7 +387,7 @@ impl Launcher {
             self.indexer.rescan();
             self.last_scan = Instant::now();
         }
-        // Keep the last query, selected, so typing replaces it.
+        // Selecting the previous query lets the user replace it by typing.
         self.editor.select_all();
         self.update_results();
         self.place_on_active_monitor();
@@ -422,9 +417,8 @@ impl Launcher {
         }
     }
 
-    /// Centers the window horizontally, a quarter of the way down the monitor
-    /// under the cursor, moving it up (and showing fewer rows if needed) so it
-    /// never extends past the work area.
+    /// Uses the monitor under the cursor. Reduces the result count and moves
+    /// the launcher up if needed to keep it within the work area.
     fn place_on_active_monitor(&mut self) {
         let work = unsafe {
             let mut cursor = POINT::default();
@@ -435,7 +429,7 @@ impl Launcher {
                 ..Default::default()
             };
             let _ = GetMonitorInfoW(monitor, &mut info);
-            // The window isn't on that monitor yet, so ask the monitor rather than the window.
+            // Use the target monitor's DPI before moving the launcher there.
             let (mut dpi_x, mut dpi_y) = (96, 96);
             let _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y);
             self.set_dpi(dpi_x);
@@ -473,7 +467,6 @@ impl Launcher {
         (dips * self.dpi as f32 / 96.0).round() as i32
     }
 
-    /// Height of the result list in rows: `max_results`, unless the screen is too small.
     fn list_rows(&self) -> usize {
         self.config.max_results.min(self.rows_that_fit)
     }
@@ -482,11 +475,9 @@ impl Launcher {
         self.results.len().min(self.list_rows())
     }
 
-    /// Rows the window is sized for: none, or always the full list height.
-    ///
-    /// Keeping the height fixed while typing matters for speed, not just looks:
-    /// resizing a window with an acrylic/mica backdrop makes DWM re-blur it,
-    /// which takes ~250 ms to visibly settle. A fixed height repaints in one frame.
+    /// Keep the height fixed while results are present. Resizing an acrylic or
+    /// mica window makes DWM recalculate the blur, which takes about 250 ms to
+    /// settle. A fixed height needs one repaint per keystroke.
     fn window_rows(&self) -> usize {
         if self.results.is_empty() { 0 } else { self.list_rows() }
     }
@@ -507,8 +498,6 @@ impl Launcher {
         }
         self.renderer.resize(width as u32, height as u32);
     }
-
-    // ---- results --------------------------------------------------------------
 
     fn update_results(&mut self) {
         let rows_before = self.window_rows();
@@ -544,10 +533,10 @@ impl Launcher {
     }
 
     fn activate(&mut self, admin: bool) {
-        let Some(item) = self.results.get(self.selected).cloned() else {
+        let Some(result) = self.results.get(self.selected) else {
             return;
         };
-        let result = match &item.action {
+        let outcome = match &result.action {
             Action::Launch { id, path } => {
                 let result = launch::app(id, path.as_deref(), admin);
                 if result.is_ok() {
@@ -560,10 +549,15 @@ impl Launcher {
             Action::Shell(command) if command.is_empty() => return,
             Action::Shell(command) => launch::shell(command, admin),
         };
-        match result {
+        match outcome {
             Ok(()) => self.hide(),
             Err(e) if launch::is_cancelled(&e) => {}
-            Err(e) => tray::notify(self.hwnd, &format!("Couldn't open {}", item.title), &e.message(), true),
+            Err(e) => tray::notify(
+                self.hwnd,
+                &format!("Could not {} {}", result.kind.verb().to_lowercase(), result.title),
+                &e.message(),
+                true,
+            ),
         }
     }
 
@@ -572,11 +566,9 @@ impl Launcher {
             action: Action::Launch { path: Some(path), .. },
             ..
         }) = self.results.get(self.selected)
+            && launch::reveal(path).is_ok()
         {
-            let path = path.clone();
-            if launch::reveal(&path).is_ok() {
-                self.hide();
-            }
+            self.hide();
         }
     }
 
@@ -604,9 +596,6 @@ impl Launcher {
         }
     }
 
-    // ---- input ------------------------------------------------------------------
-
-    /// Returns true if the key was handled.
     fn on_key(&mut self, vk: VIRTUAL_KEY) -> bool {
         let down = |key: VIRTUAL_KEY| unsafe { GetKeyState(key.0 as i32) < 0 };
         let (ctrl, shift) = (down(VK_CONTROL), down(VK_SHIFT));
@@ -659,22 +648,21 @@ impl Launcher {
         true
     }
 
-    /// Copies the selected text, or the calculator result if nothing is selected.
     fn copy(&mut self) {
         let text = if self.editor.has_selection() {
-            Some(self.editor.selected_text().to_string())
+            Some(self.editor.selected_text())
         } else {
             match self.results.get(self.selected) {
                 Some(ResultItem {
                     kind: Kind::Calc,
                     title,
                     ..
-                }) => Some(title.clone()),
+                }) => Some(title.as_str()),
                 _ => None,
             }
         };
         if let Some(text) = text {
-            let _ = system::set_clipboard(self.hwnd, &text);
+            let _ = system::set_clipboard(self.hwnd, text);
         }
     }
 
@@ -695,7 +683,8 @@ impl Launcher {
     }
 
     fn on_mouse_move(&mut self, x: i32, y: i32) {
-        // Ignore the synthetic move Windows sends when the window appears under the cursor.
+        // Windows sends a mouse move when the launcher appears under the cursor.
+        // Ignore it to keep the initial result selected.
         if self.last_mouse.replace((x, y)).is_none_or(|last| last == (x, y)) {
             return;
         }
@@ -713,8 +702,6 @@ impl Launcher {
             self.activate(false);
         }
     }
-
-    // ---- painting -----------------------------------------------------------------
 
     fn restart_caret(&mut self) {
         self.caret_visible = true;
@@ -746,11 +733,9 @@ impl Launcher {
             icons: &self.icons,
         };
         if let Err(e) = self.renderer.draw(self.hwnd, &frame) {
-            eprintln!("draw failed: {e}");
+            eprintln!("could not draw launcher: {e}");
         }
     }
-
-    // ---- tray -------------------------------------------------------------------
 
     fn on_tray_command(&mut self, cmd: u32) {
         match cmd {
@@ -762,18 +747,18 @@ impl Launcher {
             tray::CMD_SETTINGS => {
                 let path = Config::path();
                 let path = path.to_string_lossy();
-                // No app associated with .toml? Fall back to Notepad.
+                // Notepad can edit the config if Windows cannot open .toml files.
                 if launch::open(&path).is_err() {
                     let _ = launch::notepad(&path);
                 }
             }
             tray::CMD_AUTOSTART => {
                 if let Err(e) = system::set_autostart(!system::autostart_enabled()) {
-                    tray::notify(self.hwnd, "Couldn't change startup setting", &e.message(), true);
+                    tray::notify(self.hwnd, "Could not change Start with Windows", &e.message(), true);
                 }
             }
-            // Posted rather than destroying here: WM_DESTROY needs the launcher,
-            // which is borrowed until this handler returns.
+            // Defer destruction until this handler releases the launcher borrow.
+            // WM_DESTROY needs to borrow the launcher for shutdown.
             tray::CMD_QUIT => unsafe {
                 let _ = PostMessageW(Some(self.hwnd), WM_APP_QUIT, WPARAM(0), LPARAM(0));
             },
@@ -802,7 +787,7 @@ fn mouse_pos(lparam: LPARAM) -> (i32, i32) {
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
-        // Keep frame styles for DWM, but make the whole window client area.
+        // DWM needs the frame styles for acrylic. Make the full window client area.
         WM_NCCALCSIZE if wparam.0 != 0 => return LRESULT(0),
         WM_NCHITTEST => return LRESULT(HTCLIENT as isize),
         WM_HOTKEY => {
@@ -829,7 +814,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             with_launcher(|l| l.on_char(wparam.0 as u16));
             return LRESULT(0);
         }
-        // Swallow Alt+key combos instead of beeping.
+        // Suppress the Windows beep for Alt shortcuts handled by the launcher.
         WM_SYSCHAR => return LRESULT(0),
         WM_MOUSEMOVE => {
             let (x, y) = mouse_pos(lparam);
@@ -865,7 +850,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 with_launcher(Launcher::show);
             }
             WM_RBUTTONUP | WM_CONTEXTMENU => {
-                // The menu runs a modal loop, so don't hold the launcher borrow across it.
+                // Release the launcher borrow before the menu's modal loop handles messages.
                 let Some(hotkey) = with_launcher(|l| l.registered_hotkey.clone().unwrap_or_default()) else {
                     return LRESULT(0);
                 };
@@ -874,7 +859,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
             _ => {}
         },
-        // Alt+F4 hides instead of quitting; use the tray menu to quit.
+        // Keep Wisp running after Alt+F4 so the shortcut can reopen the launcher.
         WM_CLOSE => {
             with_launcher(Launcher::hide);
             return LRESULT(0);
@@ -884,7 +869,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             PostQuitMessage(0);
         },
         m if m != 0 && m == TASKBAR_CREATED.load(Ordering::Relaxed) => {
-            // Explorer restarted; put the tray icon back.
+            // Explorer removes tray icons when it restarts.
             with_launcher(|l| tray::add(l.hwnd, l.tray_icon, &l.tooltip()));
         }
         _ => {}

@@ -1,4 +1,4 @@
-//! Starting apps, URLs and commands through the shell.
+//! Opens apps and URLs and runs commands through the Windows shell.
 
 use windows::Win32::Foundation::ERROR_CANCELLED;
 use windows::Win32::System::Com::CoTaskMemFree;
@@ -8,7 +8,7 @@ use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use windows::core::{HSTRING, PCWSTR, Result, w};
 
-/// Launches an `AppsFolder` entry. Works for desktop and Store apps alike.
+/// Uses `AppsFolder` to open both desktop and Microsoft Store apps.
 pub fn app(id: &str, path: Option<&str>, admin: bool) -> Result<()> {
     if admin && let Some(path) = path {
         return execute(path, None, true);
@@ -55,8 +55,8 @@ pub fn reveal(path: &str) -> Result<()> {
     )
 }
 
-/// Absolute path of a Windows tool, so a same-named exe in the current
-/// directory can never be picked up instead.
+/// Uses an absolute path to avoid running a same-named executable in the
+/// current directory.
 fn system_tool(relative: &str) -> String {
     let mut buf = [0u16; 260];
     let len = unsafe { GetWindowsDirectoryW(Some(&mut buf)) } as usize;
@@ -83,7 +83,7 @@ fn execute(file: &str, params: Option<&str>, admin: bool) -> Result<()> {
     unsafe { ShellExecuteExW(&mut info) }
 }
 
-/// True for errors that just mean "the user said no" (e.g. a dismissed UAC prompt).
+/// Identifies user cancellation, including a dismissed UAC prompt.
 pub fn is_cancelled(error: &windows::core::Error) -> bool {
     error.code() == ERROR_CANCELLED.to_hresult()
 }

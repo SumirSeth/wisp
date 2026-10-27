@@ -1,4 +1,4 @@
-//! Notification-area icon, its menu, and balloon notifications.
+//! System tray icon, menu and notifications.
 
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::UI::Shell::*;
@@ -62,7 +62,7 @@ pub fn notify(hwnd: HWND, title: &str, message: &str, warning: bool) {
     }
 }
 
-/// Shows the context menu at the cursor and returns the chosen command (0 if none).
+/// Returns the selected command, or 0 if the user dismisses the tray menu.
 pub fn show_menu(hwnd: HWND, hotkey: &str, autostart: bool) -> u32 {
     unsafe {
         let Ok(menu) = CreatePopupMenu() else { return 0 };
@@ -72,7 +72,7 @@ pub fn show_menu(hwnd: HWND, hotkey: &str, autostart: bool) -> u32 {
         item(MF_STRING, CMD_OPEN, &format!("Open Wisp\t{hotkey}"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         item(MF_STRING, CMD_RESCAN, "Rescan apps");
-        item(MF_STRING, CMD_SETTINGS, "Edit settings");
+        item(MF_STRING, CMD_SETTINGS, "Edit config");
         item(
             if autostart { MF_STRING | MF_CHECKED } else { MF_STRING },
             CMD_AUTOSTART,
@@ -84,7 +84,7 @@ pub fn show_menu(hwnd: HWND, hotkey: &str, autostart: bool) -> u32 {
 
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
-        // Required so the menu closes when the user clicks elsewhere.
+        // Windows needs foreground ownership to close the menu on an outside click.
         let _ = SetForegroundWindow(hwnd);
         let cmd = TrackPopupMenu(
             menu,

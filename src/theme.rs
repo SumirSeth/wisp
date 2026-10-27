@@ -1,9 +1,9 @@
 use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 
 /// Brand color from `assets/icon.svg`.
-pub const BRAND: u32 = 0x0891B2;
+const BRAND: u32 = 0x0891B2;
 
-pub fn rgba(hex: u32, a: f32) -> D2D1_COLOR_F {
+fn rgba(hex: u32, a: f32) -> D2D1_COLOR_F {
     D2D1_COLOR_F {
         r: ((hex >> 16) & 0xFF) as f32 / 255.0,
         g: ((hex >> 8) & 0xFF) as f32 / 255.0,
@@ -12,7 +12,6 @@ pub fn rgba(hex: u32, a: f32) -> D2D1_COLOR_F {
     }
 }
 
-#[derive(Clone, Copy)]
 pub struct Palette {
     pub background: D2D1_COLOR_F,
     pub text: D2D1_COLOR_F,
@@ -27,7 +26,7 @@ pub struct Palette {
 }
 
 impl Palette {
-    /// `translucent` leaves the background see-through for the acrylic/mica backdrop.
+    /// A translucent fill lets the acrylic or mica backdrop show through.
     pub fn new(dark: bool, translucent: bool) -> Self {
         if dark {
             Self {

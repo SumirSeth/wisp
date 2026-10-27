@@ -1,4 +1,4 @@
-// Black-box latency measurement helpers: synthesized input + screen polling.
+// Measures launcher latency by sending keystrokes and polling the screen.
 using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -42,7 +42,6 @@ public static class Native
         SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
     }
 
-    /// Presses `vk` while holding `mods`.
     public static void Chord(ushort[] mods, ushort vk)
     {
         var seq = new System.Collections.Generic.List<INPUT>();
@@ -71,12 +70,11 @@ public static class Native
         return pid;
     }
 
-    /// A screen region polled for visible repaints. Changes nobody could see
-    /// (backdrop dithering of a level or two) are ignored, so translucent
-    /// windows aren't penalized for their shimmer.
+    /// Ignores changes below the thresholds so backdrop dithering does not
+    /// extend the measured latency.
     public sealed class Region
     {
-        const int MinChannelDelta = 24;      // summed over B, G, R
+        const int MinChannelDelta = 24;      // Total difference across blue, green and red.
         const double MinChangedFraction = 0.001;
 
         readonly int x, y, w, h;
@@ -101,10 +99,10 @@ public static class Native
             GetBitmapBits(bmp, into.Length, into);
         }
 
-        /// Resets the reference frame to what's on screen now.
         public void Reset() { Capture(prev); }
 
-        /// True if the screen visibly changed since the last call (or Reset).
+        /// Compares against the last detected change or Reset, so smaller
+        /// changes accumulate until they reach the thresholds.
         public bool Changed()
         {
             Capture(cur);
@@ -120,8 +118,9 @@ public static class Native
         }
     }
 
-    /// Runs `action`, then polls `region` until it has been unchanged for `quietMs`.
-    /// Returns [first change ms, last change ms, foreground-acquired ms] (-1 = never).
+    /// Times start before `action`. Returns milliseconds to
+    /// [first screen change, last screen change, keyboard focus].
+    /// A value of -1 means the event did not occur before polling stopped.
     public static double[] Measure(Action action, Region region, uint pid, int quietMs, int timeoutMs)
     {
         region.Reset();
@@ -142,7 +141,7 @@ public static class Native
         return new[] { first, lastChange, focus };
     }
 
-    /// Runs `action` and lists the times (ms) at which `region` changed, for debugging.
+    /// Returns screen change times in milliseconds after `action` starts.
     public static string Timeline(Action action, Region region, int durationMs)
     {
         var changes = new System.Collections.Generic.List<string>();

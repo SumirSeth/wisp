@@ -1,4 +1,4 @@
-//! Clipboard, autostart and theme lookups.
+//! Clipboard access, Start with Windows and Windows theme lookup.
 
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
 use windows::Win32::System::DataExchange::{
@@ -26,7 +26,7 @@ pub fn set_clipboard(hwnd: HWND, text: &str) -> Result<()> {
             }
             std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
             let _ = GlobalUnlock(mem);
-            // The clipboard owns the memory only if this succeeds.
+            // SetClipboardData transfers memory ownership only on success.
             if let Err(e) = SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(mem.0))) {
                 let _ = GlobalFree(Some(mem));
                 return Err(e);
@@ -48,8 +48,7 @@ pub fn get_clipboard(hwnd: HWND) -> Option<String> {
             if ptr.is_null() {
                 return None;
             }
-            // Clipboard contents come from other apps: never read past the block,
-            // even if the terminating NUL is missing.
+            // Other apps may omit the terminating NUL. Limit reads to the allocated block.
             let units = std::slice::from_raw_parts(ptr, GlobalSize(mem) / 2);
             let len = units.iter().position(|&u| u == 0).unwrap_or(units.len());
             let text = String::from_utf16_lossy(&units[..len]);

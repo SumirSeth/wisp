@@ -1,4 +1,4 @@
-// Release builds are GUI apps (no console window); debug builds keep the console for logs.
+// Keep a console for debug logs. Release builds run without a console.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
@@ -18,6 +18,6 @@ mod util;
 
 fn main() {
     if let Err(e) = app::run() {
-        util::error_box(&format!("Wisp failed to start:\n{}", e.message()));
+        util::error_box(&format!("Wisp could not start:\n{}", e.message()));
     }
 }

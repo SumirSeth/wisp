@@ -1,5 +1,5 @@
-//! Direct2D/DirectWrite drawing. Everything is laid out in DIPs; the render
-//! target's DPI handles scaling.
+//! Draws with Direct2D and DirectWrite in device-independent pixels (DIPs).
+//! The render target's DPI controls scaling.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -139,7 +139,7 @@ impl Renderer {
             self.target = Some(self.create_target(hwnd)?);
         }
         let target = self.target.as_mut().unwrap();
-        // EndDraw must follow BeginDraw even if drawing fails partway.
+        // Direct2D requires EndDraw after BeginDraw even if drawing fails.
         let rt = target.rt.clone();
         let result = unsafe {
             rt.BeginDraw();
@@ -161,8 +161,8 @@ impl Renderer {
             let mut rc = RECT::default();
             GetClientRect(hwnd, &mut rc)?;
             let props = D2D1_RENDER_TARGET_PROPERTIES {
-                // The window is small enough that CPU rasterization takes ~1ms,
-                // and skipping the GPU driver saves ~30 MB of private memory.
+                // At this window size, software rendering takes about 1 ms per frame.
+                // Avoiding the GPU driver saves about 30 MB of private memory.
                 r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
                 pixelFormat: D2D1_PIXEL_FORMAT {
                     format: DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -180,7 +180,7 @@ impl Renderer {
             };
             let rt = self.d2d.CreateHwndRenderTarget(&props, &hwnd_props)?;
             rt.SetDpi(self.dpi, self.dpi);
-            // ClearType needs an opaque background; we draw over a translucent one.
+            // Use grayscale text antialiasing because ClearType needs an opaque background.
             rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
             let white = D2D1_COLOR_F {
                 r: 1.0,
@@ -286,17 +286,15 @@ unsafe fn draw_frame(
     f: &Frame,
 ) -> Result<()> {
     unsafe {
-        let target = t.rt.clone();
-        let rt: &ID2D1RenderTarget = &target;
+        let rt: &ID2D1RenderTarget = &t.rt;
         let p = f.palette;
         let width = rt.GetSize().width;
-        let brush = &t.brush.clone();
-        let accent = &t.accent.clone();
+        let brush = &t.brush;
+        let accent = &t.accent;
         accent.SetColor(&p.accent);
 
         rt.Clear(Some(&p.background));
 
-        // Search box.
         let mid = INPUT_H / 2.0;
         brush.SetColor(&p.placeholder);
         draw_text(rt, "\u{E721}", &fm.search_glyph, rect(16.0, 0.0, 44.0, INPUT_H), brush);
@@ -354,7 +352,6 @@ unsafe fn draw_frame(
             rt.FillRectangle(&rect(caret_at, mid - 12.0, caret_at + 1.5, mid + 12.0), accent);
         }
 
-        // Results.
         if f.rows > 0 {
             brush.SetColor(&p.divider);
             rt.FillRectangle(&rect(0.0, INPUT_H, width, INPUT_H + 1.0), brush);
@@ -481,7 +478,7 @@ unsafe fn draw_frame(
     }
 }
 
-/// Uploads an icon to the GPU once and caches it for this render target.
+/// Caches Direct2D bitmaps per render target; a new target needs new bitmaps.
 unsafe fn bitmap(
     cache: &mut HashMap<String, ID2D1Bitmap>,
     rt: &ID2D1RenderTarget,

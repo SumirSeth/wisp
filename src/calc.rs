@@ -1,15 +1,13 @@
-//! A small calculator: `2 * (3 + 4)`, `sqrt(2)^2`, `2pi`, `10 % 3`, ...
+//! Evaluates calculator expressions such as `sqrt(2)^2` and `2pi + 1`.
 
 use std::f64::consts::{E, PI, TAU};
 
-/// Longest input considered, and deepest nesting allowed. Both keep a pasted
-/// wall of `-` or `(` from overflowing the stack.
+// Limit input length and recursion depth to prevent stack overflow on pasted input.
 const MAX_LEN: usize = 256;
 const MAX_DEPTH: usize = 64;
 
-/// Evaluates `input` if it looks like a math expression. Plain numbers and
-/// anything that doesn't fully parse return `None`, so app names like
-/// "7-Zip" never turn into calculator results.
+/// Rejects plain numbers and invalid expressions so app names such as
+/// "7-Zip" do not produce calculator results.
 pub fn evaluate(input: &str) -> Option<f64> {
     let s = input.trim();
     if s.len() > MAX_LEN {
@@ -42,8 +40,8 @@ pub fn evaluate(input: &str) -> Option<f64> {
     (parser.pos == parser.chars.len() && value.is_finite()).then_some(value)
 }
 
-/// Formats a result for display and copying: integers without a decimal
-/// point, and float noise like `0.30000000000000004` rounded away.
+/// Rounds floating-point artifacts such as `0.30000000000000004` for display
+/// and copying. Integers with an absolute value below 1e15 have no decimal point.
 pub fn format(value: f64) -> String {
     if value == 0.0 {
         return "0".into();
@@ -78,7 +76,7 @@ impl Parser {
         }
     }
 
-    /// Runs `f` one nesting level deeper, failing past `MAX_DEPTH`.
+    /// Counts recursive calls to stop parsing at `MAX_DEPTH`.
     fn nested(&mut self, f: impl FnOnce(&mut Self) -> Option<f64>) -> Option<f64> {
         if self.depth >= MAX_DEPTH {
             return None;
@@ -155,7 +153,7 @@ impl Parser {
         if c == '(' {
             self.pos += 1;
             let value = self.expr()?;
-            // Tolerate a missing `)` at the very end while the user is typing.
+            // Accept a missing final `)` so results appear while the user types.
             if !self.eat(')') && self.peek().is_some() {
                 return None;
             }
@@ -226,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn arithmetic() {
+    fn evaluates_arithmetic() {
         assert_eq!(calc("1 + 2 * 3").as_deref(), Some("7"));
         assert_eq!(calc("(1 + 2) * 3").as_deref(), Some("9"));
         assert_eq!(calc("10 / 4").as_deref(), Some("2.5"));
@@ -238,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn functions_and_constants() {
+    fn evaluates_functions_constants_and_incomplete_parentheses() {
         assert_eq!(calc("sqrt(16) + 1").as_deref(), Some("5"));
         assert_eq!(calc("2pi + 1").as_deref(), Some("7.28318530718"));
         assert_eq!(calc("3(4 + 1)").as_deref(), Some("15"));
@@ -256,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn deep_nesting_is_rejected_not_a_crash() {
+    fn rejects_excessive_input_length_and_nesting() {
         assert_eq!(calc(&format!("{}1", "-".repeat(200))), None);
         assert_eq!(calc(&format!("{}1{}", "(".repeat(100), ")".repeat(100))), None);
         assert_eq!(calc(&format!("{}1", "-".repeat(10_000))), None);

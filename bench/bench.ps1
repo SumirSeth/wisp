@@ -1,22 +1,22 @@
 ﻿<#
 .SYNOPSIS
-  Black-box benchmark: this launcher vs. PowerToys Run.
+  Compare Wisp and PowerToys Run latency, memory use, idle CPU time and disk size.
 
 .DESCRIPTION
-  Drives both launchers with real synthesized keystrokes and watches the screen
-  for repaints, so both are measured the same way, from the outside:
+  Send keystrokes and poll the screen to measure both launchers from outside
+  their processes:
 
-    open    hotkey pressed  -> window painted / animation settled
-    query   query typed     -> first results drawn / results settled
+    open    shortcut pressed -> launcher drawn / launcher settled
+    query   query typed      -> first results drawn / results settled
 
-  Plus memory, idle CPU and disk footprint. A still gradient window is shown
-  behind the launchers for the duration, so nothing changing on screen bleeds
-  through their translucent backdrops. Don't touch the keyboard or mouse while
-  it runs (about two minutes). Both launchers must already be running.
+  Both launchers must be running. The benchmark shows a static gradient window
+  behind them to prevent other screen changes from affecting their translucent
+  backdrops. Do not use the keyboard or mouse during the benchmark. It takes
+  about two minutes with the default 20 trials per launcher.
 
 .EXAMPLE
-  # Give the launcher a free hotkey first (PowerToys Run owns Alt+Space), e.g.
-  # hotkey = "Ctrl+Alt+F9" in %APPDATA%\<name>\config.toml, then:
+  # PowerToys Run uses Alt+Space. Set hotkey = "Ctrl+Alt+F9" in
+  # %APPDATA%\wisp\config.toml, then run:
   .\bench\bench.ps1 -Hotkey "Ctrl+Alt+F9"
 #>
 param(
@@ -55,7 +55,7 @@ function Bench-Launcher([string]$name, [string]$processName, [string[]]$hotkey) 
     $proc = Get-Process $processName -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $proc) { throw "$name ($processName) is not running" }
 
-    # Warm up once and find where the window appears.
+    # Open the launcher once before measuring to exclude first-open costs.
     Chord $hotkey
     Start-Sleep -Milliseconds 700
     if ([Native]::ForegroundPid() -ne $proc.Id) { throw "$name did not open on $($hotkey -join '+')" }
@@ -64,7 +64,7 @@ function Bench-Launcher([string]$name, [string]$processName, [string[]]$hotkey) 
     Chord @("Esc")
     Start-Sleep -Milliseconds 500
 
-    # Watch the results area below the search box (the blinking caret stays out of it).
+    # Exclude the search box so the blinking caret does not affect measurements.
     $region = New-Object Native+Region($rect.Left, ($rect.Top + 70), ($rect.Right - $rect.Left), 400)
     $open = @(); $openSettled = @(); $focus = @(); $query = @(); $querySettled = @()
 
@@ -82,7 +82,7 @@ function Bench-Launcher([string]$name, [string]$processName, [string[]]$hotkey) 
     }
     Write-Host " $name done"
 
-    # Idle cost, measured while hidden.
+    # Hide the launcher to exclude caret repaints from idle CPU time.
     $proc.Refresh(); $cpu0 = $proc.TotalProcessorTime
     Start-Sleep -Seconds 10
     $proc.Refresh(); $idleCpuMs = ($proc.TotalProcessorTime - $cpu0).TotalMilliseconds
@@ -107,8 +107,6 @@ function Size-MB([string]$path) {
     $bytes = ($files | Measure-Object Length -Sum).Sum
     [math]::Round($bytes / 1MB, 1)
 }
-
-# ---------------------------------------------------------------------------
 
 $backdrop = Start-Process powershell -PassThru -WindowStyle Hidden -ArgumentList @(
     "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "backdrop.ps1"))
@@ -140,20 +138,21 @@ $md = @"
 # Benchmark results
 
 $(Get-Date -Format "yyyy-MM-dd") · $cpu · $ram GB RAM · $($os.Caption) (build $($os.BuildNumber)) · $hz Hz display
-PowerToys $ptVersion with default Run settings (``search_input_delay`` $($ptSettings.properties.search_input_delay) ms, ``search_input_delay_fast`` $($ptSettings.properties.search_input_delay_fast) ms) · $Trials trials each
+PowerToys $ptVersion with default Run config (``search_input_delay`` $($ptSettings.properties.search_input_delay) ms, ``search_input_delay_fast`` $($ptSettings.properties.search_input_delay_fast) ms) · $Trials trials each
 
-Latencies are **median / p90** in milliseconds, measured from outside the process by
-synthesizing keystrokes and polling the screen for repaints, so they include
-compositor latency (one frame at $hz Hz is $([math]::Round(1000 / $hz, 1)) ms) and apply equally to both.
-"Settled" is the last visible change, including any backdrop animation; changes
-too faint to see (a few levels of 255) are ignored. Both run over the same still
-backdrop window.
+Times are **median / p90** in milliseconds. The benchmark sends keystrokes and
+polls the screen to measure both launchers from outside their processes.
+Times include compositor latency (one frame at $hz Hz takes $([math]::Round(1000 / $hz, 1)) ms).
+"Settled" means the time of the last detected screen change, including backdrop
+animation. A change must affect more than 0.1% of the measured pixels.
+Each changed pixel must have a total difference of at least 24 across its red,
+green and blue channels. Both launchers run over the same static backdrop window.
 
 | | $Process | PowerToys Run |
 | --- | --- | --- |
-$(Row "Hotkey → window painted" (Ms $ours.Open) (Ms $pt.Open))
-$(Row "Hotkey → window settled" (Ms $ours.OpenSettled) (Ms $pt.OpenSettled))
-$(Row "Hotkey → keyboard focus" (Ms $ours.Focus) (Ms $pt.Focus))
+$(Row "Shortcut → launcher drawn" (Ms $ours.Open) (Ms $pt.Open))
+$(Row "Shortcut → launcher settled" (Ms $ours.OpenSettled) (Ms $pt.OpenSettled))
+$(Row "Shortcut → keyboard focus" (Ms $ours.Focus) (Ms $pt.Focus))
 $(Row "Typing → first results" (Ms $ours.Query) (Ms $pt.Query))
 $(Row "Typing → results settled" (Ms $ours.QuerySettled) (Ms $pt.QuerySettled))
 $(Row "Private memory" $ours.PrivateMB $pt.PrivateMB "MB")
@@ -162,11 +161,11 @@ $(Row "Threads" $ours.Threads $pt.Threads "")
 $(Row "CPU time while idle (10 s)" $ours.IdleCpuMs $pt.IdleCpuMs "ms")
 $(Row "On disk" (Size-MB $oursExe) (Size-MB $ptDir) "MB")
 
-PowerToys Run also needs the PowerToys host process running
-($([math]::Round($ptHost.PrivateMemorySize64 / 1MB, 1)) MB private), not counted above. Its disk figure is the
-whole PowerToys install, which it can't be installed without.
+PowerToys Run also requires the PowerToys host process
+($([math]::Round($ptHost.PrivateMemorySize64 / 1MB, 1)) MB of private memory). The table excludes the host process's memory.
+The disk size covers the required PowerToys install.
 
-Reproduce with ``bench/bench.ps1``.
+Run ``bench/bench.ps1`` to repeat the measurements.
 "@
 
 $md | Set-Content -Encoding utf8 $Out
