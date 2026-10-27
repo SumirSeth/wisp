@@ -1,5 +1,27 @@
 ﻿# Benchmark results
 
+## Wisp 0.2.0 (whole-word queries, Wisp only)
+
+2026-10-28 · same machine as below · 30 trials · queries: notepad, paint, terminal, settings, calculator.
+Typing results include file search, which 0.2.0 adds. PowerToys Run was turned off, so it was not measured.
+
+| wisp | median / p90 |
+| --- | --- |
+| Shortcut → launcher drawn | 9 / 15 ms |
+| Shortcut → keyboard focus | 12 / 20 ms |
+| Typing → first results | 9 / 18 ms |
+| Typing → results settled | 125 / 207 ms |
+| Private memory | 19.4 MB |
+| Working set | 71.8 MB |
+| Threads | 17 |
+| CPU time while idle (10 s) | 0 ms |
+
+## Wisp 0.1.0 and PowerToys Run (one-letter queries)
+
+A bug in bench.ps1 joined the query list into one string, so each typing
+trial below typed a single letter instead of a word. Both launchers received
+the same input. bench.ps1 now types whole words.
+
 2026-10-27 · 12th Gen Intel(R) Core(TM) i5-12500H · 16 GB RAM · Microsoft Windows 11 Home Single Language (build 26300) · 144 Hz display
 PowerToys 0.94.1.0 with default Run config (`search_input_delay` 150 ms, `search_input_delay_fast` 50 ms) · 30 trials each
 

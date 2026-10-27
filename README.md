@@ -24,11 +24,11 @@ Press <kbd>Alt</kbd>+<kbd>Space</kbd>, type an app name, then press <kbd>Enter</
 
 ## Benchmarks
 
-Wisp and PowerToys Run 0.94 ran on the same machine (i5-12500H, 144 Hz display), with 30 trials each. PowerToys Run used its default config. Times are median / p90:
+Wisp 0.1.0 and PowerToys Run 0.94 ran on the same machine (i5-12500H, 144 Hz display), with 30 trials each. PowerToys Run used its default config. Each typing trial typed one letter. Times are median / p90:
 
 | | **Wisp** | PowerToys Run | |
 | --- | --- | --- | --- |
-| Typing → results settled | **21 / 21 ms** | 333 / 356 ms | **~16× faster** |
+| Typing one letter → results settled | **21 / 21 ms** | 333 / 356 ms | **~16× faster** |
 | Shortcut → launcher drawn | **11 / 23 ms** | 29 / 35 ms | **~2.5× faster** |
 | Memory (private bytes) | **18 MB** | 298 MB + 13 MB PowerToys host | **~16× less memory** |
 | CPU time while idle (10 s) | **0 ms** | 63 ms | |
@@ -36,6 +36,8 @@ Wisp and PowerToys Run 0.94 ran on the same machine (i5-12500H, 144 Hz display),
 | Threads | **14** | 47 | |
 
 [`bench/bench.ps1`](bench/bench.ps1) measures both launchers from outside their processes. It sends keystrokes and polls the screen for visible changes. The times include search, rendering and compositor time. Both launchers run over the same static backdrop window. The benchmark ignores changes below its visibility threshold. See [`bench/RESULTS.md`](bench/RESULTS.md) for the full results, or run the script on your machine.
+
+Wisp 0.2.0 adds file search. Typing a whole app name, such as `notepad` or `terminal`, shows the app results in **9 / 18 ms**. File results follow, and the results settle in **125 / 207 ms**. Wisp 0.2.0 uses 19 MB of private memory and 0 ms of CPU time while idle. These measurements are Wisp-only: PowerToys Run was not measured with whole words.
 
 > [!NOTE]
 > With the default acrylic backdrop, Wisp's launcher and results appear in ~11 ms. Windows then fades in the blur over ~0.25 s, as it does for the Start menu. PowerToys Run's backdrop settles in ~42 ms. Set `backdrop = "solid"` to remove the fade-in. The launcher then draws fully in ~25 ms.
