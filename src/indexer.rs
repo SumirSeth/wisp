@@ -227,12 +227,13 @@ unsafe fn bitmap_pixels(bitmap: HBITMAP) -> Option<IconPixels> {
             return None;
         }
 
-        if bgra.chunks_exact(4).all(|p| p[3] == 0) {
+        let (pixels, _) = bgra.as_chunks_mut::<4>();
+        if pixels.iter().all(|p| p[3] == 0) {
             // Icons without an alpha channel would be invisible unless made opaque.
-            bgra.chunks_exact_mut(4).for_each(|p| p[3] = 255);
-        } else if bgra.chunks_exact(4).any(|p| p[0] > p[3] || p[1] > p[3] || p[2] > p[3]) {
+            pixels.iter_mut().for_each(|p| p[3] = 255);
+        } else if pixels.iter().any(|p| p[0] > p[3] || p[1] > p[3] || p[2] > p[3]) {
             // Direct2D needs premultiplied alpha for these icons.
-            for p in bgra.chunks_exact_mut(4) {
+            for p in pixels.iter_mut() {
                 let a = p[3] as u32;
                 for c in &mut p[..3] {
                     *c = ((*c as u32 * a + 127) / 255) as u8;

@@ -1,0 +1,5 @@
+# Pinned so local builds and CI run the same compiler and Clippy lints.
+# Raise the version on purpose and fix any new lints in the same commit.
+[toolchain]
+channel = "1.99"
+components = ["clippy", "rustfmt"]

@@ -77,7 +77,7 @@ impl Searcher {
                     .map(|app| (history.boost(&app.id, now), app))
                     .filter(|(boost, _)| *boost > 0)
                     .collect();
-                recent.sort_by(|a, b| b.0.cmp(&a.0));
+                recent.sort_by_key(|&(boost, _)| std::cmp::Reverse(boost));
                 results.extend(
                     recent
                         .into_iter()
