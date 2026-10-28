@@ -31,7 +31,7 @@ impl Palette {
         if dark {
             Self {
                 background: if translucent {
-                    rgba(0x1C1C1C, 0.55)
+                    rgba(0x1C1C1C, 0.3)
                 } else {
                     rgba(0x202020, 1.0)
                 },
@@ -48,7 +48,7 @@ impl Palette {
         } else {
             Self {
                 background: if translucent {
-                    rgba(0xF3F3F3, 0.6)
+                    rgba(0xF3F3F3, 0.4)
                 } else {
                     rgba(0xF9F9F9, 1.0)
                 },

@@ -61,8 +61,29 @@ fn launcher_path(settings_exe: &Path) -> Result<PathBuf, String> {
         .ok_or_else(|| "Cannot find the Wisp folder.".into())
 }
 
-pub fn launcher_running() -> bool {
-    unsafe { FindWindowW(w!("Wisp.Launcher"), None).is_ok() }
+/// Colors the Windows title bar of this app's window to match the page.
+/// `background` and `text` are 0xRRGGBB.
+pub fn style_title_bar(title: &str, dark: bool, background: u32, text: u32) {
+    use windows::Win32::Graphics::Dwm::*;
+    let bgr = |rgb: u32| ((rgb & 0xff) << 16) | (rgb & 0xff00) | ((rgb >> 16) & 0xff);
+    let title = wide(title);
+    unsafe {
+        let Ok(hwnd) = FindWindowW(None, PCWSTR(title.as_ptr())) else {
+            return;
+        };
+        let mut pid = 0;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid != std::process::id() {
+            return;
+        }
+        let set = |attribute: DWMWINDOWATTRIBUTE, value: u32| {
+            let _ = DwmSetWindowAttribute(hwnd, attribute, (&raw const value).cast(), size_of::<u32>() as u32);
+        };
+        set(DWMWA_USE_IMMERSIVE_DARK_MODE, dark as u32);
+        set(DWMWA_CAPTION_COLOR, bgr(background));
+        set(DWMWA_BORDER_COLOR, bgr(background));
+        set(DWMWA_TEXT_COLOR, bgr(text));
+    }
 }
 
 pub fn notify_launcher() {

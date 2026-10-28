@@ -1,4 +1,5 @@
-//! Wisp's colors, taken from the app icon: a cyan glow on night blue.
+//! Pure black and paper white. Wisp's cyan marks only focus, selection and
+//! switches that are on.
 
 use gpui_kit::component::theme::Theme;
 use gpui_kit::{App, Hsla, rgb, rgba};
@@ -6,15 +7,14 @@ use gpui_kit::{App, Hsla, rgb, rgba};
 #[derive(Clone, Copy)]
 pub struct Palette {
     pub bg: Hsla,
-    /// Module cards.
+    /// Groups of settings.
     pub surface: Hsla,
-    /// Controls inside a module, such as tiles and keycaps.
+    /// Hovered and selected rows.
     pub raised: Hsla,
     pub border: Hsla,
     pub fg: Hsla,
     pub muted: Hsla,
     pub accent: Hsla,
-    /// Accent at low opacity, for selected tiles and icon badges.
     pub accent_soft: Hsla,
     pub accent_fg: Hsla,
     pub warn: Hsla,
@@ -23,33 +23,33 @@ pub struct Palette {
 
 fn dark() -> Palette {
     Palette {
-        bg: rgb(0x080c17).into(),
-        surface: rgb(0x0f1526).into(),
-        raised: rgb(0x161e33).into(),
-        border: rgb(0x1f2a44).into(),
-        fg: rgb(0xe6ecf7).into(),
-        muted: rgb(0x8994ad).into(),
-        accent: rgb(0x5ce1f0).into(),
-        accent_soft: rgba(0x5ce1f01f).into(),
-        accent_fg: rgb(0x04121a).into(),
-        warn: rgb(0xf5c46b).into(),
-        danger: rgb(0xff7a85).into(),
+        bg: rgb(0x000000).into(),
+        surface: rgb(0x0e0e0e).into(),
+        raised: rgb(0x1a1a1a).into(),
+        border: rgb(0x232323).into(),
+        fg: rgb(0xf5f5f5).into(),
+        muted: rgb(0x8f8f8f).into(),
+        accent: rgb(0x22d3ee).into(),
+        accent_soft: rgba(0x22d3ee26).into(),
+        accent_fg: rgb(0x00242c).into(),
+        warn: rgb(0xf2c94c).into(),
+        danger: rgb(0xff6b6b).into(),
     }
 }
 
 fn light() -> Palette {
     Palette {
-        bg: rgb(0xeef2f8).into(),
+        bg: rgb(0xfaf9f6).into(),
         surface: rgb(0xffffff).into(),
-        raised: rgb(0xf3f6fb).into(),
-        border: rgb(0xdbe2ed).into(),
-        fg: rgb(0x0e1628).into(),
-        muted: rgb(0x5b6880).into(),
-        accent: rgb(0x0b93a8).into(),
-        accent_soft: rgba(0x0b93a81a).into(),
+        raised: rgb(0xf0efeb).into(),
+        border: rgb(0xe6e4de).into(),
+        fg: rgb(0x111111).into(),
+        muted: rgb(0x6b6a66).into(),
+        accent: rgb(0x0891b2).into(),
+        accent_soft: rgba(0x0891b21f).into(),
         accent_fg: rgb(0xffffff).into(),
-        warn: rgb(0xa86a00).into(),
-        danger: rgb(0xc8323f).into(),
+        warn: rgb(0x9a6700).into(),
+        danger: rgb(0xc42b1c).into(),
     }
 }
 
@@ -63,7 +63,7 @@ impl Palette {
     }
 }
 
-/// Recolors the component library so inputs, buttons and switches match Wisp.
+/// Recolors the component library so inputs, buttons and switches match.
 pub fn apply(cx: &mut App) {
     let p = Palette::current(cx);
     Theme::update(cx, |t| {
@@ -72,7 +72,7 @@ pub fn apply(cx: &mut App) {
         t.border = p.border;
         t.input = p.border;
         t.ring = p.accent;
-        t.caret = p.accent;
+        t.caret = p.fg;
         t.selection = p.accent_soft;
         t.muted = p.raised;
         t.muted_foreground = p.muted;
@@ -81,7 +81,7 @@ pub fn apply(cx: &mut App) {
         t.popover = p.surface;
         t.popover_foreground = p.fg;
         t.list_hover = p.raised;
-        t.list_active = p.accent_soft;
+        t.list_active = p.raised;
         t.primary = p.accent;
         t.primary_hover = p.accent;
         t.primary_active = p.accent;
@@ -99,10 +99,15 @@ pub fn apply(cx: &mut App) {
         t.button_primary_active = p.accent;
         t.button_primary_foreground = p.accent_fg;
         t.switch = p.border;
-        t.switch_thumb = p.fg;
-        t.title_bar = p.bg;
-        t.title_bar_border = p.border;
-        t.window_border = p.border;
+        t.slider_bar = p.accent;
+        t.slider_thumb = p.fg;
+        t.sidebar = p.bg;
+        t.sidebar_foreground = p.fg;
+        t.sidebar_border = p.bg;
+        t.sidebar_accent = p.surface;
+        t.sidebar_accent_foreground = p.fg;
+        t.sidebar_primary = p.accent;
+        t.sidebar_primary_foreground = p.accent_fg;
         t.danger = p.danger;
         t.warning = p.warn;
     });
