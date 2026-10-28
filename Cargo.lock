@@ -7890,7 +7890,7 @@ dependencies = [
 
 [[package]]
 name = "wisp"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "nucleo-matcher",
  "serde",
@@ -7902,7 +7902,7 @@ dependencies = [
 
 [[package]]
 name = "wisp-settings"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "gpui-kit",
  "serde_json",

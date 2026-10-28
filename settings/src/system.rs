@@ -61,6 +61,10 @@ fn launcher_path(settings_exe: &Path) -> Result<PathBuf, String> {
         .ok_or_else(|| "Cannot find the Wisp folder.".into())
 }
 
+pub fn launcher_running() -> bool {
+    unsafe { FindWindowW(w!("Wisp.Launcher"), None).is_ok() }
+}
+
 pub fn notify_launcher() {
     unsafe {
         if let Ok(hwnd) = FindWindowW(w!("Wisp.Launcher"), None) {

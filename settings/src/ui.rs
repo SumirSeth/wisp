@@ -1,10 +1,12 @@
+//! The settings window: a grid of modules, one per area of the launcher.
+//! `--welcome` shows the one-time onboarding instead.
+
+use std::sync::Arc;
+
+use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
-    alert::Alert,
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
-    select::{SearchableVec, Select, SelectEvent, SelectState},
-    sidebar::{Sidebar, SidebarMenu, SidebarMenuItem},
-    slider::{Slider, SliderEvent, SliderState},
     switch::Switch,
 };
 use gpui_kit::{component::*, prelude::*, *};
@@ -12,49 +14,42 @@ use toml_edit::{Array, Value};
 
 use crate::{
     config::{self, Config, Store},
-    hotkey, system,
+    hotkey,
+    palette::{self, Palette},
+    system,
 };
 
-const THEMES: [&str; 3] = ["system", "dark", "light"];
-const BACKDROPS: [&str; 3] = ["acrylic", "mica", "solid"];
-type Choices = SelectState<SearchableVec<&'static str>>;
+const ICON_SVG: &[u8] = include_bytes!("../../assets/icon.svg");
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Page {
-    Welcome,
-    General,
-    Appearance,
-    Search,
-    About,
+const THEMES: [Choice; 3] = [
+    Choice::new("system", "System", "Like Windows"),
+    Choice::new("dark", "Dark", "Night blue"),
+    Choice::new("light", "Light", "Paper white"),
+];
+const BACKDROPS: [Choice; 3] = [
+    Choice::new("acrylic", "Acrylic", "Blurred, fades in"),
+    Choice::new("mica", "Mica", "Tinted, fades in"),
+    Choice::new("solid", "Solid", "Instant"),
+];
+const SEARCH_ENGINES: [(&str, &str); 5] = [
+    ("Google", "https://www.google.com/search?q={query}"),
+    ("DuckDuckGo", "https://duckduckgo.com/?q={query}"),
+    ("Bing", "https://www.bing.com/search?q={query}"),
+    ("Brave", "https://search.brave.com/search?q={query}"),
+    ("Kagi", "https://kagi.com/search?q={query}"),
+];
+const ONBOARDING_STEPS: usize = 3;
+
+#[derive(Clone, Copy)]
+struct Choice {
+    value: &'static str,
+    label: &'static str,
+    note: &'static str,
 }
 
-impl Page {
-    const ALL: [Self; 5] = [
-        Self::Welcome,
-        Self::General,
-        Self::Appearance,
-        Self::Search,
-        Self::About,
-    ];
-
-    fn title(self) -> &'static str {
-        match self {
-            Self::Welcome => "Welcome",
-            Self::General => "General",
-            Self::Appearance => "Appearance",
-            Self::Search => "Search",
-            Self::About => "About",
-        }
-    }
-
-    fn icon(self) -> IconName {
-        match self {
-            Self::Welcome => IconName::Star,
-            Self::General => IconName::Settings,
-            Self::Appearance => IconName::Palette,
-            Self::Search => IconName::Search,
-            Self::About => IconName::Info,
-        }
+impl Choice {
+    const fn new(value: &'static str, label: &'static str, note: &'static str) -> Self {
+        Self { value, label, note }
     }
 }
 
@@ -65,18 +60,18 @@ pub struct Settings {
     shortcut_error: Option<String>,
     url_error: Option<String>,
     folder_error: Option<String>,
-    page: Page,
-    step: usize,
+    /// `Some(step)` while the one-time onboarding is showing.
+    onboarding: Option<usize>,
     shortcut: Entity<InputState>,
     url: Entity<InputState>,
     folder: Entity<InputState>,
-    theme: Entity<Choices>,
-    backdrop: Entity<Choices>,
-    results: Entity<SliderState>,
     autostart: bool,
     powertoys: Result<bool, String>,
+    launcher_running: bool,
     recording: bool,
+    typing_shortcut: bool,
     focus: FocusHandle,
+    icon: Arc<Image>,
 }
 
 impl Settings {
@@ -98,36 +93,7 @@ impl Settings {
         };
         let shortcut = cx.new(|cx| InputState::new(window, cx).default_value(config.hotkey.clone()));
         let url = cx.new(|cx| InputState::new(window, cx).default_value(config.search_url.clone()));
-        let folder = cx.new(|cx| InputState::new(window, cx).placeholder("Folder name"));
-        let theme = cx.new(|cx| {
-            SelectState::new(
-                SearchableVec::new(THEMES.to_vec()),
-                THEMES
-                    .iter()
-                    .position(|value| *value == config.theme)
-                    .map(IndexPath::new),
-                window,
-                cx,
-            )
-        });
-        let backdrop = cx.new(|cx| {
-            SelectState::new(
-                SearchableVec::new(BACKDROPS.to_vec()),
-                BACKDROPS
-                    .iter()
-                    .position(|value| *value == config.backdrop)
-                    .map(IndexPath::new),
-                window,
-                cx,
-            )
-        });
-        let results = cx.new(|_| {
-            SliderState::new()
-                .min(1.)
-                .max(20.)
-                .step(1.)
-                .default_value(config.max_results as f32)
-        });
+        let folder = cx.new(|cx| InputState::new(window, cx).placeholder("Add a folder name, such as node_modules"));
         let focus = cx.focus_handle();
 
         cx.subscribe_in(&shortcut, window, |this, input, event, window, cx| {
@@ -135,8 +101,11 @@ impl Settings {
                 let value = input.read(cx).value().to_string();
                 this.shortcut_error = hotkey::parse(&value).err();
                 cx.notify();
-            } else if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
-                this.commit_shortcut(window, cx);
+            } else if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. })
+                && this.commit_shortcut(window, cx)
+            {
+                this.typing_shortcut = false;
+                cx.notify();
             }
         })
         .detach();
@@ -157,27 +126,6 @@ impl Settings {
             }
         })
         .detach();
-        cx.subscribe_in(&theme, window, |this, _, event, window, cx| {
-            if let SelectEvent::Confirm(Some(value)) = event {
-                this.save("theme", (*value).into(), window, cx);
-            }
-        })
-        .detach();
-        cx.subscribe_in(&backdrop, window, |this, _, event, window, cx| {
-            if let SelectEvent::Confirm(Some(value)) = event {
-                this.save("backdrop", (*value).into(), window, cx);
-            }
-        })
-        .detach();
-        cx.subscribe_in(&results, window, |this, _, event, window, cx| {
-            if let SliderEvent::Change(value) = event {
-                let value = (value.start().round() as i64).clamp(1, 20);
-                if value != this.config.max_results {
-                    this.save("max_results", value.into(), window, cx);
-                }
-            }
-        })
-        .detach();
         cx.observe_window_appearance(window, |this, window, cx| this.apply_theme(window, cx))
             .detach();
         cx.on_blur(&focus, window, |this, _, cx| {
@@ -193,18 +141,17 @@ impl Settings {
             config,
             error,
             folder_error: None,
-            page: if welcome { Page::Welcome } else { Page::General },
-            step: 0,
+            onboarding: welcome.then_some(0),
             shortcut,
             url,
             folder,
-            theme,
-            backdrop,
-            results,
             autostart: system::autostart_enabled(),
             powertoys: system::powertoys_run_enabled(),
+            launcher_running: system::launcher_running(),
             recording: false,
+            typing_shortcut: false,
             focus,
+            icon: Arc::new(Image::from_bytes(ImageFormat::Svg, ICON_SVG.to_vec())),
         };
         this.apply_theme(window, cx);
         this
@@ -216,6 +163,7 @@ impl Settings {
             "light" => Theme::change(ThemeMode::Light, Some(window), cx),
             _ => Theme::sync_system_appearance(Some(window), cx),
         }
+        palette::apply(cx);
     }
 
     fn save(&mut self, key: &str, value: Value, window: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -253,34 +201,10 @@ impl Settings {
                 self.error = None;
                 self.shortcut_error = hotkey::parse(&self.config.hotkey).err();
                 self.url_error = config::validate_url(&self.config.search_url).err();
+                let (hotkey, url) = (self.config.hotkey.clone(), self.config.search_url.clone());
                 self.shortcut
-                    .update(cx, |input, cx| input.set_value(self.config.hotkey.clone(), window, cx));
-                self.url.update(cx, |input, cx| {
-                    input.set_value(self.config.search_url.clone(), window, cx)
-                });
-                self.theme.update(cx, |state, cx| {
-                    state.set_selected_index(
-                        THEMES
-                            .iter()
-                            .position(|value| *value == self.config.theme)
-                            .map(IndexPath::new),
-                        window,
-                        cx,
-                    )
-                });
-                self.backdrop.update(cx, |state, cx| {
-                    state.set_selected_index(
-                        BACKDROPS
-                            .iter()
-                            .position(|value| *value == self.config.backdrop)
-                            .map(IndexPath::new),
-                        window,
-                        cx,
-                    )
-                });
-                self.results.update(cx, |state, cx| {
-                    state.set_value(self.config.max_results as f32, window, cx)
-                });
+                    .update(cx, |input, cx| input.set_value(hotkey, window, cx));
+                self.url.update(cx, |input, cx| input.set_value(url, window, cx));
                 self.apply_theme(window, cx);
             }
             Err(error) => self.error = Some(error),
@@ -297,18 +221,12 @@ impl Settings {
         let key = &event.keystroke;
         if key.key == "escape" && !key.modifiers.modified() {
             self.recording = false;
-            self.shortcut_error = hotkey::parse(&self.shortcut.read(cx).value()).err();
+            self.shortcut_error = hotkey::parse(&self.config.hotkey).err();
             cx.notify();
             return;
         }
-        let modifiers = key.modifiers;
-        match hotkey::recorded(
-            &key.key,
-            modifiers.control,
-            modifiers.alt,
-            modifiers.shift,
-            modifiers.platform,
-        ) {
+        let m = key.modifiers;
+        match hotkey::recorded(&key.key, m.control, m.alt, m.shift, m.platform) {
             Ok(value) => {
                 self.recording = false;
                 self.shortcut_error = None;
@@ -325,6 +243,7 @@ impl Settings {
 
     fn start_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.recording = true;
+        self.typing_shortcut = false;
         self.shortcut_error = None;
         self.focus.focus(window, cx);
         cx.notify();
@@ -394,414 +313,611 @@ impl Settings {
         self.save("file_search_exclude", Value::Array(array), window, cx)
     }
 
-    fn shortcut_control(&self, cx: &mut Context<Self>) -> Div {
-        v_flex()
-            .gap_2()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(Input::new(&self.shortcut).aria_label("Shortcut").flex_1())
-                    .child(
-                        Button::new("record")
-                            .label(if self.recording {
-                                "Press a shortcut…"
-                            } else {
-                                "Record shortcut"
-                            })
-                            .on_click(cx.listener(|this, _, window, cx| this.start_recording(window, cx))),
-                    ),
-            )
-            .child(hint(
-                "Record a shortcut, or type one and press Enter. Press Esc to cancel recording.",
-                cx,
-            ))
-            .children(self.shortcut_error.as_ref().map(|error| field_error(error, cx)))
+    fn set_search_url(&mut self, url: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.save("search_url", url.into(), window, cx) {
+            self.url_error = None;
+            self.url.update(cx, |input, cx| input.set_value(url, window, cx));
+        }
     }
 
-    fn autostart_control(&self, cx: &mut Context<Self>) -> Div {
-        row(
-            "Start with Windows",
-            "Open Wisp when you sign in.",
-            Switch::new("autostart")
-                .checked(self.autostart)
-                .accessibility_label("Start with Windows")
-                .on_change(cx.listener(|this, enabled, _, cx| this.set_autostart(*enabled, cx))),
-            cx,
+    // Modules.
+
+    fn shortcut_module(&self, p: Palette, cx: &mut Context<Self>) -> Div {
+        let keys = h_flex()
+            .id("keycaps")
+            .gap_2()
+            .p_3()
+            .rounded_lg()
+            .border_1()
+            .border_color(if self.recording { p.accent } else { p.border })
+            .bg(if self.recording { p.accent_soft } else { p.raised })
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _, window, cx| this.start_recording(window, cx)))
+            .when(self.recording, |row| {
+                row.child(div().text_color(p.accent).child("Press the new shortcut…"))
+            })
+            .when(!self.recording, |row| {
+                row.children(self.config.hotkey.split('+').map(|key| keycap(key.trim(), p)))
+            });
+        module(Lucide::Keyboard, "Shortcut", p)
+            .child(hint(
+                "Shows or hides the launcher. Click the keys to record a new shortcut.",
+                p,
+            ))
+            .child(
+                h_flex().gap_3().items_center().child(keys).child(div().flex_1()).child(
+                    Button::new("type-shortcut")
+                        .ghost()
+                        .small()
+                        .label(if self.typing_shortcut {
+                            "Cancel"
+                        } else {
+                            "Type it instead"
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.typing_shortcut = !this.typing_shortcut;
+                            this.recording = false;
+                            cx.notify();
+                        })),
+                ),
+            )
+            .when(self.typing_shortcut, |m| {
+                m.child(Input::new(&self.shortcut).aria_label("Shortcut"))
+                    .child(hint("For example Ctrl+Shift+Space. Press Enter to save.", p))
+            })
+            .children(self.shortcut_error.as_ref().map(|e| error_text(e, p)))
+            .children(self.conflict_warning(p))
+    }
+
+    fn conflict_warning(&self, p: Palette) -> Option<Div> {
+        let enabled = self.powertoys.as_ref().copied().unwrap_or(false);
+        system::has_shortcut_conflict(&self.config.hotkey, enabled).then(|| {
+            notice(
+                Lucide::TriangleAlert,
+                "PowerToys Run is on and also uses Alt+Space. Turn it off in PowerToys Settings, or pick another shortcut.",
+                p.warn,
+                p,
+            )
+        })
+    }
+
+    fn theme_module(&self, p: Palette, cx: &mut Context<Self>) -> Div {
+        module(Lucide::SunMoon, "Theme", p).child(self.tiles("theme", &THEMES, &self.config.theme, p, cx))
+    }
+
+    fn backdrop_module(&self, p: Palette, cx: &mut Context<Self>) -> Div {
+        module(Lucide::Layers, "Backdrop", p).child(self.tiles("backdrop", &BACKDROPS, &self.config.backdrop, p, cx))
+    }
+
+    fn tiles(&self, key: &'static str, choices: &[Choice], current: &str, p: Palette, cx: &mut Context<Self>) -> Div {
+        h_flex().gap_2().items_stretch().children(choices.iter().map(|choice| {
+            let selected = choice.value == current;
+            let value = choice.value;
+            v_flex()
+                .id(SharedString::from(format!("{key}-{value}")))
+                .flex_1()
+                .min_w_0()
+                .gap_1()
+                .p_3()
+                .rounded_lg()
+                .border_1()
+                .border_color(if selected { p.accent } else { p.border })
+                .bg(if selected { p.accent_soft } else { p.raised })
+                .cursor_pointer()
+                .hover(|s| s.border_color(p.accent))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if this.config_value(key) != value {
+                        this.save(key, value.into(), window, cx);
+                    }
+                }))
+                .child(swatch(key, value, p))
+                .child(
+                    div()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(if selected { p.accent } else { p.fg })
+                        .child(choice.label),
+                )
+                .child(div().text_xs().text_color(p.muted).child(choice.note))
+        }))
+    }
+
+    fn config_value(&self, key: &str) -> &str {
+        match key {
+            "theme" => &self.config.theme,
+            "backdrop" => &self.config.backdrop,
+            _ => "",
+        }
+    }
+
+    fn results_module(&self, p: Palette, cx: &mut Context<Self>) -> Div {
+        let n = self.config.max_results;
+        let step = |id: &'static str, icon: Lucide, delta: i64, cx: &mut Context<Self>| {
+            Button::new(id)
+                .small()
+                .icon(Icon::new(icon))
+                .disabled(!(1..=20).contains(&(n + delta)))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    let value = (this.config.max_results + delta).clamp(1, 20);
+                    this.save("max_results", value.into(), window, cx);
+                }))
+        };
+        // A small picture of the launcher with one bar per visible result.
+        let preview = v_flex()
+            .gap(px(3.))
+            .p_2()
+            .w(px(96.))
+            .rounded_md()
+            .border_1()
+            .border_color(p.border)
+            .bg(p.raised)
+            .child(div().h(px(8.)).rounded_sm().bg(p.border))
+            .children((0..n).map(|i| {
+                div()
+                    .h(px(3.))
+                    .rounded_sm()
+                    .bg(if i == 0 { p.accent } else { p.muted.opacity(0.35) })
+            }));
+        module(Lucide::Rows3, "Results", p).child(
+            h_flex()
+                .gap_4()
+                .items_center()
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .flex_1()
+                        .child(
+                            h_flex()
+                                .gap_3()
+                                .items_center()
+                                .child(step("fewer", Lucide::Minus, -1, cx))
+                                .child(div().text_2xl().font_weight(FontWeight::SEMIBOLD).child(n.to_string()))
+                                .child(step("more", Lucide::Plus, 1, cx)),
+                        )
+                        .child(hint("Visible at once. Scroll to see more.", p)),
+                )
+                .child(preview),
         )
     }
 
-    fn general(&self, cx: &mut Context<Self>) -> AnyElement {
-        v_flex()
-            .gap_5()
-            .child(section(
-                "Shortcut",
-                "Show or hide the launcher.",
-                self.shortcut_control(cx),
-                cx,
+    fn startup_module(&self, p: Palette, cx: &mut Context<Self>) -> Div {
+        module(Lucide::Power, "Startup", p)
+            .child(toggle_row(
+                "Start with Windows",
+                "Open Wisp when you sign in.",
+                Switch::new("autostart")
+                    .checked(self.autostart)
+                    .accessibility_label("Start with Windows")
+                    .on_change(cx.listener(|this, enabled: &bool, _, cx| this.set_autostart(*enabled, cx))),
+                p,
             ))
-            .child(self.autostart_control(cx))
-            .into_any_element()
-    }
-
-    fn appearance(&self, cx: &mut Context<Self>) -> AnyElement {
-        v_flex()
-            .gap_5()
-            .child(row(
-                "Theme",
-                "Choose the app's colors.",
-                Select::new(&self.theme).accessibility_label("Theme").w(px(170.)),
-                cx,
-            ))
-            .child(row(
-                "Backdrop",
-                "Acrylic and mica fade in. Solid is fastest.",
-                Select::new(&self.backdrop).accessibility_label("Backdrop").w(px(170.)),
-                cx,
-            ))
-            .child(section(
-                "Maximum results",
-                "Choose how many results appear at once.",
-                v_flex()
-                    .gap_2()
-                    .child(Slider::new(&self.results).accessibility_label("Maximum results"))
-                    .child(
-                        h_flex()
-                            .justify_between()
-                            .child(hint("1", cx))
-                            .child(format!("{} results", self.config.max_results))
-                            .child(hint("20", cx)),
-                    ),
-                cx,
-            ))
-            .into_any_element()
-    }
-
-    fn search(&self, cx: &mut Context<Self>) -> AnyElement {
-        v_flex()
-            .gap_5()
-            .child(row(
+            .child(toggle_row(
                 "Recent apps",
-                "Show recent apps when the search box is empty.",
+                "Show them when the search box is empty.",
                 Switch::new("recent")
                     .checked(self.config.show_recent)
                     .accessibility_label("Show recent apps")
                     .on_change(cx.listener(|this, enabled: &bool, window, cx| {
                         this.save("show_recent", (*enabled).into(), window, cx);
                     })),
-                cx,
+                p,
             ))
-            .child(row(
-                "File search",
-                "Search file names in the Windows Search index.",
+    }
+
+    fn files_module(&self, p: Palette, cx: &mut Context<Self>) -> Div {
+        module(Lucide::FolderSearch, "File search", p)
+            .child(toggle_row(
+                "Search files",
+                "Find file names in the Windows Search index. Start a query with ? for files only.",
                 Switch::new("file-search")
                     .checked(self.config.file_search)
                     .accessibility_label("File search")
                     .on_change(cx.listener(|this, enabled: &bool, window, cx| {
                         this.save("file_search", (*enabled).into(), window, cx);
                     })),
-                cx,
+                p,
             ))
-            .child(section(
-                "Web search URL",
-                "Wisp replaces {query} with your search text.",
-                v_flex()
-                    .gap_2()
-                    .child(Input::new(&self.url).aria_label("Web search URL"))
-                    .children(self.url_error.as_ref().map(|error| field_error(error, cx))),
-                cx,
+            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Skipped folders"))
+            .child(hint(
+                "Wisp also skips every file and folder whose name starts with a dot.",
+                p,
             ))
-            .child(section(
-                "Excluded folders",
-                "Skip these folder names. Wisp also skips names that start with a dot.",
-                v_flex()
+            .child(
+                h_flex()
+                    .flex_wrap()
                     .gap_2()
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(Input::new(&self.folder).aria_label("Excluded folder name").flex_1())
-                            .child(
-                                Button::new("add-folder")
-                                    .label("Add")
-                                    .on_click(cx.listener(|this, _, window, cx| this.add_folder(window, cx))),
-                            ),
-                    )
-                    .children(self.folder_error.as_ref().map(|error| field_error(error, cx)))
                     .children(self.config.file_search_exclude.iter().enumerate().map(|(index, name)| {
-                        h_flex().justify_between().gap_3().child(name.clone()).child(
-                            Button::new(("remove-folder", index))
-                                .small()
-                                .ghost()
-                                .label(format!("Remove {name}"))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    let mut folders = this.config.file_search_exclude.clone();
-                                    if index < folders.len() {
-                                        folders.remove(index);
-                                        this.save_folders(folders, window, cx);
-                                    }
-                                })),
-                        )
+                        h_flex()
+                            .id(("folder", index))
+                            .gap_1()
+                            .pl_2()
+                            .pr_1()
+                            .py(px(2.))
+                            .rounded_full()
+                            .border_1()
+                            .border_color(p.border)
+                            .bg(p.raised)
+                            .text_sm()
+                            .child(name.clone())
+                            .child(
+                                div()
+                                    .id(("remove-folder", index))
+                                    .p(px(2.))
+                                    .rounded_full()
+                                    .cursor_pointer()
+                                    .text_color(p.muted)
+                                    .hover(|s| s.text_color(p.danger))
+                                    .child(Icon::new(Lucide::X).size_3())
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        let mut folders = this.config.file_search_exclude.clone();
+                                        if index < folders.len() {
+                                            folders.remove(index);
+                                            this.save_folders(folders, window, cx);
+                                        }
+                                    })),
+                            )
                     })),
-                cx,
-            ))
-            .into_any_element()
-    }
-
-    fn welcome(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut content = v_flex().gap_4().child(hint(format!("Step {} of 3", self.step + 1), cx));
-        content = match self.step {
-            0 => content
-                .child(
-                    div()
-                        .text_2xl()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("Your apps, one shortcut away."),
-                )
-                .child("Wisp finds apps, files, and web results. Press your shortcut and start typing.")
-                .child(section(
-                    "Your shortcut",
-                    format!("Current shortcut: {}", self.config.hotkey),
-                    self.shortcut_control(cx),
-                    cx,
-                )),
-            1 => {
-                let enabled = self.powertoys.as_ref().copied().unwrap_or(false);
-                let conflict = system::has_shortcut_conflict(&self.config.hotkey, enabled);
-                content.child(div().text_2xl().font_weight(FontWeight::SEMIBOLD).child("Check your shortcut"))
-                    .child(if conflict {
-                        Alert::warning("conflict", "PowerToys Run is enabled or running. It uses Alt+Space by default. Pick another Wisp shortcut.").into_any_element()
-                    } else if self.powertoys.is_err() {
-                        Alert::info("conflict", "Choose a shortcut that other launchers do not use.").into_any_element()
-                    } else {
-                        Alert::info("conflict", "No PowerToys Run conflict found for this shortcut. Other apps may still use it.").into_any_element()
-                    })
-                    .children(self.powertoys.as_ref().err().map(|error| Alert::warning("powertoys-error", format!("Could not finish the PowerToys check: {error}"))))
-                    .child(self.shortcut_control(cx))
-            }
-            _ => content
-                .child(
-                    div()
-                        .text_2xl()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("Ready when you are"),
-                )
-                .child("Choose whether Wisp starts when you sign in. You can change this later.")
-                .child(self.autostart_control(cx)),
-        };
-        content
+            )
             .child(
                 h_flex()
                     .gap_2()
-                    .justify_end()
-                    .when(self.step == 1, |this| {
-                        this.child(Button::new("check-again").label("Check again").on_click(cx.listener(
-                            |this, _, _, cx| {
-                                this.powertoys = system::powertoys_run_enabled();
-                                cx.notify();
-                            },
-                        )))
-                    })
-                    .when(self.step > 0, |this| {
-                        this.child(
-                            Button::new("back")
-                                .label("Back")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.recording = false;
-                                    this.step = this.step.saturating_sub(1);
-                                    cx.notify();
-                                })),
-                        )
-                    })
+                    .child(Input::new(&self.folder).aria_label("Folder name to skip").flex_1())
                     .child(
-                        Button::new("next")
-                            .primary()
-                            .label(if self.step == 2 { "Done" } else { "Continue" })
-                            .disabled(self.step < 2 && self.shortcut_error.is_some())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.recording = false;
-                                if this.step < 2 && !this.commit_shortcut(window, cx) {
-                                    return;
-                                }
-                                if this.step == 2 {
-                                    window.remove_window();
-                                } else {
-                                    this.step += 1;
-                                    if this.step == 1 {
-                                        this.powertoys = system::powertoys_run_enabled();
-                                    }
-                                    cx.notify();
-                                }
-                            })),
+                        Button::new("add-folder")
+                            .label("Add")
+                            .on_click(cx.listener(|this, _, window, cx| this.add_folder(window, cx))),
                     ),
+            )
+            .children(self.folder_error.as_ref().map(|e| error_text(e, p)))
+    }
+
+    fn web_module(&self, p: Palette, cx: &mut Context<Self>) -> Div {
+        module(Lucide::Globe, "Web search", p)
+            .child(hint("Used by the last result, \"Search the web\".", p))
+            .child(
+                h_flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .children(SEARCH_ENGINES.iter().map(|&(name, url)| {
+                        let selected = self.config.search_url == url;
+                        div()
+                            .id(SharedString::from(format!("engine-{name}")))
+                            .px_3()
+                            .py_1()
+                            .rounded_full()
+                            .border_1()
+                            .border_color(if selected { p.accent } else { p.border })
+                            .bg(if selected { p.accent_soft } else { p.raised })
+                            .text_color(if selected { p.accent } else { p.fg })
+                            .text_sm()
+                            .cursor_pointer()
+                            .hover(|s| s.border_color(p.accent))
+                            .child(name)
+                            .on_click(cx.listener(move |this, _, window, cx| this.set_search_url(url, window, cx)))
+                    })),
+            )
+            .child(Input::new(&self.url).aria_label("Web search URL"))
+            .child(hint("Custom URL: Wisp replaces {query} with your search text.", p))
+            .children(self.url_error.as_ref().map(|e| error_text(e, p)))
+    }
+
+    fn header(&self, p: Palette, cx: &mut Context<Self>) -> Div {
+        let (dot, status) = if self.launcher_running {
+            (p.accent, format!("Running · {}", self.config.hotkey))
+        } else {
+            (p.muted, "Not running".to_string())
+        };
+        h_flex()
+            .gap_3()
+            .items_center()
+            .px_6()
+            .py_4()
+            .child(img(self.icon.clone()).size(px(36.)))
+            .child(
+                v_flex()
+                    .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Wisp"))
+                    .child(hint(format!("Settings · v{}", env!("CARGO_PKG_VERSION")), p)),
+            )
+            .child(div().flex_1())
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .px_3()
+                    .py_1()
+                    .rounded_full()
+                    .border_1()
+                    .border_color(p.border)
+                    .bg(p.surface)
+                    .text_sm()
+                    .child(div().size(px(8.)).rounded_full().bg(dot))
+                    .child(status),
+            )
+            .child(
+                Button::new("open-config")
+                    .ghost()
+                    .small()
+                    .icon(Icon::new(Lucide::FileCog))
+                    .label("Config file")
+                    .on_click(cx.listener(|this, _, _, cx| this.open_config(cx))),
+            )
+            .child(
+                Button::new("github")
+                    .ghost()
+                    .small()
+                    .icon(Icon::new(Lucide::Github))
+                    .on_click(|_, _, cx| cx.open_url("https://github.com/SumirSeth/wisp")),
+            )
+    }
+
+    fn settings_view(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let error = self.error.as_ref().map(|error| {
+            notice(Lucide::CircleAlert, error, p.danger, p).child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("fix-config")
+                            .small()
+                            .label("Open config file")
+                            .on_click(cx.listener(|this, _, _, cx| this.open_config(cx))),
+                    )
+                    .child(
+                        Button::new("reload")
+                            .small()
+                            .label("Reload")
+                            .on_click(cx.listener(|this, _, window, cx| this.reload(window, cx))),
+                    ),
+            )
+        });
+        v_flex()
+            .size_full()
+            .child(self.header(p, cx))
+            .child(
+                v_flex()
+                    .id("modules")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .px_6()
+                    .pb_6()
+                    .gap_4()
+                    .children(error)
+                    .child(self.shortcut_module(p, cx))
+                    .child(pair(self.theme_module(p, cx), self.backdrop_module(p, cx)))
+                    .child(pair(self.results_module(p, cx), self.startup_module(p, cx)))
+                    .child(self.files_module(p, cx))
+                    .child(self.web_module(p, cx)),
             )
             .into_any_element()
     }
 
-    fn about(&self, cx: &mut Context<Self>) -> AnyElement {
-        let path = self
-            .store
-            .as_ref()
-            .map(|store| store.path.display().to_string())
-            .unwrap_or_else(|| "Config folder unavailable".into());
+    // Onboarding.
+
+    fn onboarding_view(&self, step: usize, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let body = match step {
+            0 => v_flex()
+                .gap_4()
+                .items_center()
+                .child(img(self.icon.clone()).size(px(88.)))
+                .child(div().text_3xl().font_weight(FontWeight::SEMIBOLD).child("Welcome to Wisp"))
+                .child(
+                    div()
+                        .text_color(p.muted)
+                        .text_center()
+                        .child("Press one shortcut, type a few letters, press Enter. Apps, files, sums and the web."),
+                )
+                .child(self.shortcut_module(p, cx).w_full()),
+            1 => v_flex()
+                .gap_4()
+                .child(div().text_2xl().font_weight(FontWeight::SEMIBOLD).child("Check for conflicts"))
+                .child(match self.conflict_warning(p) {
+                    Some(warning) => warning,
+                    None => notice(
+                        Lucide::CircleCheck,
+                        "No conflict with PowerToys Run. Another app can still claim the same shortcut; Wisp tells you if that happens.",
+                        p.accent,
+                        p,
+                    ),
+                })
+                .child(self.shortcut_module(p, cx)),
+            _ => v_flex()
+                .gap_4()
+                .child(div().text_2xl().font_weight(FontWeight::SEMIBOLD).child("Almost done"))
+                .child(self.startup_module(p, cx))
+                .child(hint(
+                    "You can change everything later: right-click the Wisp icon in the tray and choose Settings.",
+                    p,
+                )),
+        };
+        let dots = h_flex().gap_2().children((0..ONBOARDING_STEPS).map(|i| {
+            div()
+                .h(px(6.))
+                .w(if i == step { px(22.) } else { px(6.) })
+                .rounded_full()
+                .bg(if i <= step { p.accent } else { p.border })
+        }));
+        let last = step + 1 == ONBOARDING_STEPS;
         v_flex()
-            .gap_5()
-            .child(div().text_2xl().font_weight(FontWeight::SEMIBOLD).child("Wisp"))
-            .child(hint(format!("Version {}", env!("CARGO_PKG_VERSION")), cx))
-            .child("An app launcher for Windows.")
+            .size_full()
+            .items_center()
+            .justify_center()
+            .p_8()
             .child(
-                Button::new("github")
-                    .label("View Wisp on GitHub")
-                    .on_click(|_, _, cx| cx.open_url("https://github.com/SumirSeth/wisp")),
+                v_flex().w_full().max_w(px(560.)).gap_6().child(body).child(
+                    h_flex()
+                        .items_center()
+                        .gap_2()
+                        .child(dots)
+                        .child(div().flex_1())
+                        .when(step > 0, |row| {
+                            row.child(Button::new("back").ghost().label("Back").on_click(cx.listener(
+                                |this, _, _, cx| {
+                                    this.recording = false;
+                                    this.onboarding = this.onboarding.map(|s| s.saturating_sub(1));
+                                    cx.notify();
+                                },
+                            )))
+                        })
+                        .child(
+                            Button::new("next")
+                                .primary()
+                                .label(if last { "Start using Wisp" } else { "Continue" })
+                                .disabled(self.shortcut_error.is_some())
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.recording = false;
+                                    if last {
+                                        window.remove_window();
+                                        return;
+                                    }
+                                    this.onboarding = Some(step + 1);
+                                    if step + 1 == 1 {
+                                        this.powertoys = system::powertoys_run_enabled();
+                                    }
+                                    cx.notify();
+                                })),
+                        ),
+                ),
             )
-            .child(section(
-                "Config file",
-                path,
-                Button::new("open-config")
-                    .label("Open config file")
-                    .on_click(cx.listener(|this, _, _, cx| this.open_config(cx))),
-                cx,
-            ))
             .into_any_element()
     }
 }
 
 impl Render for Settings {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let page = match self.page {
-            Page::Welcome => self.welcome(cx),
-            Page::General => self.general(cx),
-            Page::Appearance => self.appearance(cx),
-            Page::Search => self.search(cx),
-            Page::About => self.about(cx),
+        let p = Palette::current(cx);
+        let content = match self.onboarding {
+            Some(step) => self.onboarding_view(step, p, cx),
+            None => self.settings_view(p, cx),
         };
-        h_flex()
+        let title = if self.onboarding.is_some() {
+            "Welcome to Wisp"
+        } else {
+            "Wisp Settings"
+        };
+        v_flex()
             .size_full()
-            .items_stretch()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
+            .bg(p.bg)
+            .text_color(p.fg)
             .font_family(cx.theme().font_family.clone())
             .text_sm()
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(Self::record))
-            .child(
-                Sidebar::new("navigation")
-                    .w(px(172.))
-                    .h_full()
-                    .collapsible(false)
-                    .header(
-                        v_flex()
-                            .gap_1()
-                            .p_3()
-                            .child(div().text_xl().font_weight(FontWeight::BOLD).child("Wisp"))
-                            .child(hint("Settings", cx)),
-                    )
-                    .child(SidebarMenu::new().children(Page::ALL.into_iter().map(|page| {
-                        SidebarMenuItem::new(page.title())
-                            .icon(page.icon())
-                            .active(self.page == page)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.page = page;
-                                this.recording = false;
-                                this.autostart = system::autostart_enabled();
-                                cx.notify();
-                            }))
-                    })))
-                    .footer(div().p_3().child(hint(format!("v{}", env!("CARGO_PKG_VERSION")), cx))),
-            )
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .child(
-                        v_flex()
-                            .p_5()
-                            .gap_2()
-                            .border_b_1()
-                            .border_color(cx.theme().border)
-                            .child(
-                                div()
-                                    .text_xl()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(self.page.title()),
-                            )
-                            .child(hint("Changes apply immediately.", cx)),
-                    )
-                    .child(
-                        v_flex()
-                            .id("page-scroll")
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_y_scroll()
-                            .p_5()
-                            .gap_4()
-                            .children(self.error.as_ref().map(|error| {
-                                v_flex()
-                                    .gap_2()
-                                    .child(Alert::error("config-error", error.clone()))
-                                    .child(
-                                        h_flex()
-                                            .gap_2()
-                                            .child(
-                                                Button::new("fix-config")
-                                                    .small()
-                                                    .label("Open config file")
-                                                    .on_click(cx.listener(|this, _, _, cx| this.open_config(cx))),
-                                            )
-                                            .child(
-                                                Button::new("reload").small().label("Reload config").on_click(
-                                                    cx.listener(|this, _, window, cx| this.reload(window, cx)),
-                                                ),
-                                            ),
-                                    )
-                            }))
-                            .child(page),
-                    ),
-            )
+            .child(TitleBar::new().child(div().text_xs().text_color(p.muted).child(title)))
+            .child(div().flex_1().min_h_0().child(content))
     }
 }
 
-fn hint(text: impl Into<SharedString>, cx: &App) -> Div {
-    div()
-        .text_sm()
-        .text_color(cx.theme().muted_foreground)
-        .child(text.into())
-}
+// Building blocks.
 
-fn field_error(text: &str, cx: &App) -> Div {
-    div().text_sm().text_color(cx.theme().danger).child(text.to_owned())
-}
-
-fn section(title: &str, description: impl Into<SharedString>, control: impl IntoElement, cx: &App) -> Div {
+/// A card with an icon badge and a title.
+fn module(icon: Lucide, title: &'static str, p: Palette) -> Div {
     v_flex()
         .gap_3()
         .p_4()
+        .rounded_xl()
         .border_1()
-        .border_color(cx.theme().border)
-        .rounded_lg()
+        .border_color(p.border)
+        .bg(p.surface)
         .child(
-            v_flex()
-                .gap_1()
-                .child(div().font_weight(FontWeight::MEDIUM).child(title.to_owned()))
-                .child(hint(description, cx)),
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(px(26.))
+                        .rounded_md()
+                        .bg(p.accent_soft)
+                        .text_color(p.accent)
+                        .child(Icon::new(icon).size_4()),
+                )
+                .child(div().font_weight(FontWeight::SEMIBOLD).child(title)),
         )
-        .child(control)
 }
 
-fn row(title: &str, description: &str, control: impl IntoElement, cx: &App) -> Div {
+/// Two modules side by side with equal widths.
+fn pair(left: Div, right: Div) -> Div {
     h_flex()
         .gap_4()
-        .justify_between()
-        .p_4()
+        .items_stretch()
+        .child(left.flex_1().min_w_0())
+        .child(right.flex_1().min_w_0())
+}
+
+fn keycap(key: &str, p: Palette) -> Div {
+    div()
+        .px_3()
+        .py_1()
+        .min_w(px(36.))
+        .flex()
+        .justify_center()
+        .rounded_md()
         .border_1()
-        .border_color(cx.theme().border)
-        .rounded_lg()
+        .border_b_2()
+        .border_color(p.border)
+        .bg(p.surface)
+        .text_base()
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(key.to_owned())
+}
+
+/// A small picture of the choice: a two-tone square for themes, a texture for backdrops.
+fn swatch(key: &str, value: &str, p: Palette) -> Div {
+    let tile = div().h(px(28.)).w_full().rounded_md().border_1().border_color(p.border);
+    match (key, value) {
+        ("theme", "dark") => tile.bg(rgb(0x0f1526)),
+        ("theme", "light") => tile.bg(rgb(0xf3f6fb)),
+        ("theme", _) => h_flex()
+            .h(px(28.))
+            .w_full()
+            .rounded_md()
+            .overflow_hidden()
+            .border_1()
+            .border_color(p.border)
+            .child(div().flex_1().h_full().bg(rgb(0x0f1526)))
+            .child(div().flex_1().h_full().bg(rgb(0xf3f6fb))),
+        (_, "acrylic") => tile.bg(p.accent.opacity(0.18)),
+        (_, "mica") => tile.bg(p.accent.opacity(0.08)),
+        _ => tile.bg(p.raised),
+    }
+}
+
+fn toggle_row(title: &'static str, description: &'static str, control: impl IntoElement, p: Palette) -> Div {
+    h_flex()
+        .gap_4()
+        .items_center()
         .child(
             v_flex()
                 .flex_1()
                 .min_w_0()
-                .gap_1()
-                .child(div().font_weight(FontWeight::MEDIUM).child(title.to_owned()))
-                .child(hint(description.to_owned(), cx)),
+                .child(div().font_weight(FontWeight::MEDIUM).child(title))
+                .child(hint(description, p)),
         )
-        .child(control)
+        .child(div().flex_none().child(control))
+}
+
+fn notice(icon: Lucide, text: impl Into<SharedString>, color: Hsla, p: Palette) -> Div {
+    v_flex()
+        .gap_2()
+        .p_3()
+        .rounded_lg()
+        .border_1()
+        .border_color(color.opacity(0.5))
+        .bg(color.opacity(0.08))
+        .child(
+            h_flex()
+                .gap_2()
+                .items_start()
+                .child(div().text_color(color).child(Icon::new(icon).size_4()))
+                .child(div().flex_1().min_w_0().text_color(p.fg).child(text.into())),
+        )
+}
+
+fn hint(text: impl Into<SharedString>, p: Palette) -> Div {
+    div().text_sm().text_color(p.muted).child(text.into())
+}
+
+fn error_text(text: &str, p: Palette) -> Div {
+    div().text_sm().text_color(p.danger).child(text.to_owned())
 }
