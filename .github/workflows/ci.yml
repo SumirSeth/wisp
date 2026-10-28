@@ -13,6 +13,6 @@ jobs:
       # rust-toolchain.toml selects the Rust version.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace

@@ -15,14 +15,14 @@ jobs:
       # rust-toolchain.toml selects the Rust version.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test
-      - run: cargo build --release
+      - run: cargo test --workspace
+      - run: cargo build --release --workspace
       - name: Package
         shell: pwsh
         run: |
           $name = "wisp-${{ github.ref_name }}-x86_64-windows"
           New-Item -ItemType Directory $name | Out-Null
-          Copy-Item target/release/wisp.exe, README.md, LICENSE $name
+          Copy-Item target/release/wisp.exe, target/release/wisp-settings.exe, README.md, LICENSE $name
           Compress-Archive $name "$name.zip"
           Copy-Item target/release/wisp.exe "wisp-${{ github.ref_name }}-x86_64.exe"
           (Get-FileHash "$name.zip" -Algorithm SHA256).Hash + "  $name.zip" | Out-File -Encoding ascii SHA256SUMS.txt

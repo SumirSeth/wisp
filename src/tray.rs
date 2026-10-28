@@ -15,6 +15,7 @@ pub const CMD_RESCAN: u32 = 2;
 pub const CMD_SETTINGS: u32 = 3;
 pub const CMD_AUTOSTART: u32 = 4;
 pub const CMD_QUIT: u32 = 5;
+pub const CMD_CONFIG: u32 = 6;
 
 fn data(hwnd: HWND) -> NOTIFYICONDATAW {
     NOTIFYICONDATAW {
@@ -72,7 +73,8 @@ pub fn show_menu(hwnd: HWND, hotkey: &str, autostart: bool) -> u32 {
         item(MF_STRING, CMD_OPEN, &format!("Open Wisp\t{hotkey}"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         item(MF_STRING, CMD_RESCAN, "Rescan apps");
-        item(MF_STRING, CMD_SETTINGS, "Edit config");
+        item(MF_STRING, CMD_SETTINGS, "Settings");
+        item(MF_STRING, CMD_CONFIG, "Edit config file");
         item(
             if autostart { MF_STRING | MF_CHECKED } else { MF_STRING },
             CMD_AUTOSTART,

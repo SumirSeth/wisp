@@ -24,23 +24,23 @@ Press <kbd>Alt</kbd>+<kbd>Space</kbd>, type an app name, then press <kbd>Enter</
 
 ## Benchmarks
 
-Wisp 0.1.0 and PowerToys Run 0.94 ran on the same machine (i5-12500H, 144 Hz display), with 30 trials each. PowerToys Run used its default config. Each typing trial typed one letter. Times are median / p90:
+Wisp 0.2.0 and PowerToys Run 0.94 ran on the same machine (i5-12500H, 144 Hz display), with 30 trials each. PowerToys Run used its default config. Each typing trial typed a whole app name, such as `notepad` or `terminal`. Times are median / p90:
 
 | | **Wisp** | PowerToys Run | |
 | --- | --- | --- | --- |
-| Typing one letter → results settled | **21 / 21 ms** | 333 / 356 ms | **~16× faster** |
-| Shortcut → launcher drawn | **11 / 23 ms** | 29 / 35 ms | **~2.5× faster** |
-| Memory (private bytes) | **18 MB** | 298 MB + 13 MB PowerToys host | **~16× less memory** |
-| CPU time while idle (10 s) | **0 ms** | 63 ms | |
+| Typing → first results | **24 / 37 ms** | 200 / 232 ms | **~8× faster** |
+| Typing → results settled | **188 / 265 ms** | 437 / 544 ms | **~2.3× faster** |
+| Shortcut → launcher drawn | **15 / 18 ms** | 30 / 38 ms | **2× faster** |
+| Memory (private bytes) | **20 MB** | 290 MB + 12 MB PowerToys host | **~14× less memory** |
 | Download / install size | **0.8 MB** | 794 MB (PowerToys install) | |
-| Threads | **14** | 47 | |
+| Threads | **18** | 49 | |
 
-[`bench/bench.ps1`](bench/bench.ps1) measures both launchers from outside their processes. It sends keystrokes and polls the screen for visible changes. The times include search, rendering and compositor time. Both launchers run over the same static backdrop window. The benchmark ignores changes below its visibility threshold. See [`bench/RESULTS.md`](bench/RESULTS.md) for the full results, or run the script on your machine.
+Wisp's settled time includes its file results, which arrive after the app results.
 
-Wisp 0.2.0 adds file search. Typing a whole app name, such as `notepad` or `terminal`, shows the app results in **9 / 18 ms**. File results follow, and the results settle in **125 / 207 ms**. Wisp 0.2.0 uses 19 MB of private memory and 0 ms of CPU time while idle. These measurements are Wisp-only: PowerToys Run was not measured with whole words.
+[`bench/bench.ps1`](bench/bench.ps1) measures both launchers from outside their processes. It sends keystrokes and polls the screen for visible changes. The times include search, rendering and compositor time. Both launchers run over the same static backdrop window. The benchmark ignores changes below its visibility threshold. See [`bench/RESULTS.md`](bench/RESULTS.md) for the full results and earlier runs, or run the script on your machine.
 
 > [!NOTE]
-> With the default acrylic backdrop, Wisp's launcher and results appear in ~11 ms. Windows then fades in the blur over ~0.25 s, as it does for the Start menu. PowerToys Run's backdrop settles in ~42 ms. Set `backdrop = "solid"` to remove the fade-in. The launcher then draws fully in ~25 ms.
+> With the default acrylic backdrop, Wisp's launcher and results appear in ~15 ms. Windows then fades in the blur over ~0.25 s, as it does for the Start menu. PowerToys Run's backdrop settles in ~42 ms. Set `backdrop = "solid"` to remove the fade-in. The launcher then draws fully in ~25 ms.
 
 ## Features
 
@@ -52,7 +52,7 @@ Wisp 0.2.0 adds file search. Typing a whole app name, such as `notepad` or `term
 - **Shell commands**: `> ipconfig /all` runs in Command Prompt.
 - **URLs and web search**: open `https://…` and `www.…` links in your browser, or search the web for the query.
 - **Appearance**: acrylic backdrop, rounded corners, light and dark themes that follow Windows, and drawing that scales with display DPI.
-- **Idle CPU use**: 0 ms of CPU time in the 10 s benchmark. Worker threads index apps, query the file index and load icons.
+- **Idle CPU use**: 0–16 ms of CPU time in the 10 s benchmark. Windows reports CPU time in steps of 15.6 ms. Worker threads index apps, query the file index and load icons.
 
 <p align="center">
   <img src="assets/screenshot-calc.png" width="700" alt="Wisp calculator">
@@ -62,7 +62,7 @@ Wisp 0.2.0 adds file search. Typing a whole app name, such as `notepad` or `term
 
 **Only in Wisp**
 
-- Runs on its own as one portable `.exe`, with no PowerToys install and no .NET runtime.
+- Runs on its own as one portable `.exe`, with no PowerToys install and no .NET runtime. The settings app is a separate, optional `.exe`.
 - Searches on each keystroke without an input delay. PowerToys Run waits 50–150 ms after you type before it searches.
 - fzf-style query operators: `^start`, `end$`, `'exact`, `!exclude`.
 - Lists recently launched apps when the search box is empty.
@@ -76,6 +76,7 @@ Wisp 0.2.0 adds file search. Typing a whole app name, such as `notepad` or `term
 - Calculator, web search, URLs, shell commands
 - Run as administrator, open the file location
 - Light and dark themes, multiple monitors, per-monitor DPI
+- A settings window
 
 **Only in PowerToys Run** (planned for Wisp)
 
@@ -84,13 +85,15 @@ Wisp 0.2.0 adds file search. Typing a whole app name, such as `notepad` or `term
 - Unit conversion, time and date, value generation (GUIDs, hashes, Base64)
 - Windows Settings, services and registry search, folder browsing
 - VS Code workspaces, Windows Terminal profiles, OneNote
-- Third-party plugins, plugin action keywords, and a config UI
+- Third-party plugins and plugin action keywords
 
 ## Install
 
-1. Download `wisp-vX.Y.Z-x86_64.exe` from the [latest release](https://github.com/SumirSeth/wisp/releases/latest). Put it anywhere, for example `%LOCALAPPDATA%\Programs\Wisp\wisp.exe`.
-2. Run it. Wisp starts in the system tray. Press <kbd>Alt</kbd>+<kbd>Space</kbd>.
-3. Optional: right-click the tray icon and choose **Start with Windows**.
+1. Download `wisp-vX.Y.Z-x86_64-windows.zip` from the [latest release](https://github.com/SumirSeth/wisp/releases/latest). Extract it anywhere, for example to `%LOCALAPPDATA%\Programs\Wisp`. The zip contains `wisp.exe` (the launcher) and `wisp-settings.exe` (the settings app).
+2. Run `wisp.exe`. Wisp starts in the system tray. On the first run, the settings app opens and helps you choose a shortcut and turn on **Start with Windows**.
+3. Press <kbd>Alt</kbd>+<kbd>Space</kbd>.
+
+To use the launcher only, download `wisp-vX.Y.Z-x86_64.exe` instead. Without the settings app, the tray menu's **Settings** item opens the config file.
 
 > [!NOTE]
 > PowerToys Run also uses <kbd>Alt</kbd>+<kbd>Space</kbd>. Only one app can register a given shortcut. Turn off PowerToys Run in PowerToys Settings, or change Wisp's `hotkey` (see [Config](#config)). Wisp shows a notification if another app uses its shortcut.
@@ -127,7 +130,9 @@ Run `wisp.exe --show` to show the launcher in the running instance, or start one
 
 ## Config
 
-Choose **Edit config** in the tray menu, or edit `%APPDATA%\wisp\config.toml` directly. Wisp creates this file with comments on first run. Changes apply the next time the launcher opens.
+Choose **Settings** in the tray menu to change settings in a window. Changes apply immediately, and the settings app keeps the comments in your config file.
+
+You can also choose **Edit config file** in the tray menu, or edit `%APPDATA%\wisp\config.toml` directly. Wisp creates this file with comments on first run. Changes to the file apply the next time the launcher opens.
 
 ```toml
 hotkey = "Alt+Space"        # examples: "Ctrl+Shift+Space", "Win+Alt+W", "Ctrl+F12"
@@ -149,11 +154,13 @@ Install [Rust](https://rustup.rs) (stable, MSVC toolchain) and the Windows SDK f
 ```sh
 git clone https://github.com/SumirSeth/wisp
 cd wisp
-cargo build --release   # → target/release/wisp.exe
-cargo test
+cargo build --release --workspace   # → target/release/wisp.exe and wisp-settings.exe
+cargo test --workspace
 ```
 
-Debug builds keep a console window open for logs. Release builds run without one.
+The first build of the settings app takes several minutes, because it compiles the GPUI UI framework. To build only the launcher, run `cargo build --release -p wisp`.
+
+Debug builds of the launcher keep a console window open for logs. Release builds run without one.
 
 ## How it works
 
@@ -169,6 +176,7 @@ Debug builds keep a console window open for logs. Release builds run without one
 | [`src/launch.rs`](src/launch.rs) | Opens apps and URLs and runs commands through the Windows shell |
 | [`src/tray.rs`](src/tray.rs) | Tray icon, menu and notifications |
 | [`src/config.rs`](src/config.rs), [`src/history.rs`](src/history.rs) | Config and launch history |
+| [`settings/`](settings) | The settings app: onboarding and a settings window, built with [GPUI](https://www.gpui.rs) and [GPUI Component](https://github.com/longbridge/gpui-component) |
 
 - **Apps come from `shell:AppsFolder`**, the source for Start's "All apps". One scan covers desktop and Microsoft Store apps. Wisp uses the Windows shell to open both.
 - **File search queries the Windows Search index directly** through OLE DB, as PowerToys Run does. A new query takes about 100–160 ms. It runs on a worker thread, so app results appear first and file results follow. The worker sends results before it loads icons for new file types. When you type faster than queries finish, the worker skips to the latest query.
@@ -178,7 +186,7 @@ Debug builds keep a console window open for logs. Release builds run without one
 
 ## Contributing
 
-Before opening a pull request, run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test`. CI runs these checks. For changes that affect performance, include measurements from `bench/bench.ps1` before and after the change. Report bugs and request features through GitHub issues.
+Before opening a pull request, run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`. CI runs these checks. For changes that affect performance, include measurements from `bench/bench.ps1` before and after the change. Report bugs and request features through GitHub issues.
 
 ## License
 

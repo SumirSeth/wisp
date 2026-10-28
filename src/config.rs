@@ -7,35 +7,8 @@ use serde::Deserialize;
 
 use crate::util;
 
-const DEFAULT_CONFIG: &str = r#"# Wisp config. Changes apply the next time the launcher opens.
-
-# Shortcut to show or hide the launcher.
-# Examples: "Alt+Space", "Ctrl+Shift+Space", "Win+Alt+R", "Ctrl+F12"
-hotkey = "Alt+Space"
-
-# Results visible at once. Scroll to see more.
-max_results = 8
-
-# "system", "dark" or "light"
-theme = "system"
-
-# Launcher backdrop: "acrylic", "mica" or "solid"
-backdrop = "acrylic"
-
-# Show recently launched apps when the search box is empty.
-show_recent = true
-
-# Web search URL. Wisp replaces {query} with the encoded search text.
-search_url = "https://www.google.com/search?q={query}"
-
-# Search file names in the Windows Search index. Start a query with ? to
-# search files only.
-file_search = true
-
-# Folder names that file search skips. It always skips files and folders
-# whose names start with a dot, such as .git.
-file_search_exclude = ["node_modules", "AppData", "site-packages", "__pycache__", "venv", "target", "dist", "build", "Cache", "Code Cache", "GPUCache", "Service Worker", "IndexedDB", "Extensions"]
-"#;
+/// wisp-settings includes the same file, so both apps create the same config.
+const DEFAULT_CONFIG: &str = include_str!("default-config.toml");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]

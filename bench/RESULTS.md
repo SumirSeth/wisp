@@ -1,5 +1,33 @@
 ﻿# Benchmark results
 
+## Wisp 0.2.0 and PowerToys Run (whole-word queries)
+
+2026-10-28 · 12th Gen Intel(R) Core(TM) i5-12500H · 16 GB RAM · Microsoft Windows 11 Home Single Language (build 26300) · 144 Hz display
+PowerToys 0.94.1.0 with default Run config (`search_input_delay` 150 ms, `search_input_delay_fast` 50 ms) · 30 trials each
+Queries: notepad, paint, terminal, settings, calculator. Wisp's typing results include file search.
+
+Times are **median / p90** in milliseconds. The bold value in each row is the better one.
+
+| | Wisp | PowerToys Run |
+| --- | --- | --- |
+| Shortcut → launcher drawn | **15 / 18 ms** | 30 / 38 ms |
+| Shortcut → launcher settled | 204 / 280 ms | **42 / 49 ms** |
+| Shortcut → keyboard focus | **15 / 18 ms** | 30 / 38 ms |
+| Typing → first results | **24 / 37 ms** | 200 / 232 ms |
+| Typing → results settled | **188 / 265 ms** | 437 / 544 ms |
+| Private memory | **20.2 MB** | 289.7 MB |
+| Working set | **67.6 MB** | 426.7 MB |
+| Threads | **18** | 49 |
+| CPU time while idle (10 s) | 15.6 ms | 15.6 ms |
+| On disk | **0.8 MB** | 794.2 MB |
+
+"Launcher settled" includes Wisp's acrylic fade-in (about 0.25 s). PowerToys Run
+also requires the PowerToys host process (11.7 MB of private memory), which the
+table excludes. Windows reports CPU time in steps of 15.6 ms.
+
+After PowerToys Run is turned on, it ignores its shortcut until it finishes
+indexing programs. On this machine that took several minutes, so wait for it
+before you run the benchmark.
 ## Wisp 0.2.0 (whole-word queries, Wisp only)
 
 2026-10-28 · same machine as below · 30 trials · queries: notepad, paint, terminal, settings, calculator.

@@ -18,12 +18,16 @@
   # PowerToys Run uses Alt+Space. Set hotkey = "Ctrl+Alt+F9" in
   # %APPDATA%\wisp\config.toml, then run:
   .\bench\bench.ps1 -Hotkey "Ctrl+Alt+F9"
+
+  # Or give PowerToys Run another shortcut in PowerToys Settings:
+  .\bench\bench.ps1 -Hotkey "Alt+Space" -PowerToysHotkey "Alt+Shift+Space"
 #>
 param(
     # Measure only the launcher under test, for example when PowerToys Run is turned off.
     [switch]$SkipPowerToys,
     [string]$Process = "wisp",
     [string]$Hotkey = "Ctrl+Alt+F9",
+    [string]$PowerToysHotkey = "Alt+Space",
     [int]$Trials = 20,
     [string]$Queries = "notepad,paint,terminal,settings,calculator",
     [string]$Out = (Join-Path $PSScriptRoot "RESULTS.md")
@@ -60,9 +64,12 @@ function Bench-Launcher([string]$name, [string]$processName, [string[]]$hotkey) 
     if (-not $proc) { throw "$name ($processName) is not running" }
 
     # Open the launcher once before measuring to exclude first-open costs.
+    # A launcher that started recently can take several seconds to open the first time.
     Chord $hotkey
-    Start-Sleep -Milliseconds 700
+    $deadline = (Get-Date).AddSeconds(10)
+    while ([Native]::ForegroundPid() -ne $proc.Id -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
     if ([Native]::ForegroundPid() -ne $proc.Id) { throw "$name did not open on $($hotkey -join '+')" }
+    Start-Sleep -Milliseconds 700
     $rect = New-Object Native+RECT
     [Native]::GetWindowRect([Native]::GetForegroundWindow(), [ref]$rect) | Out-Null
     Chord @("Esc")
@@ -118,7 +125,7 @@ Start-Sleep -Seconds 3
 try {
     $ours = Bench-Launcher $Process $Process $Hotkey.Split("+")
     if (-not $SkipPowerToys) {
-        $pt = Bench-Launcher "PowerToys Run" "PowerToys.PowerLauncher" @("Alt", "Space")
+        $pt = Bench-Launcher "PowerToys Run" "PowerToys.PowerLauncher" $PowerToysHotkey.Split("+")
     }
 } finally {
     Stop-Process -Id $backdrop.Id -ErrorAction SilentlyContinue

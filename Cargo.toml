@@ -1,6 +1,6 @@
 [package]
 name = "wisp"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "An app launcher for Windows"
 license = "MIT"
@@ -9,6 +9,9 @@ repository = "https://github.com/SumirSeth/wisp"
 readme = "README.md"
 keywords = ["launcher", "windows", "productivity", "powertoys"]
 categories = ["command-line-utilities"]
+
+[workspace]
+members = ["settings"]
 
 [dependencies]
 nucleo-matcher = "0.3"

@@ -1,6 +1,6 @@
 //! Opens apps and URLs and runs commands through the Windows shell.
 
-use windows::Win32::Foundation::ERROR_CANCELLED;
+use windows::Win32::Foundation::{E_FAIL, ERROR_CANCELLED};
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::SystemInformation::GetWindowsDirectoryW;
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
@@ -53,6 +53,17 @@ pub fn reveal(path: &str) -> Result<()> {
         Some(&format!("/select,\"{path}\"")),
         false,
     )
+}
+
+/// Starts `wisp-settings.exe` from the folder that contains `wisp.exe`.
+/// Returns an error if the settings app is not there.
+pub fn settings(welcome: bool) -> Result<()> {
+    let exe = std::env::current_exe().map_err(|e| windows::core::Error::new(E_FAIL, e.to_string()))?;
+    let settings = exe.with_file_name("wisp-settings.exe");
+    if !settings.is_file() {
+        return Err(windows::core::Error::new(E_FAIL, "wisp-settings.exe is not installed"));
+    }
+    execute(&settings.to_string_lossy(), welcome.then_some("--welcome"), false)
 }
 
 /// Uses an absolute path to avoid running a same-named executable in the

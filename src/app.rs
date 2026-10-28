@@ -32,6 +32,8 @@ const WM_APP_INDEX: u32 = WM_APP + 2;
 const WM_APP_FILES: u32 = WM_APP + 5;
 const WM_APP_SHOW: u32 = WM_APP + 3;
 const WM_APP_QUIT: u32 = WM_APP + 4;
+/// wisp-settings posts this message after it changes the config.
+const WM_APP_RELOAD: u32 = WM_APP + 6;
 const CLASS_NAME: PCWSTR = w!("Wisp.Launcher");
 const HOTKEY_ID: i32 = 1;
 const CARET_TIMER: usize = 1;
@@ -193,6 +195,8 @@ pub fn run() -> Result<()> {
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
         )?;
 
+        // Config::load creates the config on first run.
+        let first_run = !Config::path().exists();
         let (config, config_error) = Config::load();
         let (events_tx, events_rx) = channel();
         let (files_tx, files_rx) = channel();
@@ -237,6 +241,9 @@ pub fn run() -> Result<()> {
             }
             if flag("--show") {
                 l.show();
+            } else if first_run {
+                // Onboarding is optional. Without the settings app, Wisp starts as usual.
+                let _ = launch::settings(true);
             }
         });
 
@@ -844,7 +851,9 @@ impl Launcher {
                 self.indexer.rescan();
                 self.last_scan = Instant::now();
             }
-            tray::CMD_SETTINGS => {
+            // Without the settings app, open the config file instead.
+            tray::CMD_SETTINGS if launch::settings(false).is_ok() => {}
+            tray::CMD_SETTINGS | tray::CMD_CONFIG => {
                 let path = Config::path();
                 let path = path.to_string_lossy();
                 // Notepad can edit the config if Windows cannot open .toml files.
@@ -899,6 +908,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_APP_QUIT => unsafe {
             let _ = DestroyWindow(hwnd);
         },
+        WM_APP_RELOAD => {
+            with_launcher(Launcher::reload_config_if_changed);
+        }
         WM_APP_INDEX => with_launcher_or_defer(DEFER_INDEX, Launcher::drain_index_events),
         WM_APP_FILES => with_launcher_or_defer(DEFER_FILES, Launcher::drain_file_results),
         WM_ACTIVATE if loword(wparam.0) == WA_INACTIVE => with_launcher_or_defer(DEFER_HIDE, Launcher::hide),
