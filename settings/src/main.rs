@@ -5,6 +5,7 @@ mod hotkey;
 mod palette;
 mod system;
 mod ui;
+mod update;
 
 use gpui_kit::{AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 
@@ -17,6 +18,7 @@ fn main() {
         .position(|a| a == "--page")
         .and_then(|i| args.get(i + 1))
         .cloned();
+    update::remove_old_files();
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {

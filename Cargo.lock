@@ -7890,7 +7890,7 @@ dependencies = [
 
 [[package]]
 name = "wisp"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "nucleo-matcher",
  "serde",
@@ -7902,10 +7902,11 @@ dependencies = [
 
 [[package]]
 name = "wisp-settings"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "gpui-kit",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "toml_edit 0.23.10+spec-1.0.0",
  "windows 0.62.2",

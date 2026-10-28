@@ -95,6 +95,12 @@ Wisp's settled time includes its file results, which arrive after the app result
 
 To use the launcher only, download `wisp-vX.Y.Z-x86_64.exe` instead. Without the settings app, the tray menu's **Settings** item opens the config file.
 
+### Update
+
+The settings app checks GitHub for a newer release when it opens. If one exists, the sidebar shows **Wisp X.Y.Z is available**. Select **Update** on the **About** page. The app downloads the new `wisp.exe` and `wisp-settings.exe`, checks them against the release's `SHA256SUMS.txt`, replaces the old files and restarts the launcher. Then select **Restart** to open the new settings app. Your config file does not change.
+
+Wisp must be in a folder you can write to, such as `%LOCALAPPDATA%\Programs\Wisp`. Otherwise, download the new zip and replace the files yourself.
+
 > [!NOTE]
 > PowerToys Run also uses <kbd>Alt</kbd>+<kbd>Space</kbd>. Only one app can register a given shortcut. Turn off PowerToys Run in PowerToys Settings, or change Wisp's `hotkey` (see [Config](#config)). Wisp shows a notification if another app uses its shortcut.
 

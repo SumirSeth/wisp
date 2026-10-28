@@ -1,6 +1,6 @@
 [package]
 name = "wisp-settings"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 description = "Settings and onboarding for the Wisp launcher"
 license = "MIT"
@@ -10,6 +10,7 @@ publish = false
 gpui-kit = "0.8"
 toml_edit = "0.23"
 serde_json = "1"
+sha2 = "0.10"
 tempfile = "3"
 
 [build-dependencies]
@@ -20,8 +21,10 @@ version = "0.62"
 features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
+    "Win32_Networking_WinHttp",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Registry",
+    "Win32_System_Threading",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ]
