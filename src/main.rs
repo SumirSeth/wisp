@@ -3,6 +3,7 @@
 
 mod app;
 mod calc;
+mod commands;
 mod config;
 mod editor;
 mod files;

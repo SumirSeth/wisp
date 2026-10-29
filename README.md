@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>An app launcher for Windows.</b><br>
-  Runs without PowerToys as one ~0.8 MB executable.
+  Runs without PowerToys as one ~1 MB executable.
 </p>
 
 <p align="center">
@@ -32,7 +32,7 @@ Wisp 0.2.0 and PowerToys Run 0.94 ran on the same machine (i5-12500H, 144 Hz dis
 | Typing → results settled | **188 / 265 ms** | 437 / 544 ms | **~2.3× faster** |
 | Shortcut → launcher drawn | **15 / 18 ms** | 30 / 38 ms | **2× faster** |
 | Memory (private bytes) | **20 MB** | 290 MB + 12 MB PowerToys host | **~14× less memory** |
-| Download / install size | **0.8 MB** | 794 MB (PowerToys install) | |
+| Download / install size | **1.0 MB** | 794 MB (PowerToys install) | |
 | Threads | **18** | 49 | |
 
 Wisp's settled time includes its file results, which arrive after the app results.
@@ -50,6 +50,20 @@ Wisp's settled time includes its file results, which arrive after the app result
 - **Launch history**: frequently and recently launched apps rank higher. Wisp lists them when the search box is empty.
 - **Calculator**: `sqrt(2) * 10`, `2^10`, `(3 + 4) % 5`, `2pi + 1`. Press <kbd>Enter</kbd> to copy the result.
 - **Shell commands**: `> ipconfig /all` runs in Command Prompt.
+- **Commands** read and change Windows settings, and show their current state:
+
+  | Type | Enter | Tab |
+  | --- | --- | --- |
+  | `wifi`, `wifi off` | Turn Wi-Fi on or off | Nearby networks. Enter connects to a saved one. |
+  | `bt`, `bluetooth on` | Turn Bluetooth on or off | Paired devices |
+  | `vol`, `vol 40`, `vol up`, `mute` | Mute, or set the volume | Output devices. Enter switches to one. |
+  | `play`, `pause`, `next`, `prev`, `music` | Control what is playing | |
+  | `w code` | Switch to an open window | Switch to or close it |
+  | `lock`, `sleep`, `restart`, `shut down`, `sign out`, `empty recycle bin` | Do it. Restart, shut down, sign out and emptying the Recycle Bin need a second Enter. | |
+  | `time`, `date`, `time tokyo` | Copy the time or date | |
+  | `display`, `wallpaper`, `dark mode`, … | Open the Windows Settings page | |
+
+  Toggles and volume changes keep the launcher open and show the new state.
 - **URLs and web search**: open `https://…` and `www.…` links in your browser, or search the web for the query.
 - **Appearance**: acrylic backdrop, rounded corners, light and dark themes that follow Windows, and drawing that scales with display DPI.
 - **Idle CPU use**: 0–16 ms of CPU time in the 10 s benchmark. Windows reports CPU time in steps of 15.6 ms. Worker threads index apps, query the file index and load icons.
@@ -113,10 +127,12 @@ Wisp must be in a folder you can write to, such as `%LOCALAPPDATA%\Programs\Wisp
 | --- | --- |
 | <kbd>Alt</kbd>+<kbd>Space</kbd> | Show or hide the launcher |
 | <kbd>Enter</kbd> | Open an app or URL, copy a calculator result, run a command, or search the web |
+| <kbd>Tab</kbd> | Open the selected result's list: its actions, such as **Run as administrator** and **Open file location**, or a command's items, such as Wi-Fi networks. Type to filter the list. |
+| <kbd>Shift</kbd>+<kbd>Tab</kbd> · <kbd>Esc</kbd> · <kbd>Backspace</kbd> in an empty box | Leave the list |
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd> | Run as administrator |
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> | Show the app, file or folder in File Explorer |
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> | Copy the path of the app, file or folder |
-| <kbd>↑</kbd> <kbd>↓</kbd> · <kbd>Tab</kbd> · <kbd>PgUp</kbd> <kbd>PgDn</kbd> · mouse wheel | Move the selection |
+| <kbd>↑</kbd> <kbd>↓</kbd> · <kbd>PgUp</kbd> <kbd>PgDn</kbd> · mouse wheel | Move the selection |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | Copy the selected text, or the calculator result |
 | <kbd>Esc</kbd> | Hide the launcher |
 
@@ -177,6 +193,7 @@ Debug builds of the launcher keep a console window open for logs. Release builds
 | [`src/search.rs`](src/search.rs) | Ranks app, calculator, URL, command and web search results |
 | [`src/indexer.rs`](src/indexer.rs) | Indexes apps and loads icons from `shell:AppsFolder` on a worker thread |
 | [`src/files.rs`](src/files.rs) | Queries the Windows Search index for files over OLE DB on a worker thread |
+| [`src/commands/`](src/commands) | Commands: Wi-Fi, Bluetooth, volume, media, windows, power, time and Settings pages. Windows calls run on a worker thread. |
 | [`src/calc.rs`](src/calc.rs) | Calculator expression parser |
 | [`src/editor.rs`](src/editor.rs) | Text editing for the search box |
 | [`src/launch.rs`](src/launch.rs) | Opens apps and URLs and runs commands through the Windows shell |
@@ -186,6 +203,7 @@ Debug builds of the launcher keep a console window open for logs. Release builds
 
 - **Apps come from `shell:AppsFolder`**, the source for Start's "All apps". One scan covers desktop and Microsoft Store apps. Wisp uses the Windows shell to open both.
 - **File search queries the Windows Search index directly** through OLE DB, as PowerToys Run does. A new query takes about 100–160 ms. It runs on a worker thread, so app results appear first and file results follow. The worker sends results before it loads icons for new file types. When you type faster than queries finish, the worker skips to the latest query.
+- **Commands never block typing.** A worker thread reads Wi-Fi, Bluetooth, audio, media and window state each time the launcher opens, and runs commands. The launcher builds command results from the last state it received. Wi-Fi and Bluetooth use `Windows.Devices.Radios`, which works from desktop apps. Listing nearby Wi-Fi networks needs location access since Windows 11 24H2; without it, Wisp lists saved networks. Switching the output device uses the undocumented `IPolicyConfig` interface, as Sound settings does.
 - **Direct2D uses software rendering.** At this window size, a frame takes about 1 ms of CPU time. Avoiding the GPU driver saves about 30 MB of private memory.
 - **The launcher window keeps its caption style but removes the visible frame** (`WM_NCCALCSIZE`). DWM needs the frame style to render acrylic. A borderless popup gets a flat grey backdrop.
 - **The launcher keeps a fixed height while results are present.** Resizing a window with an acrylic or mica backdrop makes DWM recalculate the blur. It takes about 250 ms to settle. At a fixed height, each keystroke needs one repaint.

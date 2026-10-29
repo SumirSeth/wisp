@@ -50,6 +50,8 @@ pub struct Frame<'a> {
     pub anchor: u32,
     pub caret_visible: bool,
     pub placeholder: &'a str,
+    /// The open list's name, shown before the query, as in "Wi-Fi ›".
+    pub chip: Option<&'a str>,
     pub results: &'a [ResultItem],
     pub selected: usize,
     pub scroll: usize,
@@ -299,16 +301,38 @@ unsafe fn draw_frame(
         brush.SetColor(&p.placeholder);
         draw_text(rt, "\u{E721}", &fm.search_glyph, rect(16.0, 0.0, 44.0, INPUT_H), brush);
 
+        let mut text_x = INPUT_TEXT_X;
+        if let Some(chip) = f.chip {
+            let label = format!("{chip} \u{203A}");
+            let layout = dw.CreateTextLayout(&wide(&label), &fm.hint, 240.0, INPUT_H)?;
+            let mut metrics = DWRITE_TEXT_METRICS::default();
+            layout.GetMetrics(&mut metrics)?;
+            let chip_w = metrics.width + 16.0;
+            brush.SetColor(&p.tile);
+            rt.FillRoundedRectangle(
+                &rounded(rect(text_x, mid - 12.0, text_x + chip_w, mid + 12.0), 5.0),
+                brush,
+            );
+            brush.SetColor(&p.text);
+            draw_text(
+                rt,
+                &label,
+                &fm.hint,
+                rect(text_x + 8.0, mid - 12.0, text_x + chip_w - 8.0, mid + 12.0),
+                brush,
+            );
+            text_x += chip_w + 10.0;
+        }
         let text_right = width - 20.0;
-        let box_w = text_right - INPUT_TEXT_X;
-        let mut caret_at = INPUT_TEXT_X;
+        let box_w = text_right - text_x;
+        let mut caret_at = text_x;
         if f.text.is_empty() {
             *input_scroll = 0.0;
             draw_text(
                 rt,
                 f.placeholder,
                 &fm.query,
-                rect(INPUT_TEXT_X, 0.0, text_right, INPUT_H),
+                rect(text_x, 0.0, text_right, INPUT_H),
                 brush,
             );
         } else {
@@ -320,9 +344,9 @@ unsafe fn draw_frame(
             } else if caret < *input_scroll {
                 *input_scroll = caret;
             }
-            let origin = INPUT_TEXT_X - *input_scroll;
+            let origin = text_x - *input_scroll;
             rt.PushAxisAlignedClip(
-                &rect(INPUT_TEXT_X - 2.0, 0.0, text_right + 2.0, INPUT_H),
+                &rect(text_x - 2.0, 0.0, text_right + 2.0, INPUT_H),
                 D2D1_ANTIALIAS_MODE_ALIASED,
             );
             if f.anchor != f.caret {
@@ -387,7 +411,7 @@ unsafe fn draw_frame(
                     brush.SetColor(&p.tile);
                     rt.FillRoundedRectangle(&rounded(icon_rect, 7.0), brush);
                     match item.kind {
-                        Kind::App => {
+                        Kind::App if item.glyph.is_none() => {
                             let letter = item
                                 .title
                                 .chars()
@@ -398,14 +422,14 @@ unsafe fn draw_frame(
                             draw_text(rt, &letter, &fm.letter, icon_rect, brush);
                         }
                         kind => {
-                            let glyph = match kind {
+                            let glyph = item.glyph.unwrap_or(match kind {
                                 Kind::File => "\u{E8A5}",
                                 Kind::Folder => "\u{E8B7}",
                                 Kind::Calc => "\u{E8EF}",
                                 Kind::Url => "\u{E71B}",
                                 Kind::Shell => "\u{E756}",
                                 _ => "\u{E774}",
-                            };
+                            });
                             draw_text(rt, glyph, &fm.glyph, icon_rect, accent);
                         }
                     }
@@ -447,9 +471,9 @@ unsafe fn draw_frame(
                     );
                 }
 
-                if selected {
+                if selected && !item.enter_label().is_empty() {
                     brush.SetColor(&p.subtext);
-                    let hint = format!("{} \u{21B5}", item.kind.verb());
+                    let hint = format!("{} \u{21B5}", item.enter_label());
                     draw_text(
                         rt,
                         &hint,

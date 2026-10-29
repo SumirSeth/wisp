@@ -4,6 +4,7 @@ use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config as MatcherConfig, Matcher, Utf32Str};
 
 use crate::calc;
+use crate::commands::Command;
 use crate::config::Config;
 use crate::files::FileHit;
 use crate::history::History;
@@ -23,6 +24,8 @@ pub enum Kind {
     Url,
     Shell,
     Web,
+    /// A built-in command, such as Wi-Fi.
+    Command,
 }
 
 impl Kind {
@@ -33,16 +36,55 @@ impl Kind {
             Kind::Calc => "Copy",
             Kind::Shell => "Run",
             Kind::Web => "Search",
+            Kind::Command => "Run",
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub enum Action {
-    Launch { id: String, path: Option<String> },
+    Launch {
+        id: String,
+        path: Option<String>,
+        admin: bool,
+    },
     Copy(String),
     Open(String),
-    Shell(String),
+    Shell {
+        command: String,
+        admin: bool,
+    },
+    Reveal(String),
+    Command(Command),
+    /// A row that only shows information, such as "Looking for networks…".
+    None,
+}
+
+/// What Tab opens on a result, besides its list of actions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Drill {
+    WifiNetworks,
+    BluetoothDevices,
+    AudioOutputs,
+}
+
+impl Drill {
+    /// The list's name, shown before the query while it is open.
+    pub fn title(self) -> &'static str {
+        match self {
+            Drill::WifiNetworks => "Networks",
+            Drill::BluetoothDevices => "Devices",
+            Drill::AudioOutputs => "Output devices",
+        }
+    }
+
+    pub fn glyph(self) -> &'static str {
+        match self {
+            Drill::WifiNetworks => crate::commands::glyph::WIFI,
+            Drill::BluetoothDevices => crate::commands::glyph::BLUETOOTH,
+            Drill::AudioOutputs => crate::commands::glyph::SPEAKER,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -55,9 +97,91 @@ pub struct ResultItem {
     pub action: Action,
     /// Key into the icon map. Results without an icon show a glyph.
     pub icon: Option<String>,
+    /// Segoe Fluent Icons glyph. Without one, the kind's glyph is used.
+    pub glyph: Option<&'static str>,
+    /// The Enter label. Without one, the kind's verb is used.
+    pub verb: Option<&'static str>,
+    pub drill: Option<Drill>,
 }
 
 impl ResultItem {
+    pub fn new(kind: Kind, title: impl Into<String>, subtitle: impl Into<String>, action: Action) -> Self {
+        ResultItem {
+            kind,
+            title: title.into(),
+            subtitle: subtitle.into(),
+            highlights: Vec::new(),
+            action,
+            icon: None,
+            glyph: None,
+            verb: None,
+            drill: None,
+        }
+    }
+
+    pub fn glyph(mut self, glyph: &'static str) -> Self {
+        self.glyph = Some(glyph);
+        self
+    }
+
+    pub fn verb(mut self, verb: &'static str) -> Self {
+        self.verb = Some(verb);
+        self
+    }
+
+    /// The Enter label shown beside the selected result.
+    pub fn enter_label(&self) -> &'static str {
+        self.verb.unwrap_or(self.kind.verb())
+    }
+
+    /// The list Tab opens: the result's actions. Empty if it has none.
+    pub fn actions(&self) -> Vec<ResultItem> {
+        let mut actions = Vec::new();
+        let item = |title: &str, action: Action| ResultItem::new(self.kind, title, self.title.clone(), action);
+        match &self.action {
+            Action::Launch { id, path, .. } => {
+                actions.push(item("Open", self.action.clone()).glyph("\u{E8A7}").verb("Open"));
+                let admin = Action::Launch {
+                    id: id.clone(),
+                    path: path.clone(),
+                    admin: true,
+                };
+                actions.push(item("Run as administrator", admin).glyph("\u{E7EF}").verb("Run"));
+            }
+            Action::Shell { command, .. } if !command.is_empty() => {
+                actions.push(item("Run", self.action.clone()).glyph("\u{E756}").verb("Run"));
+                let admin = Action::Shell {
+                    command: command.clone(),
+                    admin: true,
+                };
+                actions.push(item("Run as administrator", admin).glyph("\u{E7EF}").verb("Run"));
+            }
+            Action::Command(Command::FocusWindow(hwnd)) => {
+                actions.push(item("Switch to", self.action.clone()).glyph("\u{E8A7}").verb("Switch"));
+                let close = Action::Command(Command::CloseWindow(*hwnd));
+                actions.push(
+                    item("Close window", close)
+                        .glyph(crate::commands::glyph::CLOSE)
+                        .verb("Close"),
+                );
+            }
+            Action::Open(_) if self.path().is_some() => {
+                actions.push(item("Open", self.action.clone()).glyph("\u{E8A7}").verb("Open"));
+            }
+            _ => {}
+        }
+        if let Some(path) = self.path() {
+            let reveal = Action::Reveal(path.into());
+            actions.push(item("Open file location", reveal).glyph("\u{E838}").verb("Open"));
+            actions.push(
+                item("Copy path", Action::Copy(path.into()))
+                    .glyph("\u{E8C8}")
+                    .verb("Copy"),
+            );
+        }
+        actions
+    }
+
     /// Filesystem path of the result, for "Show in File Explorer" and "Copy path".
     pub fn path(&self) -> Option<&str> {
         match (&self.kind, &self.action) {
@@ -170,42 +294,39 @@ impl Searcher {
 
         if let Some(command) = query.strip_prefix('>') {
             let command = command.trim();
-            results.push(ResultItem {
-                kind: Kind::Shell,
-                title: if command.is_empty() {
-                    "Type a command to run".into()
+            results.push(ResultItem::new(
+                Kind::Shell,
+                if command.is_empty() {
+                    "Type a command to run"
                 } else {
-                    command.into()
+                    command
                 },
-                subtitle: "Command Prompt · Ctrl+Shift+Enter to run as administrator".into(),
-                highlights: Vec::new(),
-                action: Action::Shell(command.into()),
-                icon: None,
-            });
+                "Command Prompt · Tab to run as administrator",
+                Action::Shell {
+                    command: command.into(),
+                    admin: false,
+                },
+            ));
             return results;
         }
 
         if let Some(value) = calc::evaluate(query) {
             let text = calc::format(value);
-            results.push(ResultItem {
-                kind: Kind::Calc,
-                title: text.clone(),
-                subtitle: format!("{query} · Enter to copy"),
-                highlights: Vec::new(),
-                action: Action::Copy(text),
-                icon: None,
-            });
+            results.push(ResultItem::new(
+                Kind::Calc,
+                text.clone(),
+                format!("{query} · Enter to copy"),
+                Action::Copy(text),
+            ));
         }
 
         if let Some(url) = as_url(query) {
-            results.push(ResultItem {
-                kind: Kind::Url,
-                title: url.clone(),
-                subtitle: "Open in browser".into(),
-                highlights: Vec::new(),
-                action: Action::Open(url),
-                icon: None,
-            });
+            results.push(ResultItem::new(
+                Kind::Url,
+                url.clone(),
+                "Open in browser",
+                Action::Open(url),
+            ));
         }
 
         let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
@@ -227,41 +348,38 @@ impl Searcher {
             results.push(app_result(app, highlights));
         }
 
-        results.push(ResultItem {
-            kind: Kind::Web,
-            title: format!("Search the web for \u{201C}{query}\u{201D}"),
-            subtitle: host(&config.search_url).unwrap_or("Web search").to_string(),
-            highlights: Vec::new(),
-            action: Action::Open(config.search_url.replace("{query}", &url_encode(query))),
-            icon: None,
-        });
+        results.push(ResultItem::new(
+            Kind::Web,
+            format!("Search the web for \u{201C}{query}\u{201D}"),
+            host(&config.search_url).unwrap_or("Web search"),
+            Action::Open(config.search_url.replace("{query}", &url_encode(query))),
+        ));
         results
     }
 }
 
 fn app_result(app: &AppEntry, highlights: Vec<(u32, u32)>) -> ResultItem {
-    ResultItem {
-        kind: Kind::App,
-        title: app.name.clone(),
-        subtitle: app.path.clone().unwrap_or_else(|| "App".into()),
-        highlights,
-        action: Action::Launch {
+    let mut item = ResultItem::new(
+        Kind::App,
+        app.name.clone(),
+        app.path.clone().unwrap_or_else(|| "App".into()),
+        Action::Launch {
             id: app.id.clone(),
             path: app.path.clone(),
+            admin: false,
         },
-        icon: Some(app.id.clone()),
-    }
+    );
+    item.highlights = highlights;
+    item.icon = Some(app.id.clone());
+    item
 }
 
 pub fn file_result(hit: FileHit) -> ResultItem {
-    ResultItem {
-        kind: if hit.is_folder { Kind::Folder } else { Kind::File },
-        title: hit.name,
-        subtitle: hit.path.clone(),
-        highlights: hit.highlights,
-        action: Action::Open(hit.path),
-        icon: Some(hit.icon_key),
-    }
+    let kind = if hit.is_folder { Kind::Folder } else { Kind::File };
+    let mut item = ResultItem::new(kind, hit.name, hit.path.clone(), Action::Open(hit.path));
+    item.highlights = hit.highlights;
+    item.icon = Some(hit.icon_key);
+    item
 }
 
 /// Uses `char` indices to match `text.chars()` when computing highlights.

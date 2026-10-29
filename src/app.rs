@@ -19,12 +19,13 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, Result, w};
 
+use crate::commands::{self, Command, Commands};
 use crate::config::{Backdrop, Config, Theme};
 use crate::files::{FileResults, FileSearch};
 use crate::history::History;
 use crate::indexer::{AppEntry, IconPixels, IndexEvent, Indexer};
 use crate::render::{Frame, Renderer, layout};
-use crate::search::{self, FileScope, Kind, ResultItem, Searcher};
+use crate::search::{self, Action, Drill, FileScope, Kind, ResultItem, Searcher};
 use crate::theme::Palette;
 use crate::{hotkey, launch, system, tray, util};
 
@@ -34,6 +35,7 @@ const WM_APP_SHOW: u32 = WM_APP + 3;
 const WM_APP_QUIT: u32 = WM_APP + 4;
 /// wisp-settings posts this message after it changes the config.
 const WM_APP_RELOAD: u32 = WM_APP + 6;
+const WM_APP_COMMANDS: u32 = WM_APP + 7;
 const CLASS_NAME: PCWSTR = w!("Wisp.Launcher");
 const HOTKEY_ID: i32 = 1;
 const CARET_TIMER: usize = 1;
@@ -41,7 +43,7 @@ const CARET_TIMER: usize = 1;
 const MIXED_FILE_RESULTS: usize = 5;
 const ONLY_FILE_RESULTS: usize = 30;
 const RESCAN_AFTER: Duration = Duration::from_secs(120);
-const PLACEHOLDER: &str = "Search apps, calculate, or run a command with >";
+const PLACEHOLDER: &str = "Search apps and files, or try wifi, vol, time";
 
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 
@@ -49,6 +51,7 @@ static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 const DEFER_INDEX: u8 = 1;
 const DEFER_FILES: u8 = 4;
 const DEFER_HIDE: u8 = 2;
+const DEFER_COMMANDS: u8 = 8;
 
 thread_local! {
     static LAUNCHER: RefCell<Option<Launcher>> = const { RefCell::new(None) };
@@ -89,6 +92,9 @@ fn run_deferred() {
                 }
                 if work & DEFER_FILES != 0 {
                     l.drain_file_results();
+                }
+                if work & DEFER_COMMANDS != 0 {
+                    l.drain_command_events();
                 }
                 if work & DEFER_HIDE != 0 {
                     l.hide();
@@ -202,6 +208,7 @@ pub fn run() -> Result<()> {
         let (files_tx, files_rx) = channel();
         // Icons are drawn at 32 DIPs; extract them at the system DPI's pixel size.
         let icon_size = (32 * system_dpi as i32 + 95) / 96;
+        let (commands, command_events) = Commands::spawn(hwnd, WM_APP_COMMANDS, icon_size);
         let launcher = Launcher {
             hwnd,
             config,
@@ -232,6 +239,12 @@ pub fn run() -> Result<()> {
             file_search: FileSearch::spawn(hwnd, WM_APP_FILES, files_tx, icon_size),
             file_events: files_rx,
             last_scan: Instant::now(),
+            commands,
+            command_events,
+            command_state: commands::State::default(),
+            list: None,
+            armed: None,
+            scope: None,
         };
         LAUNCHER.with(|cell| *cell.borrow_mut() = Some(launcher));
         with_launcher(|l| {
@@ -297,6 +310,28 @@ struct Launcher {
     file_search: FileSearch,
     file_events: Receiver<FileResults>,
     last_scan: Instant,
+
+    commands: Commands,
+    command_events: Receiver<commands::Event>,
+    command_state: commands::State,
+    /// The items of the open list, such as Wi-Fi networks. `None` while loading.
+    list: Option<Vec<ResultItem>>,
+    /// A command waiting for a second Enter, such as Restart.
+    armed: Option<Command>,
+    /// The list Tab opened, if any.
+    scope: Option<Scope>,
+}
+
+/// A list that Tab opens on a result: its actions, or a command's items such
+/// as Wi-Fi networks. The query filters the list.
+struct Scope {
+    /// Shown before the query.
+    title: String,
+    drill: Option<Drill>,
+    /// The result's actions, when `drill` is `None`.
+    actions: Vec<ResultItem>,
+    /// The query before Tab. Leaving the list restores it.
+    query: String,
 }
 
 impl Launcher {
@@ -415,6 +450,9 @@ impl Launcher {
     fn show(&mut self) {
         self.reload_config_if_changed();
         self.register_hotkey(false);
+        self.commands.refresh();
+        self.armed = None;
+        self.leave_scope();
         if self.last_scan.elapsed() > RESCAN_AFTER {
             self.indexer.rescan();
             self.last_scan = Instant::now();
@@ -533,9 +571,45 @@ impl Launcher {
 
     fn update_results(&mut self) {
         let rows_before = self.window_rows();
-        self.base_results = self
-            .searcher
-            .search(self.editor.text(), &self.apps, &self.history, &self.config);
+        if let Some(scope) = &self.scope {
+            let items = match (scope.drill, &self.list) {
+                (Some(_), Some(list)) => list.clone(),
+                (Some(drill), None) => vec![commands::loading(drill)],
+                (None, _) => scope.actions.clone(),
+            };
+            let filter = self.editor.text().trim().to_lowercase();
+            self.base_results = items
+                .into_iter()
+                .filter(|item| filter.is_empty() || item.title.to_lowercase().contains(&filter))
+                .collect();
+            self.file_query = None;
+            self.file_results.clear();
+            self.merge_results();
+            self.selected = 0;
+            self.scroll = 0;
+            if self.window_rows() != rows_before {
+                self.apply_size();
+            }
+            self.invalidate();
+            return;
+        }
+        self.base_results = commands::search(self.editor.text(), &self.command_state);
+        if !commands::is_window_query(self.editor.text()) {
+            self.base_results.extend(
+                self.searcher
+                    .search(self.editor.text(), &self.apps, &self.history, &self.config),
+            );
+        }
+        if let Some(armed) = &self.armed {
+            for item in &mut self.base_results {
+                if let Action::Command(command @ Command::Power(power)) = &item.action
+                    && command == armed
+                {
+                    item.title = format!("Press Enter again to {}", power.title().to_lowercase());
+                    item.subtitle = "Type anything to cancel".into();
+                }
+            }
+        }
 
         let scope = if self.config.file_search {
             FileScope::of(self.editor.text(), &self.base_results)
@@ -636,21 +710,34 @@ impl Launcher {
     }
 
     fn activate(&mut self, admin: bool) {
-        let Some(result) = self.results.get(self.selected) else {
+        let Some(result) = self.results.get(self.selected).cloned() else {
             return;
         };
         let outcome = match &result.action {
-            search::Action::Launch { id, path } => {
-                let result = launch::app(id, path.as_deref(), admin);
+            Action::Launch {
+                id,
+                path,
+                admin: as_admin,
+            } => {
+                let result = launch::app(id, path.as_deref(), admin || *as_admin);
                 if result.is_ok() {
                     self.history.record(id);
                 }
                 result
             }
-            search::Action::Copy(text) => system::set_clipboard(self.hwnd, text),
-            search::Action::Open(target) => launch::open(target),
-            search::Action::Shell(command) if command.is_empty() => return,
-            search::Action::Shell(command) => launch::shell(command, admin),
+            Action::Copy(text) => system::set_clipboard(self.hwnd, text),
+            Action::Open(target) => launch::open(target),
+            Action::Shell { command, .. } if command.is_empty() => return,
+            Action::Shell {
+                command,
+                admin: as_admin,
+            } => launch::shell(command, admin || *as_admin),
+            Action::Reveal(path) => launch::reveal(path),
+            Action::None => return,
+            Action::Command(command) => {
+                self.run_command(command.clone());
+                return;
+            }
         };
         match outcome {
             Ok(()) => self.hide(),
@@ -661,6 +748,152 @@ impl Launcher {
                 &e.message(),
                 true,
             ),
+        }
+    }
+
+    /// Toggles and adjustments stay open and show the new state. Other
+    /// commands close the launcher. Commands that lose work need a second Enter.
+    fn run_command(&mut self, command: Command) {
+        if let Command::Power(power) = command
+            && power.needs_confirmation()
+            && self.armed.as_ref() != Some(&command)
+        {
+            self.armed = Some(command);
+            let selected = self.selected;
+            self.update_results();
+            self.move_selection(selected as isize, false);
+            return;
+        }
+        self.armed = None;
+        match command {
+            // These need the launcher's foreground rights, so they run here.
+            Command::FocusWindow(hwnd) => {
+                if let Err(error) = commands::open_windows::focus(hwnd) {
+                    tray::notify(self.hwnd, "Wisp", &error, true);
+                }
+                self.hide();
+                return;
+            }
+            Command::Power(power) => {
+                self.hide();
+                if let Err(error) = commands::power::run(power) {
+                    tray::notify(self.hwnd, "Wisp", &error, true);
+                }
+                return;
+            }
+            _ => {}
+        }
+        // Show the new state now; the worker confirms it.
+        match &command {
+            Command::WifiPower(on) => {
+                if let Some(Some(wifi)) = &mut self.command_state.wifi {
+                    wifi.on = *on;
+                    wifi.network = wifi.network.take().filter(|_| *on);
+                }
+            }
+            Command::BluetoothPower(on) => {
+                if let Some(Some(bluetooth)) = &mut self.command_state.bluetooth {
+                    bluetooth.on = *on;
+                    bluetooth.connected.retain(|_| *on);
+                }
+            }
+            Command::Volume(percent) => {
+                if let Some(Some(audio)) = &mut self.command_state.audio {
+                    audio.volume = *percent;
+                    audio.muted = false;
+                }
+            }
+            Command::Mute(muted) => {
+                if let Some(Some(audio)) = &mut self.command_state.audio {
+                    audio.muted = *muted;
+                }
+            }
+            Command::CloseWindow(hwnd) => self.command_state.windows.retain(|w| w.hwnd != *hwnd),
+            _ => {}
+        }
+        let stays_open = command.stays_open();
+        self.commands.run(command);
+        if !stays_open {
+            self.hide();
+            return;
+        }
+        // Reload an open list, since the command may change it.
+        if let Some(drill) = self.scope.as_ref().and_then(|s| s.drill) {
+            self.list = None;
+            self.commands.list(drill);
+        }
+        let selected = self.selected;
+        self.update_results();
+        self.move_selection(selected as isize, false);
+    }
+
+    /// Opens the selected result's list: a command's items or the result's actions.
+    fn enter_scope(&mut self) {
+        if self.scope.is_some() {
+            return;
+        }
+        let Some(item) = self.results.get(self.selected) else {
+            return;
+        };
+        let (title, drill, actions) = match item.drill {
+            Some(drill) => {
+                self.list = None;
+                self.commands.list(drill);
+                (drill.title().to_string(), Some(drill), Vec::new())
+            }
+            None => {
+                let actions = item.actions();
+                if actions.is_empty() {
+                    return;
+                }
+                (item.title.clone(), None, actions)
+            }
+        };
+        self.scope = Some(Scope {
+            title,
+            drill,
+            actions,
+            query: self.editor.text().to_string(),
+        });
+        self.editor.select_all();
+        self.editor.insert("");
+        self.update_results();
+    }
+
+    /// Returns to the results the list was opened from. Returns false if no list is open.
+    fn leave_scope(&mut self) -> bool {
+        let Some(scope) = self.scope.take() else {
+            return false;
+        };
+        self.list = None;
+        self.editor.select_all();
+        self.editor.insert(&scope.query);
+        self.update_results();
+        true
+    }
+
+    fn drain_command_events(&mut self) {
+        let mut changed = false;
+        while let Ok(event) = self.command_events.try_recv() {
+            match event {
+                commands::Event::State(state, icons) => {
+                    changed |= !icons.is_empty() || self.command_state != *state;
+                    self.command_state = *state;
+                    self.icons.extend(icons);
+                }
+                commands::Event::List(drill, items) => {
+                    if self.scope.as_ref().is_some_and(|s| s.drill == Some(drill)) {
+                        self.list = Some(items);
+                        changed = true;
+                    }
+                }
+                commands::Event::Failed(error) => tray::notify(self.hwnd, "Wisp", &error, true),
+            }
+        }
+        if changed && self.visible {
+            let selected = self.selected;
+            self.update_results();
+            self.move_selection(selected as isize, false);
         }
     }
 
@@ -709,7 +942,9 @@ impl Launcher {
         let mut edited = false;
         match vk {
             VK_ESCAPE => {
-                self.hide();
+                if !self.leave_scope() {
+                    self.hide();
+                }
                 return true;
             }
             VK_RETURN => {
@@ -718,13 +953,19 @@ impl Launcher {
             }
             VK_UP => self.move_selection(-1, true),
             VK_DOWN => self.move_selection(1, true),
-            VK_TAB => self.move_selection(if shift { -1 } else { 1 }, true),
+            VK_TAB if shift => {
+                self.leave_scope();
+            }
+            VK_TAB => self.enter_scope(),
             VK_PRIOR => self.move_selection(-page, false),
             VK_NEXT => self.move_selection(page, false),
             VK_LEFT => self.editor.left(ctrl, shift),
             VK_RIGHT => self.editor.right(ctrl, shift),
             VK_HOME => self.editor.home(shift),
             VK_END => self.editor.end(shift),
+            VK_BACK if self.scope.is_some() && self.editor.text().is_empty() => {
+                self.leave_scope();
+            }
             VK_BACK => edited = self.editor.backspace(ctrl),
             VK_DELETE => edited = self.editor.delete(ctrl),
             VK_A if ctrl => self.editor.select_all(),
@@ -748,6 +989,7 @@ impl Launcher {
             _ => return false,
         }
         if edited {
+            self.armed = None;
             self.update_results();
         }
         self.restart_caret();
@@ -775,6 +1017,7 @@ impl Launcher {
 
     fn on_char(&mut self, unit: u16) {
         if self.editor.push_utf16(unit) {
+            self.armed = None;
             self.update_results();
             self.restart_caret();
         }
@@ -832,7 +1075,8 @@ impl Launcher {
             caret: util::utf16_offset(text, self.editor.caret()),
             anchor: util::utf16_offset(text, self.editor.anchor()),
             caret_visible: self.caret_visible,
-            placeholder: PLACEHOLDER,
+            placeholder: if self.scope.is_some() { "Filter" } else { PLACEHOLDER },
+            chip: self.scope.as_ref().map(|scope| scope.title.as_str()),
             results: &self.results,
             selected: self.selected,
             scroll: self.scroll,
@@ -913,6 +1157,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_APP_INDEX => with_launcher_or_defer(DEFER_INDEX, Launcher::drain_index_events),
         WM_APP_FILES => with_launcher_or_defer(DEFER_FILES, Launcher::drain_file_results),
+        WM_APP_COMMANDS => with_launcher_or_defer(DEFER_COMMANDS, Launcher::drain_command_events),
         WM_ACTIVATE if loword(wparam.0) == WA_INACTIVE => with_launcher_or_defer(DEFER_HIDE, Launcher::hide),
         WM_DPICHANGED => {
             with_launcher(|l| l.on_dpi_changed(loword(wparam.0)));
