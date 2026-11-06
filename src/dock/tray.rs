@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::UI::WindowsAndMessaging::{DI_NORMAL, DrawIconEx, HICON};
+use windows::Win32::UI::WindowsAndMessaging::{DI_NORMAL, DrawIconEx, GetIconInfo, HICON, ICONINFO};
 
 use super::logic;
 use crate::indexer::IconPixels;
@@ -72,9 +72,14 @@ pub fn icon_size(dpi: u32) -> i32 {
 /// Renders an icon onto black and onto white: their difference is its
 /// coverage, so alpha icons and old masked icons both come out right.
 /// The result is premultiplied BGRA.
+///
+/// The icon is drawn at the size its app gave it and only then resampled,
+/// because `DrawIconEx` scales with nearest-neighbor and makes tray icons
+/// look pixelated.
 pub fn icon_pixels(icon: HICON, size: i32) -> Option<IconPixels> {
-    let black = draw_on(icon, size, 0x00)?;
-    let white = draw_on(icon, size, 0xFF)?;
+    let native = native_size(icon).filter(|&native| native > 0).unwrap_or(size);
+    let black = draw_on(icon, native, 0x00)?;
+    let white = draw_on(icon, native, 0xFF)?;
     let mut bgra = vec![0u8; black.len()];
     let (out, _) = bgra.as_chunks_mut::<4>();
     let (black, _) = black.as_chunks::<4>();
@@ -90,11 +95,102 @@ pub fn icon_pixels(icon: HICON, size: i32) -> Option<IconPixels> {
     if out.iter().all(|p| p[3] == 0) {
         return None;
     }
-    Some(IconPixels {
-        width: size as u32,
-        height: size as u32,
+    let source = IconPixels {
+        width: native as u32,
+        height: native as u32,
         bgra,
+    };
+    Some(if native == size {
+        source
+    } else {
+        resample(&source, size.max(1) as u32)
     })
+}
+
+/// The pixel size of the icon's own bitmap, before any drawing scales it.
+fn native_size(icon: HICON) -> Option<i32> {
+    unsafe {
+        let mut info = ICONINFO::default();
+        if GetIconInfo(icon, &mut info).is_err() {
+            return None;
+        }
+        // A monochrome icon has only a mask, twice as tall as the icon.
+        let monochrome = info.hbmColor.is_invalid();
+        let bitmap = if monochrome { info.hbmMask } else { info.hbmColor };
+        let mut bm = BITMAP::default();
+        let measured = GetObjectW(
+            bitmap.into(),
+            size_of::<BITMAP>() as i32,
+            Some((&mut bm as *mut BITMAP).cast()),
+        ) != 0;
+        let _ = DeleteObject(info.hbmColor.into());
+        let _ = DeleteObject(info.hbmMask.into());
+        let height = if monochrome { bm.bmHeight / 2 } else { bm.bmHeight };
+        (measured && bm.bmWidth > 0 && height > 0).then(|| bm.bmWidth.max(height))
+    }
+}
+
+/// Resizes premultiplied BGRA pixels with a separable triangle filter. The
+/// filter widens when shrinking, so every source pixel contributes instead
+/// of the result sampling a few and turning jagged.
+fn resample(source: &IconPixels, size: u32) -> IconPixels {
+    let (sw, sh) = (source.width as usize, source.height as usize);
+    let side = size.max(1) as usize;
+    let mut wide = vec![0f32; side * sh * 4];
+    for y in 0..sh {
+        for x in 0..side {
+            let (start, weights) = taps(sw, side, x);
+            let out = &mut wide[(y * side + x) * 4..][..4];
+            for (at, weight) in start.zip(&weights) {
+                let pixel = &source.bgra[(y * sw + at) * 4..][..4];
+                for c in 0..4 {
+                    out[c] += pixel[c] as f32 * weight;
+                }
+            }
+        }
+    }
+    let mut bgra = vec![0u8; side * side * 4];
+    let (out, _) = bgra.as_chunks_mut::<4>();
+    for y in 0..side {
+        for x in 0..side {
+            let (start, weights) = taps(sh, side, y);
+            let mut pixel = [0f32; 4];
+            for (at, weight) in start.zip(&weights) {
+                let row = &wide[(at * side + x) * 4..][..4];
+                for c in 0..4 {
+                    pixel[c] += row[c] * weight;
+                }
+            }
+            for (channel, value) in out[y * side + x].iter_mut().zip(pixel) {
+                *channel = value.round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    IconPixels {
+        width: side as u32,
+        height: side as u32,
+        bgra,
+    }
+}
+
+/// The source indices and normalized weights that produce destination
+/// pixel `at` in one dimension.
+fn taps(source: usize, destination: usize, at: usize) -> (std::ops::RangeInclusive<usize>, Vec<f32>) {
+    let scale = source as f32 / destination as f32;
+    let radius = scale.max(1.0);
+    let center = (at as f32 + 0.5) * scale - 0.5;
+    let first = (center - radius).ceil().max(0.0) as usize;
+    let last = ((center + radius).floor() as isize).clamp(0, source as isize - 1) as usize;
+    let mut weights: Vec<f32> = (first..=last)
+        .map(|index| (1.0 - (index as f32 - center).abs() / radius).max(0.0))
+        .collect();
+    let total: f32 = weights.iter().sum();
+    if total > 0.0 {
+        weights.iter_mut().for_each(|weight| *weight /= total);
+    } else {
+        weights.fill(1.0);
+    }
+    (first..=last, weights)
 }
 
 /// The icon drawn at `size` pixels over a gray `level` background, as BGRA rows.
@@ -166,5 +262,39 @@ pub fn app_pixels(path: &str, size: i32) -> Option<IconPixels> {
             height: size as u32,
             bgra,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pixels(width: u32, height: u32, bgra: Vec<u8>) -> IconPixels {
+        IconPixels { width, height, bgra }
+    }
+
+    #[test]
+    fn resampling_keeps_a_flat_color() {
+        let source = pixels(2, 2, [10u8, 20, 30, 40].repeat(4));
+        let resized = resample(&source, 5);
+        assert_eq!((resized.width, resized.height), (5, 5));
+        assert!(resized.bgra.chunks(4).all(|p| p == [10, 20, 30, 40]));
+    }
+
+    #[test]
+    fn shrinking_averages_neighbouring_pixels() {
+        // Two opaque columns, one black and one white, become one gray column.
+        let source = pixels(2, 1, vec![0, 0, 0, 255, 255, 255, 255, 255]);
+        let resized = resample(&source, 1);
+        assert_eq!(resized.bgra, [128, 128, 128, 255]);
+    }
+
+    #[test]
+    fn upscaling_keeps_premultiplied_alpha_consistent() {
+        // A half-transparent white pixel stays premultiplied instead of
+        // brightening into a fringe.
+        let source = pixels(1, 1, vec![128, 128, 128, 128]);
+        let resized = resample(&source, 2);
+        assert!(resized.bgra.chunks(4).all(|p| p == [128, 128, 128, 128]));
     }
 }
