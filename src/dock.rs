@@ -659,7 +659,9 @@ impl State {
                 });
             }
         }
-        self.items = items;
+        self.items = logic::stable_order(std::mem::take(&mut self.items), items, |old, new| {
+            old.app.id.eq_ignore_ascii_case(&new.app.id)
+        });
         self.status = status::read();
         self.place();
         if self.suspended {

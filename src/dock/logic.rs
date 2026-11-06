@@ -206,6 +206,21 @@ pub fn match_app<'a>(apps: &'a [AppEntry], exe: &str, aumid: Option<&str>) -> Op
         .find(|app| app.path.as_deref().is_some_and(|path| normalize(path) == exe) || normalize(&app.id) == exe)
 }
 
+/// Keeps items in the order they first appeared. The window list arrives in
+/// z-order, which changes whenever an app is focused; following it directly
+/// made a clicked icon jump to another place in the dock.
+pub fn stable_order<T>(previous: Vec<T>, current: Vec<T>, same: impl Fn(&T, &T) -> bool) -> Vec<T> {
+    let mut current = current;
+    let mut ordered = Vec::with_capacity(current.len());
+    for old in previous {
+        if let Some(at) = current.iter().position(|new| same(&old, new)) {
+            ordered.push(current.remove(at));
+        }
+    }
+    ordered.append(&mut current);
+    ordered
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,6 +232,15 @@ mod tests {
         assert_eq!(slide_value(midway, 0.0, 0.0), midway);
         assert!(slide_value(midway, 0.0, 0.1) < midway);
         assert_eq!(slide_value(0.0, 1.0, 2.0), 1.0);
+    }
+    #[test]
+    fn stable_order_keeps_first_seen_positions() {
+        let previous = vec!["a", "b", "c"];
+        // Focusing c makes it first in z-order; it must stay third.
+        let current = vec!["c", "a", "d", "b"];
+        assert_eq!(stable_order(previous, current, |a, b| a == b), ["a", "b", "c", "d"]);
+        // Closed apps drop out and leaving ones keep their relative order.
+        assert_eq!(stable_order(vec!["a", "b"], vec!["b", "c"], |a, b| a == b), ["b", "c"]);
     }
     #[test]
     fn matches_full_paths_and_store_ids() {
