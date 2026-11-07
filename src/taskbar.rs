@@ -101,6 +101,29 @@ fn is_taskbar(hwnd: HWND) -> bool {
         }
 }
 
+/// Gives a taskbar an empty window region, or its full shape back. Explorer
+/// shows its taskbars again whenever the work area changes, such as when the
+/// dock's space comes or goes, and the show hook can only hide them after
+/// they have drawn. An empty region keeps such a show from drawing anything.
+fn clip(hwnd: HWND, clipped: bool) {
+    let mut rect = RECT::default();
+    // Explorer's taskbars have no region of their own, so an empty one is ours.
+    if (unsafe { GetWindowRgnBox(hwnd, &mut rect) } == NULLREGION) == clipped {
+        return;
+    }
+    unsafe {
+        if !clipped {
+            let _ = SetWindowRgn(hwnd, None, true);
+            return;
+        }
+        let region = CreateRectRgn(0, 0, 0, 0);
+        // The system owns the region only once it is set.
+        if SetWindowRgn(hwnd, Some(region), false) == 0 {
+            let _ = DeleteObject(region.into());
+        }
+    }
+}
+
 fn monitor_info(handle: HMONITOR) -> Result<MONITORINFO> {
     let mut info = MONITORINFO {
         cbSize: size_of::<MONITORINFO>() as u32,
@@ -252,6 +275,7 @@ fn restore_areas(areas: &[(Rect, Rect)]) -> Result<()> {
 fn restore_snapshot(snapshot: &Snapshot) -> Result<()> {
     let mut error = set_state(snapshot.state).err();
     for bar in bars()? {
+        clip(HWND(bar.hwnd as _), false);
         let prior = snapshot
             .bars
             .iter()
@@ -590,6 +614,7 @@ impl TaskbarHider {
         self.peek = Some(Instant::now());
         let current = bars()?;
         for bar in &current {
+            clip(HWND(bar.hwnd as _), false);
             unsafe {
                 let _ = ShowWindow(HWND(bar.hwnd as _), SW_SHOWNOACTIVATE);
             }
@@ -679,6 +704,11 @@ impl TaskbarHider {
         }
         if bars()?.iter().any(|bar| bar.visible) {
             return Err(failure("A taskbar remained visible after SW_HIDE"));
+        }
+        // Only once hidden: changing a shown taskbar's region makes Explorer
+        // show it again.
+        for bar in &current {
+            clip(HWND(bar.hwnd as _), true);
         }
         let primary_bounds = Rect::from(
             monitor_info(unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) })?.rcMonitor,
