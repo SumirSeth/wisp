@@ -64,6 +64,11 @@ pub fn update(old: Vec<Shown>, icons: Vec<Icon>, size: i32) -> (Vec<Shown>, Vec<
     (shown, inline)
 }
 
+/// The largest size an icon is drawn at before resampling. Tray icons are
+/// rarely over 64 px, and an app's oversized icon must not cost the dock
+/// hundreds of megabytes.
+const MAX_NATIVE: i32 = 256;
+
 /// The physical pixel size of a tray icon at `dpi`.
 pub fn icon_size(dpi: u32) -> i32 {
     (logic::TRAY_ICON * dpi as f32 / 96.0).round() as i32
@@ -77,7 +82,9 @@ pub fn icon_size(dpi: u32) -> i32 {
 /// because `DrawIconEx` scales with nearest-neighbor and makes tray icons
 /// look pixelated.
 pub fn icon_pixels(icon: HICON, size: i32) -> Option<IconPixels> {
-    let native = native_size(icon).filter(|&native| native > 0).unwrap_or(size);
+    let native = native_size(icon)
+        .filter(|&native| native > 0)
+        .map_or(size, |native| native.min(MAX_NATIVE.max(size)));
     let black = draw_on(icon, native, 0x00)?;
     let white = draw_on(icon, native, 0xFF)?;
     let mut bgra = vec![0u8; black.len()];
@@ -296,5 +303,14 @@ mod tests {
         let source = pixels(1, 1, vec![128, 128, 128, 128]);
         let resized = resample(&source, 2);
         assert!(resized.bgra.chunks(4).all(|p| p == [128, 128, 128, 128]));
+    }
+
+    #[test]
+    fn edges_blend_without_dark_fringes() {
+        // Opaque white beside fully transparent: the blend is half-covered
+        // white, so color and alpha stay equal in premultiplied form.
+        let source = pixels(2, 1, vec![255, 255, 255, 255, 0, 0, 0, 0]);
+        let resized = resample(&source, 1);
+        assert_eq!(resized.bgra, [128, 128, 128, 128]);
     }
 }
