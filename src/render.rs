@@ -222,27 +222,17 @@ impl Renderer {
         unsafe {
             let d2d: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
             let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
-            let ui = w!("Segoe UI Variable Text");
-            let icons = w!("Segoe Fluent Icons");
+            let fonts = Fonts::installed(&dwrite);
+            let (ui, icons) = (fonts.text, fonts.icons);
             let formats = Formats {
-                query: text_format(
-                    &dwrite,
-                    w!("Segoe UI Variable Display"),
-                    20.0,
-                    DWRITE_FONT_WEIGHT_NORMAL,
-                )?,
+                query: text_format(&dwrite, fonts.display, 20.0, DWRITE_FONT_WEIGHT_NORMAL)?,
                 title: ellipsized(&dwrite, text_format(&dwrite, ui, 14.5, DWRITE_FONT_WEIGHT_NORMAL)?)?,
                 subtitle: ellipsized(&dwrite, text_format(&dwrite, ui, 12.0, DWRITE_FONT_WEIGHT_NORMAL)?)?,
                 hint: text_format(&dwrite, ui, 12.0, DWRITE_FONT_WEIGHT_NORMAL)?,
                 glyph: text_format(&dwrite, icons, 16.0, DWRITE_FONT_WEIGHT_NORMAL)?,
                 search_glyph: text_format(&dwrite, icons, 17.0, DWRITE_FONT_WEIGHT_NORMAL)?,
                 letter: text_format(&dwrite, ui, 15.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?,
-                value: text_format(
-                    &dwrite,
-                    w!("Segoe UI Variable Display"),
-                    22.0,
-                    DWRITE_FONT_WEIGHT_SEMI_BOLD,
-                )?,
+                value: text_format(&dwrite, fonts.display, 22.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?,
                 small: ellipsized(&dwrite, text_format(&dwrite, ui, 12.0, DWRITE_FONT_WEIGHT_NORMAL)?)?,
             };
             formats.small.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
@@ -426,6 +416,40 @@ unsafe fn text_format(
         format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
         format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
         Ok(format)
+    }
+}
+
+/// The font families Wisp draws with. Windows 10 lacks the Windows 11 fonts,
+/// and without an icon font every glyph draws as a box, so each falls back to
+/// its Windows 10 counterpart.
+#[derive(Clone, Copy)]
+pub struct Fonts {
+    pub text: PCWSTR,
+    pub display: PCWSTR,
+    pub icons: PCWSTR,
+}
+
+impl Fonts {
+    pub fn installed(dw: &IDWriteFactory) -> Fonts {
+        let mut collection = None;
+        let collection = unsafe { dw.GetSystemFontCollection(&mut collection, false) }
+            .ok()
+            .and(collection);
+        let pick = |preferred: PCWSTR, fallback: PCWSTR| {
+            let Some(collection) = &collection else {
+                return preferred;
+            };
+            let (mut index, mut exists) = (0, false.into());
+            match unsafe { collection.FindFamilyName(preferred, &mut index, &mut exists) } {
+                Ok(()) if !exists.as_bool() => fallback,
+                _ => preferred,
+            }
+        };
+        Fonts {
+            text: pick(w!("Segoe UI Variable Text"), w!("Segoe UI")),
+            display: pick(w!("Segoe UI Variable Display"), w!("Segoe UI")),
+            icons: pick(w!("Segoe Fluent Icons"), w!("Segoe MDL2 Assets")),
+        }
     }
 }
 

@@ -119,7 +119,8 @@ impl Renderer {
                 format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
                 Ok(format)
             };
-            let (text, icons) = (w!("Segoe UI Variable Text"), w!("Segoe Fluent Icons"));
+            let fonts = crate::render::Fonts::installed(&dw);
+            let (text, icons) = (fonts.text, fonts.icons);
             let tip = format(text, DWRITE_FONT_WEIGHT_NORMAL, 12.0)?;
             tip.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
             tip.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
@@ -127,7 +128,7 @@ impl Renderer {
             Ok(Self {
                 factory,
                 formats: Formats {
-                    letter: format(w!("Segoe UI Variable Display"), DWRITE_FONT_WEIGHT_SEMI_BOLD, 15.0)?,
+                    letter: format(fonts.display, DWRITE_FONT_WEIGHT_SEMI_BOLD, 15.0)?,
                     time: format(text, DWRITE_FONT_WEIGHT_SEMI_BOLD, 14.0)?,
                     small: format(text, DWRITE_FONT_WEIGHT_NORMAL, 12.5)?,
                     search: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 21.0)?,
