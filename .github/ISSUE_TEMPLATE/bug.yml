@@ -1,0 +1,42 @@
+name: Bug report
+description: Something in Wisp doesn't work as it should.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead. Screenshots or videos help.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Turn on Keep the dock visible.
+        2. Maximize a window.
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: wisp
+    attributes:
+      label: Wisp version
+      description: Shown on the About page of the settings app.
+      placeholder: 0.5.0
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version and build
+      description: Run `winver` to see it.
+      placeholder: Windows 11 24H2, build 26100
+    validations:
+      required: true
+  - type: textarea
+    id: setup
+    attributes:
+      label: Setup
+      description: Screens and scale, dock mode (autohide or Keep visible), and anything that changes the shell, such as Windhawk or ExplorerPatcher.

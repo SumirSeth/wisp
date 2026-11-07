@@ -2,6 +2,8 @@
 
 Thanks for helping. Bug reports, fixes and features are all welcome.
 
+Every change on `main` should be easy to trace: what changed, why, who owns it, how it was checked and which release shipped it. The rules below serve that. They apply to everyone, the maintainer included.
+
 ## Building, not just coding
 
 > Building something has never been about writing code. When I say I built it, it means I have put effort, thought and intention behind every single thing, and got Claude to write the code because it writes better code than almost all humans do.
@@ -16,24 +18,35 @@ AI agents are welcome. Use them as code writers, tinkerers and partners for idea
 
 **You own what you submit.** The person who opens a pull request or makes a commit owns that change, whoever or whatever typed it. Be ready to explain it, defend it and fix it.
 
-Before you open a pull request:
-
 - **Understand every line.** If you can't explain why a line is there, it isn't ready.
-- **Verify it.** Test the change on a real desktop, write tests where they fit, and run the [benchmarks](#performance). Say in the pull request how you checked it.
-- **Think it through.** Consider the edge cases: other monitors, scale settings, virtual desktops, autohide on and off, Windows 10.
+- **Verify it.** Test a build with your change on a real desktop, write tests where they fit, and run the [benchmarks](#performance).
+- **Think it through.** Consider other monitors, scale settings, virtual desktops, autohide on and off, and Windows 10.
 
-**Not accepted:** changes made end to end by an agent with no verifiable check, no real testing and no deliberate thought behind them. They will be closed.
+Changes made end to end by an agent with no verifiable check, no real testing and no deliberate thought behind them are closed.
 
 ## Before you start
 
-- **Bugs:** open an issue first if it isn't already reported. Include your Windows version, what you did, what you expected and what happened.
-- **Features:** open an issue or discussion first. Wisp aims to be a slim, fast dock and launcher, not a full taskbar replacement, so it helps to agree on the idea before you write code.
+- **Bugs:** search the issues first. If it's new, open a bug report with your Windows version and the steps to reproduce it.
+- **Features:** open a feature request first. Wisp aims to be a slim, fast dock and launcher, not a full taskbar replacement, so agree on the idea before you write code.
 
-## Making a change
+## Branches
 
-1. Fork the repository and create a branch from `main`.
-2. Try your change with `scripts\install-nightly.ps1`. It installs **Wisp Nightly** beside your normal Wisp, with its own folder, config and shortcut (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Space</kbd>).
-3. If your change touches anything the user sees or waits on, measure it. See [Performance](#performance).
+- Fork the repository and branch from `main`. Everyone works on branches; nobody pushes to `main`.
+- Name the branch after the change: `fix/…`, `feat/…`, `docs/…` or `perf/…`.
+- Keep it short-lived and rebased on `main`. Rebase rather than merging `main` into it.
+
+## Commits
+
+- **Summary line:** imperative, plain language, about 50 to 72 characters, written for users. "Keep dock icons in place when clicked", not "fix bug" or "update dock.rs".
+- **Body:** why the change is needed and anything surprising about it. The diff already shows what changed.
+- **One logical change per commit.** Squash fixups such as "fix typo" or "address review" before the pull request is merged.
+- **Honest authorship.** The author is the person who owns the change. Credit an AI that helped with a `Co-Authored-By:` line.
+
+## Testing your change
+
+1. Install your build with `scripts\install-nightly.ps1`. It installs **Wisp Nightly** beside your normal Wisp, with its own folder, config and shortcut (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Space</kbd>). Any build of your branch works, as long as you test the code you submit.
+2. Try the change on your desktop, including the edge cases above.
+3. If it affects anything the user sees or waits on, [measure it](#performance).
 4. Run the checks CI runs:
 
    ```sh
@@ -42,8 +55,6 @@ Before you open a pull request:
    cargo clippy --workspace --all-targets --features wisp/nightly,wisp-settings/nightly,wisp/perf-trace -- -D warnings
    cargo test --workspace
    ```
-
-5. Keep your branch rebased on `main`.
 
 ## Performance
 
@@ -63,19 +74,24 @@ Speed is Wisp's main feature, so a change must not make it slower. Measure every
 
 3. **Stress it.** Open and close the launcher fast, sweep the pointer across the dock, and switch virtual desktops quickly, with autohide on and off. Watch for dropped frames, stalls and CPU that stays up.
 
-Put the before and after numbers in your pull request. Any regression needs a reason that is worth it, and it's better to find another way. Frames should stay within the display's frame budget (6.9 ms at 144 Hz), and the dock should use almost no CPU when idle.
+Frames should stay within the display's frame budget (6.9 ms at 144 Hz), and the dock should use almost no CPU when idle. A regression needs a reason worth its cost; look for another way first.
 
 ## Pull requests
 
-- Keep each pull request to one change.
-- **Write the title as a changelog line**, in plain language, such as "Minimize an app when its dock icon is clicked in front". Release notes list pull requests by title.
-- In the description, say what changed, why, and how you verified it, with before and after numbers for anything performance-related. Link the issue it fixes with `Fixes #123`.
-- Write commit messages the same way: a short summary line, then the reason for the change.
-- Add a user-facing change to the `Unreleased` section of [CHANGELOG.md](CHANGELOG.md).
+Every change reaches `main` through a pull request. The template asks for the following:
+
+- **One change** per pull request.
+- **A title that reads as a changelog line**, in plain language, such as "Minimize an app when its dock icon is clicked in front". Release notes list pull requests by title.
+- **What changed, why, and how you verified it.** Name the build you tested and the setup: Windows version, screens, scale and dock mode. Include before and after numbers for anything that could affect speed.
+- **What you didn't test**, so the reviewer knows where to look.
+- **The issue it fixes**, as `Fixes #123`.
+- **A changelog entry** under `Unreleased` in [CHANGELOG.md](CHANGELOG.md) for anything users notice. Internal changes get the `skip-changelog` label instead.
+
+A pull request merges once CI passes and a build with the change has been tested. See [MAINTAINING.md](MAINTAINING.md) for how pull requests are reviewed and released.
 
 ## Writing style
 
-Write code comments, docs and UI text in plain, active language. Use short sentences. Name what the user sees and does. For example, write "The dock hides over full-screen apps", not "Fullscreen detection suppresses dock visibility".
+Write code comments, docs, commit messages and UI text in plain, active language. Use short sentences. Name what the user sees and does. For example, write "The dock hides over full-screen apps", not "Fullscreen detection suppresses dock visibility".
 
 ## License
 

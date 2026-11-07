@@ -1,0 +1,16 @@
+name: Feature request
+description: An idea for the dock or the launcher.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you want to do
+      description: The problem or task, in your own words. What do you do today instead?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+      description: How Wisp could help. Wisp aims to be a slim, fast dock and launcher, not a full taskbar replacement.
