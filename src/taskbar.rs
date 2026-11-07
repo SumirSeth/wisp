@@ -479,9 +479,11 @@ const PEEK_MIN: Duration = Duration::from_secs(4);
 const PEEK_MAX: Duration = Duration::from_secs(60);
 
 impl TaskbarHider {
+    /// Takes the snapshot, starts the watchdog and the show hook. `reapply`
+    /// then hides the taskbars.
     /// `notification_window` must be a top-level window pumped by this thread.
     /// The current executable must dispatch the `--watchdog` mode.
-    pub fn hide(notification_window: HWND) -> Result<Self> {
+    fn start(notification_window: HWND) -> Result<Self> {
         if STOP_REQUESTED.load(Ordering::SeqCst) {
             return Err(failure("Console shutdown was requested"));
         }
@@ -513,7 +515,7 @@ impl TaskbarHider {
                 WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
             )
         };
-        let mut controller = Self {
+        let controller = Self {
             snapshot,
             hook,
             watchdog: Some(watchdog),
@@ -527,7 +529,6 @@ impl TaskbarHider {
         if hook.is_invalid() {
             return Err(Error::from_thread());
         }
-        controller.reapply()?;
         Ok(controller)
     }
 
@@ -550,7 +551,13 @@ impl TaskbarHider {
     pub fn configure(slot: &mut Option<Self>, hwnd: HWND, enabled: bool) -> Result<()> {
         if enabled {
             if slot.is_none() {
-                *slot = Some(Self::hide(hwnd)?);
+                // Keep the controller when this first hide fails, as later
+                // ones do. While Explorer is still switching the taskbar to
+                // auto-hide, it shows a hidden taskbar right away again, most
+                // often a second screen's. The show hook and the retry hide
+                // it once Explorer is done, without restoring the taskbar and
+                // starting a new watchdog in between.
+                slot.insert(Self::start(hwnd)?).reapply()?;
             }
         } else if let Some(hider) = slot {
             hider.restore()?;

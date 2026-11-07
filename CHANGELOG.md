@@ -7,6 +7,7 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 ### Fixes
 
 - Right-clicking the dock no longer shows a "Wisp" title strip across its top.
+- Wisp hides the taskbar reliably when it starts. Before, the taskbar could stay visible for several seconds, or until a later retry, especially with a second screen. (fixes #28)
 
 ## 0.5.0 - 2026-11-07
 
