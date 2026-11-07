@@ -44,6 +44,8 @@ struct Bar {
     visible: bool,
     monitor: Rect,
     rect: Rect,
+    /// Explorer's own window region, which it keeps the size of the window.
+    region: Option<Rect>,
 }
 
 #[derive(Clone, Debug)]
@@ -101,27 +103,62 @@ fn is_taskbar(hwnd: HWND) -> bool {
         }
 }
 
-/// Gives a taskbar an empty window region, or its full shape back. Explorer
-/// shows its taskbars again whenever the work area changes, such as when the
-/// dock's space comes or goes, and the show hook can only hide them after
-/// they have drawn. An empty region keeps such a show from drawing anything.
-fn clip(hwnd: HWND, clipped: bool) {
+/// A window's region as a rectangle. Explorer gives its taskbars a simple
+/// one; `None` for no region, an empty one or a complex one.
+fn window_region(hwnd: HWND) -> Option<Rect> {
     let mut rect = RECT::default();
-    // Explorer's taskbars have no region of their own, so an empty one is ours.
-    if (unsafe { GetWindowRgnBox(hwnd, &mut rect) } == NULLREGION) == clipped {
-        return;
-    }
+    (unsafe { GetWindowRgnBox(hwnd, &mut rect) } == SIMPLEREGION).then(|| rect.into())
+}
+
+fn is_clipped(hwnd: HWND) -> bool {
+    let mut rect = RECT::default();
+    unsafe { GetWindowRgnBox(hwnd, &mut rect) == NULLREGION }
+}
+
+fn set_region(hwnd: HWND, region: Option<Rect>, redraw: bool) {
     unsafe {
-        if !clipped {
-            let _ = SetWindowRgn(hwnd, None, true);
+        let Some(r) = region else {
+            let _ = SetWindowRgn(hwnd, None, redraw);
             return;
-        }
-        let region = CreateRectRgn(0, 0, 0, 0);
+        };
+        let handle = CreateRectRgn(r.left, r.top, r.right, r.bottom);
         // The system owns the region only once it is set.
-        if SetWindowRgn(hwnd, Some(region), false) == 0 {
-            let _ = DeleteObject(region.into());
+        if SetWindowRgn(hwnd, Some(handle), redraw) == 0 {
+            let _ = DeleteObject(handle.into());
         }
     }
+}
+
+/// Gives a hidden taskbar an empty window region. Explorer shows its taskbars
+/// again whenever the work area changes, such as when the dock's space comes
+/// or goes, and the show hook can only hide them after they have drawn. An
+/// empty region keeps such a show from drawing anything.
+fn clip(hwnd: HWND) {
+    if !is_clipped(hwnd) {
+        set_region(hwnd, Some(Rect::default()), false);
+    }
+}
+
+/// Gives a clipped taskbar back the region Explorer gave it.
+fn unclip(hwnd: HWND, original: Option<Rect>) {
+    if is_clipped(hwnd) {
+        set_region(hwnd, original, true);
+    }
+}
+
+/// The snapshot's entry for a taskbar: the same window, or Explorer's new one
+/// on the same screen.
+fn prior<'a>(snapshot: &'a Snapshot, bar: &Bar) -> Option<&'a Bar> {
+    snapshot
+        .bars
+        .iter()
+        .find(|old| old.hwnd == bar.hwnd && old.pid == bar.pid && old.class == bar.class)
+        .or_else(|| {
+            snapshot
+                .bars
+                .iter()
+                .find(|old| old.class == bar.class && old.monitor == bar.monitor)
+        })
 }
 
 fn monitor_info(handle: HMONITOR) -> Result<MONITORINFO> {
@@ -167,6 +204,7 @@ fn bars() -> Result<Vec<Bar>> {
                     visible: IsWindowVisible(hwnd).as_bool(),
                     monitor: info.rcMonitor.into(),
                     rect: rect.into(),
+                    region: window_region(hwnd),
                 });
             }
         }
@@ -275,17 +313,8 @@ fn restore_areas(areas: &[(Rect, Rect)]) -> Result<()> {
 fn restore_snapshot(snapshot: &Snapshot) -> Result<()> {
     let mut error = set_state(snapshot.state).err();
     for bar in bars()? {
-        clip(HWND(bar.hwnd as _), false);
-        let prior = snapshot
-            .bars
-            .iter()
-            .find(|old| old.hwnd == bar.hwnd && old.pid == bar.pid && old.class == bar.class)
-            .or_else(|| {
-                snapshot
-                    .bars
-                    .iter()
-                    .find(|old| old.class == bar.class && old.monitor == bar.monitor)
-            });
+        let prior = prior(snapshot, &bar);
+        unclip(HWND(bar.hwnd as _), prior.and_then(|b| b.region));
         let visible = prior.map(|b| b.visible).unwrap_or(true);
         if state::visibility_diff(visible, bar.visible).is_some() {
             unsafe {
@@ -298,17 +327,7 @@ fn restore_snapshot(snapshot: &Snapshot) -> Result<()> {
         error = Some(e);
     }
     for bar in bars()? {
-        let prior = snapshot
-            .bars
-            .iter()
-            .find(|old| old.hwnd == bar.hwnd && old.pid == bar.pid && old.class == bar.class)
-            .or_else(|| {
-                snapshot
-                    .bars
-                    .iter()
-                    .find(|old| old.class == bar.class && old.monitor == bar.monitor)
-            });
-        if prior.map(|b| b.visible).unwrap_or(true) != bar.visible {
+        if prior(snapshot, &bar).map(|b| b.visible).unwrap_or(true) != bar.visible {
             error = Some(failure("Restored taskbar visibility did not match its snapshot"));
         }
     }
@@ -404,8 +423,9 @@ impl Watchdog {
             ));
         }
         for bar in &snapshot.bars {
+            let region = bar.region.unwrap_or_default();
             command.arg("--bar").arg(format!(
-                "{},{},{},{},{},{},{},{}",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{}",
                 bar.hwnd,
                 bar.pid,
                 u8::from(bar.visible),
@@ -413,7 +433,12 @@ impl Watchdog {
                 bar.monitor.left,
                 bar.monitor.top,
                 bar.monitor.right,
-                bar.monitor.bottom
+                bar.monitor.bottom,
+                u8::from(bar.region.is_some()),
+                region.left,
+                region.top,
+                region.right,
+                region.bottom
             ));
         }
         let mut child = command
@@ -614,7 +639,7 @@ impl TaskbarHider {
         self.peek = Some(Instant::now());
         let current = bars()?;
         for bar in &current {
-            clip(HWND(bar.hwnd as _), false);
+            unclip(HWND(bar.hwnd as _), prior(&self.snapshot, bar).and_then(|b| b.region));
             unsafe {
                 let _ = ShowWindow(HWND(bar.hwnd as _), SW_SHOWNOACTIVATE);
             }
@@ -708,7 +733,7 @@ impl TaskbarHider {
         // Only once hidden: changing a shown taskbar's region makes Explorer
         // show it again.
         for bar in &current {
-            clip(HWND(bar.hwnd as _), true);
+            clip(HWND(bar.hwnd as _));
         }
         let primary_bounds = Rect::from(
             monitor_info(unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) })?.rcMonitor,
@@ -846,7 +871,7 @@ fn watchdog_args(args: &[String]) -> Result<()> {
                     .map(str::parse)
                     .collect::<std::result::Result<_, _>>()
                     .map_err(|_| invalid())?;
-                if n.len() != 8 {
+                if n.len() != 13 {
                     return Err(invalid());
                 }
                 bars.push(Bar {
@@ -866,6 +891,12 @@ fn watchdog_args(args: &[String]) -> Result<()> {
                         bottom: n[7] as i32,
                     },
                     rect: Rect::default(),
+                    region: (n[8] != 0).then(|| Rect {
+                        left: n[9] as i32,
+                        top: n[10] as i32,
+                        right: n[11] as i32,
+                        bottom: n[12] as i32,
+                    }),
                 });
             }
             _ => return Err(invalid()),
