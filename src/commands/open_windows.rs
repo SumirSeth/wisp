@@ -111,7 +111,9 @@ pub fn focus(hwnd: isize) -> Result<(), String> {
         // thread-input attachment. Escape closes it, as the taskbar's own
         // click does, and then the app can come forward.
         let foreground = GetForegroundWindow();
-        dismiss_shell_flyout(foreground);
+        if !dismiss_shell_flyout(foreground) {
+            return Err("Windows did not switch to the window.".into());
+        }
         for _ in 0..20 {
             if GetForegroundWindow() != foreground {
                 break;
@@ -159,8 +161,9 @@ fn wait_for_foreground(hwnd: HWND) -> bool {
 }
 
 /// Closes the Action Center, Start menu or search, which otherwise keep the
-/// foreground and stop the dock from switching apps.
-fn dismiss_shell_flyout(foreground: HWND) {
+/// foreground and stop the dock from switching apps. Returns whether one was
+/// in front.
+fn dismiss_shell_flyout(foreground: HWND) -> bool {
     const SHELL: [&str; 4] = [
         r"\shellexperiencehost.exe",
         r"\startmenuexperiencehost.exe",
@@ -171,13 +174,15 @@ fn dismiss_shell_flyout(foreground: HWND) {
         let mut pid = 0;
         GetWindowThreadProcessId(foreground, Some(&mut pid));
         if pid == 0 {
-            return;
+            return false;
         }
         let exe = process_path(pid).to_ascii_lowercase();
-        if SHELL.iter().any(|name| exe.ends_with(name)) {
-            keybd_event(VK_ESCAPE.0 as u8, 0, KEYBD_EVENT_FLAGS(0), 0);
-            keybd_event(VK_ESCAPE.0 as u8, 0, KEYEVENTF_KEYUP, 0);
+        if !SHELL.iter().any(|name| exe.ends_with(name)) {
+            return false;
         }
+        keybd_event(VK_ESCAPE.0 as u8, 0, KEYBD_EVENT_FLAGS(0), 0);
+        keybd_event(VK_ESCAPE.0 as u8, 0, KEYEVENTF_KEYUP, 0);
+        true
     }
 }
 
