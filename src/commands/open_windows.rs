@@ -7,6 +7,7 @@ use windows::{
         System::Threading::{
             OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
         },
+        UI::Input::KeyboardAndMouse::{KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VK_ESCAPE, keybd_event},
         UI::WindowsAndMessaging::*,
     },
     core::{BOOL, PWSTR},
@@ -99,7 +100,26 @@ pub fn focus(hwnd: isize) -> Result<(), String> {
         if IsIconic(hwnd).as_bool() {
             let _ = ShowWindow(hwnd, SW_RESTORE);
         }
-        if SetForegroundWindow(hwnd).as_bool() {
+        if GetForegroundWindow() == hwnd {
+            return Ok(());
+        }
+        if SetForegroundWindow(hwnd).as_bool() && wait_for_foreground(hwnd) {
+            return Ok(());
+        }
+        // A shell flyout such as the Action Center holds the foreground from
+        // an AppContainer, where Windows refuses both a plain activation and
+        // thread-input attachment. Escape closes it, as the taskbar's own
+        // click does, and then the app can come forward.
+        let foreground = GetForegroundWindow();
+        dismiss_shell_flyout(foreground);
+        for _ in 0..20 {
+            if GetForegroundWindow() != foreground {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let _ = SetForegroundWindow(hwnd);
+        if wait_for_foreground(hwnd) {
             Ok(())
         } else {
             Err("Windows did not switch to the window.".into())
@@ -121,6 +141,43 @@ pub fn minimize(hwnd: isize) -> Result<(), String> {
         }
         let _ = ShowWindow(hwnd, SW_MINIMIZE);
         Ok(())
+    }
+}
+
+/// Waits briefly for a requested activation to land; Windows reports it a
+/// moment after the call while the flyout closes.
+fn wait_for_foreground(hwnd: HWND) -> bool {
+    unsafe {
+        for _ in 0..20 {
+            if GetForegroundWindow() == hwnd {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        GetForegroundWindow() == hwnd
+    }
+}
+
+/// Closes the Action Center, Start menu or search, which otherwise keep the
+/// foreground and stop the dock from switching apps.
+fn dismiss_shell_flyout(foreground: HWND) {
+    const SHELL: [&str; 4] = [
+        r"\shellexperiencehost.exe",
+        r"\startmenuexperiencehost.exe",
+        r"\searchhost.exe",
+        r"\shellhost.exe",
+    ];
+    unsafe {
+        let mut pid = 0;
+        GetWindowThreadProcessId(foreground, Some(&mut pid));
+        if pid == 0 {
+            return;
+        }
+        let exe = process_path(pid).to_ascii_lowercase();
+        if SHELL.iter().any(|name| exe.ends_with(name)) {
+            keybd_event(VK_ESCAPE.0 as u8, 0, KEYBD_EVENT_FLAGS(0), 0);
+            keybd_event(VK_ESCAPE.0 as u8, 0, KEYEVENTF_KEYUP, 0);
+        }
     }
 }
 
