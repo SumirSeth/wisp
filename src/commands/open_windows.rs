@@ -107,6 +107,23 @@ pub fn focus(hwnd: isize) -> Result<(), String> {
     }
 }
 
+/// True when the window is the foreground one, so the dock can toggle it.
+pub fn is_foreground(hwnd: isize) -> bool {
+    unsafe { GetForegroundWindow() == HWND(hwnd as _) }
+}
+
+/// Hides the window the way its minimize button does.
+pub fn minimize(hwnd: isize) -> Result<(), String> {
+    unsafe {
+        let hwnd = HWND(hwnd as _);
+        if !IsWindow(Some(hwnd)).as_bool() {
+            return Err("The window was closed.".into());
+        }
+        let _ = ShowWindow(hwnd, SW_MINIMIZE);
+        Ok(())
+    }
+}
+
 /// Asks the window to close, as its close button does.
 pub fn close(hwnd: isize) -> Result<(), String> {
     unsafe { PostMessageW(Some(HWND(hwnd as _)), WM_CLOSE, WPARAM(0), LPARAM(0)).map_err(|error| error.message()) }

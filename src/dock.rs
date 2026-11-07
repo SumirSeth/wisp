@@ -1438,7 +1438,15 @@ impl State {
             }
         } else if let Some(item) = self.items.get(index - 1 + self.scroll) {
             if !new_instance && let Some(window) = item.windows.first() {
-                if let Err(error) = open_windows::focus(window.hwnd) {
+                // Clicking the app already in front minimizes it, as its
+                // taskbar button does; any other click brings it forward.
+                if item.windows.iter().any(|w| open_windows::is_foreground(w.hwnd)) {
+                    for window in &item.windows {
+                        if let Err(error) = open_windows::minimize(window.hwnd) {
+                            eprintln!("Dock minimize: {error}");
+                        }
+                    }
+                } else if let Err(error) = open_windows::focus(window.hwnd) {
                     eprintln!("Dock activation: {error}");
                 }
             } else {
