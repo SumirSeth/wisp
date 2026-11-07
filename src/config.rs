@@ -40,6 +40,15 @@ pub enum Position {
 /// Keys missing from the user's file take their value from `config-0.3.toml`,
 /// then from the default config, as in wisp-settings, so both apps agree on
 /// what an old config means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum WindowListMode {
+    #[default]
+    Multiple,
+    Always,
+    Off,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub hide_taskbar: bool,
@@ -54,6 +63,7 @@ pub struct Config {
     pub search_url: String,
     pub file_search: bool,
     pub file_search_exclude: Vec<String>,
+    pub window_list: WindowListMode,
 }
 
 impl Default for Config {
@@ -111,6 +121,19 @@ mod tests {
     fn legacy_pins_are_ignored() {
         let config = Config::parse("dock = true\ndock_apps = ['old.app']").unwrap();
         assert!(config.dock);
+        assert_eq!(config.window_list, super::WindowListMode::Multiple);
+    }
+
+    #[test]
+    fn window_list_modes_deserialize_and_older_config_defaults_to_multiple() {
+        for (value, expected) in [
+            ("multiple", super::WindowListMode::Multiple),
+            ("always", super::WindowListMode::Always),
+            ("off", super::WindowListMode::Off),
+        ] {
+            let config = Config::parse(&format!("window_list = '{value}'")).unwrap();
+            assert_eq!(config.window_list, expected);
+        }
     }
 
     #[test]

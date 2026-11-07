@@ -25,6 +25,11 @@ const ICON_SVG: &[u8] = include_bytes!("../../assets/icon.svg");
 /// Config values and the labels the dropdowns show for them.
 const THEMES: [(&str, &str); 3] = [("system", "System"), ("dark", "Dark"), ("light", "Light")];
 const BACKDROPS: [(&str, &str); 3] = [("acrylic", "Acrylic"), ("mica", "Mica"), ("solid", "Solid")];
+const WINDOW_LISTS: [(&str, &str); 3] = [
+    ("multiple", "Only for multiple windows"),
+    ("always", "Always"),
+    ("off", "Off"),
+];
 const ONBOARDING_STEPS: usize = 3;
 type Choices = SelectState<SearchableVec<&'static str>>;
 
@@ -84,6 +89,7 @@ pub struct Settings {
     folder: Entity<InputState>,
     theme: Entity<Choices>,
     backdrop: Entity<Choices>,
+    window_list: Entity<Choices>,
     results: Entity<SliderState>,
     autostart: bool,
     powertoys: Result<bool, String>,
@@ -141,6 +147,14 @@ impl Settings {
                 cx,
             )
         });
+        let window_list = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(labels(&WINDOW_LISTS)),
+                index_of(&WINDOW_LISTS, &config.window_list),
+                window,
+                cx,
+            )
+        });
         let results = cx.new(|_| {
             SliderState::new()
                 .min(1.)
@@ -193,6 +207,14 @@ impl Settings {
             }
         })
         .detach();
+        cx.subscribe_in(&window_list, window, |this, _, event, window, cx| {
+            if let SelectEvent::Confirm(Some(label)) = event
+                && let Some(value) = value_of(&WINDOW_LISTS, label)
+            {
+                this.save("window_list", value.into(), window, cx);
+            }
+        })
+        .detach();
         cx.subscribe_in(&results, window, |this, _, event, window, cx| {
             if let SliderEvent::Change(value) = event {
                 let value = (value.start().round() as i64).clamp(1, 20);
@@ -227,6 +249,7 @@ impl Settings {
             folder,
             theme,
             backdrop,
+            window_list,
             results,
             autostart: system::autostart_enabled(),
             powertoys: system::powertoys_run_enabled(),
@@ -310,6 +333,9 @@ impl Settings {
                 let backdrop = index_of(&BACKDROPS, &self.config.backdrop);
                 self.backdrop
                     .update(cx, |state, cx| state.set_selected_index(backdrop, window, cx));
+                let window_list = index_of(&WINDOW_LISTS, &self.config.window_list);
+                self.window_list
+                    .update(cx, |state, cx| state.set_selected_index(window_list, window, cx));
                 let results = self.config.max_results as f32;
                 self.results
                     .update(cx, |state, cx| state.set_value(results, window, cx));
@@ -638,6 +664,15 @@ impl Settings {
                             .on_change(cx.listener(|this, enabled: &bool, window, cx| {
                                 this.save("dock_autohide", (!*enabled).into(), window, cx);
                             })),
+                        p,
+                    ))
+                    .child(divider(p))
+                    .child(row(
+                        "App window list",
+                        "Show a compact window list when hovering a running app icon.",
+                        Select::new(&self.window_list)
+                            .accessibility_label("App window list")
+                            .w(px(190.)),
                         p,
                     ))
                     .child(divider(p))

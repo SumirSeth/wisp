@@ -1,5 +1,6 @@
 //! Matching and DIP geometry.
 
+use crate::config::WindowListMode;
 use crate::indexer::AppEntry;
 
 pub const ICON: f32 = 32.0;
@@ -45,6 +46,15 @@ pub const TRAY_W: f32 = 32.0;
 pub const VOLUME_W: f32 = 46.0;
 pub const BATTERY_W: f32 = 50.0;
 pub const CLOCK_W: f32 = 88.0;
+/// The window list above an app icon: its padding, one row per window, and
+/// the widest a row may be before it is clipped, in DIPs.
+pub const LIST_PAD: (f32, f32) = (7.0, 3.0);
+pub const LIST_ROW: f32 = 22.0;
+pub const LIST_TEXT_MAX: f32 = 280.0;
+
+pub fn show_window_list(mode: WindowListMode, windows: usize) -> bool {
+    windows > 0 && (mode == WindowListMode::Always || mode == WindowListMode::Multiple && windows > 1)
+}
 /// Notification-area icons shown in the dock; the rest are behind the chevron.
 pub const MAX_INLINE: usize = 5;
 /// Tray icons share the dock's enlarged visual rhythm.
@@ -224,6 +234,17 @@ pub fn stable_order<T>(previous: Vec<T>, current: Vec<T>, same: impl Fn(&T, &T) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_list_modes_follow_the_selected_policy() {
+        assert!(show_window_list(WindowListMode::Always, 1));
+        assert!(show_window_list(WindowListMode::Always, 3));
+        assert!(!show_window_list(WindowListMode::Multiple, 1));
+        assert!(show_window_list(WindowListMode::Multiple, 2));
+        assert!(!show_window_list(WindowListMode::Off, 1));
+        assert!(!show_window_list(WindowListMode::Off, 2));
+        assert!(!show_window_list(WindowListMode::Always, 0));
+    }
     #[test]
     fn slide_endpoints_and_reversal_are_continuous() {
         assert_eq!(slide_value(1.0, 0.0, 0.0), 1.0);

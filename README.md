@@ -120,6 +120,7 @@ Open **Settings** from Wisp's tray icon, or edit `%APPDATA%\wisp\config.toml`. T
 | `hotkey` | `"Alt+Space"` | Shows or hides the launcher |
 | `dock` | `true` | Shows the dock |
 | `dock_autohide` | `true` | Hides the dock until the pointer touches the bottom edge. `false` keeps it visible. |
+| `window_list` | `"multiple"` | Shows the app's window list for multiple windows, always, or never |
 | `hide_taskbar` | `true` | Hides the Windows taskbar while Wisp runs |
 | `position` | `"bottom"` | `"bottom"` grows the launcher from the dock; `"center"` opens it in the middle |
 | `theme` | `"system"` | `"system"`, `"dark"` or `"light"` |

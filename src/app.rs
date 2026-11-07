@@ -612,6 +612,7 @@ impl Launcher {
         if let Some(dock) = &mut self.dock {
             dock.pace_frames();
             dock.set_apps(&self.apps, &self.icons);
+            dock.set_window_list_mode(self.config.window_list);
             // Notification icons need a home while the taskbar is hidden.
             dock.set_tray(self.taskbar.as_ref().is_some_and(TaskbarHider::is_active));
             dock.set_autohide(self.config.dock_autohide);

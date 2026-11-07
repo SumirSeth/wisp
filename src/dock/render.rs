@@ -42,6 +42,8 @@ struct Formats {
     chevron: IDWriteTextFormat,
     /// Tooltips: left-aligned and wrapping.
     tip: IDWriteTextFormat,
+    /// One line of the window list, clipped at the card's edge.
+    row: IDWriteTextFormat,
 }
 
 pub struct Renderer {
@@ -125,6 +127,8 @@ impl Renderer {
             tip.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
             tip.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
             tip.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP)?;
+            let row = format(text, DWRITE_FONT_WEIGHT_NORMAL, 11.5)?;
+            row.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
             Ok(Self {
                 factory,
                 formats: Formats {
@@ -135,6 +139,7 @@ impl Renderer {
                     glyph: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 17.0)?,
                     chevron: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 12.0)?,
                     tip,
+                    row,
                 },
                 dw,
                 target: None,
@@ -196,6 +201,59 @@ impl Renderer {
                 metrics.height.ceil() + 2.0 * TIP_PAD.1,
             ))
         }
+    }
+
+    /// Draws an app's windows as a list, highlighting the row under the pointer.
+    pub fn draw_windows(
+        &mut self,
+        hwnd: HWND,
+        dpi: u32,
+        palette: &Palette,
+        rows: &[String],
+        hover: Option<usize>,
+    ) -> Result<()> {
+        self.paint(hwnd, dpi, palette, |target, formats| {
+            background(target, palette);
+            let size = unsafe { target.rt.GetSize() };
+            for (index, row) in rows.iter().enumerate() {
+                let top = logic::LIST_PAD.1 + index as f32 * logic::LIST_ROW;
+                let line = rect(
+                    logic::LIST_PAD.0,
+                    top,
+                    size.width - logic::LIST_PAD.0,
+                    top + logic::LIST_ROW,
+                );
+                if hover == Some(index) {
+                    unsafe {
+                        target.brush.SetColor(&palette.row_selected);
+                        target.rt.FillRoundedRectangle(&rounded(line, 4.0), &target.brush);
+                    }
+                }
+                unsafe { target.brush.SetColor(&palette.text) };
+                text(&target.rt, &target.brush, &formats.row, row, line);
+            }
+            Ok(())
+        })
+    }
+
+    /// The window list's window size in DIPs.
+    pub fn measure_windows(&self, rows: &[String]) -> Result<(f32, f32)> {
+        let mut width = 0.0f32;
+        for row in rows {
+            let wide: Vec<u16> = row.encode_utf16().collect();
+            unsafe {
+                let layout = self
+                    .dw
+                    .CreateTextLayout(&wide, &self.formats.row, logic::LIST_TEXT_MAX, 1000.0)?;
+                let mut metrics = DWRITE_TEXT_METRICS::default();
+                layout.GetMetrics(&mut metrics)?;
+                width = width.max(metrics.widthIncludingTrailingWhitespace);
+            }
+        }
+        Ok((
+            width.ceil().min(logic::LIST_TEXT_MAX) + 2.0 * logic::LIST_PAD.0,
+            rows.len() as f32 * logic::LIST_ROW + 2.0 * logic::LIST_PAD.1,
+        ))
     }
 
     /// Draws the desktop pill: a dot per desktop, the current one long, then its name.

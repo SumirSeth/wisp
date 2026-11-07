@@ -24,6 +24,7 @@ pub struct Config {
     pub dock: bool,
     pub dock_autohide: bool,
     pub hide_taskbar: bool,
+    pub window_list: String,
 }
 
 impl Default for Config {
@@ -54,6 +55,8 @@ impl Config {
         choice(&backdrop, &["acrylic", "mica", "solid"], "backdrop")?;
         let position = string("position")?;
         choice(&position, &["center", "bottom"], "position")?;
+        let window_list = string("window_list")?;
+        choice(&window_list, &["always", "multiple", "off"], "window_list")?;
         let max_results = get("max_results")
             .as_integer()
             .filter(|value| *value >= 0)
@@ -83,6 +86,7 @@ impl Config {
             dock: boolean("dock")?,
             dock_autohide: boolean("dock_autohide")?,
             hide_taskbar: boolean("hide_taskbar")?,
+            window_list,
         })
     }
 }
@@ -205,6 +209,10 @@ fn validate_edit(key: &str, value: &Value) -> Result<(), String> {
         | "dock"
         | "dock_autohide"
         | "hide_taskbar" => {}
+        "window_list" if !matches!(value.as_str(), Some("always" | "multiple" | "off")) => {
+            return Err("window_list must be always, multiple or off.".into());
+        }
+        "window_list" => {}
         _ => return Err(format!("Unknown setting: {key}")),
     }
     Ok(())
@@ -230,6 +238,8 @@ mod tests {
         assert!(!old.dock && !old.hide_taskbar);
         assert_eq!(old.position, "center");
         assert_eq!(old.max_results, config.max_results);
+        assert_eq!(config.window_list, "multiple");
+        assert_eq!(Config::from_document(&DEFAULT_CONFIG.parse().unwrap()).unwrap(), config);
     }
 
     #[test]
@@ -312,6 +322,7 @@ mod tests {
             ("max_results", 0.into()),
             ("max_results", 21.into()),
             ("theme", "blue".into()),
+            ("window_list", "sometimes".into()),
             ("unknown", true.into()),
         ] {
             assert!(store.set(key, value).is_err(), "{key}");

@@ -41,7 +41,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{Error, GUID, Result, w};
 
 use crate::commands::open_windows::{self, Window};
-use crate::config::Backdrop;
+use crate::config::{Backdrop, WindowListMode};
 use crate::indexer::{AppEntry, IconPixels};
 use crate::theme::Palette;
 use crate::tray_host::{self, Action, TrayHost};
@@ -59,6 +59,11 @@ const TIP_TIMER: usize = 104;
 const TIP_MS: u32 = 450;
 /// Tooltips wrap past this width, in DIPs.
 const TIP_MAX: f32 = 320.0;
+/// Lists an app's windows after the same hover, and hides it once the pointer
+/// has left both the list and the dock.
+const WINDOWS_TIMER: usize = 107;
+const WINDOWS_HIDE_TIMER: usize = 108;
+const WINDOWS_HIDE_MS: u32 = 220;
 const REFRESH_TIMER: usize = 101;
 /// Watches the pointer for the bottom edge while the dock is hidden, and
 /// for leaving while it shows.
@@ -91,6 +96,7 @@ struct State {
     items: Vec<Item>,
     palette: Palette,
     backdrop: Backdrop,
+    window_list_mode: WindowListMode,
     renderer: render::Renderer,
     dpi: u32,
     hover: Option<usize>,
@@ -146,6 +152,14 @@ struct State {
     /// What the pointer rests on, and the text the tooltip shows for it.
     tip_target: Option<tray::Tip>,
     tip_text: String,
+    /// The window list above the hovered app icon: which slot it belongs to,
+    /// its rows and their windows, and the row under the pointer.
+    windows: HWND,
+    windows_renderer: render::Renderer,
+    windows_slot: Option<usize>,
+    windows_rows: Vec<String>,
+    windows_targets: Vec<isize>,
+    windows_hover: Option<usize>,
     /// The last click on a notification icon, to tell double clicks.
     tray_click: Option<(tray_host::Key, Instant)>,
     /// The demo's flyout and its hovered icon, applied as icons arrive.
@@ -181,6 +195,7 @@ impl Dock {
             items: Vec::new(),
             palette: Palette::new(true, true),
             backdrop: Backdrop::Acrylic,
+            window_list_mode: WindowListMode::Always,
             renderer: render::Renderer::new()?,
             dpi: 96,
             hover: None,
@@ -222,6 +237,12 @@ impl Dock {
             tip_renderer: render::Renderer::new()?,
             tip_target: None,
             tip_text: String::new(),
+            windows: HWND::default(),
+            windows_renderer: render::Renderer::new()?,
+            windows_slot: None,
+            windows_rows: Vec::new(),
+            windows_targets: Vec::new(),
+            windows_hover: None,
             tray_click: None,
             held_flyout: None,
         }));
@@ -280,6 +301,11 @@ impl Dock {
                 WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
                 w!("Wisp Dock tooltip"),
             ),
+            // The window list takes clicks, but not the focus.
+            (
+                WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+                w!("Wisp Dock windows"),
+            ),
         ] {
             let window = unsafe {
                 CreateWindowExW(
@@ -300,8 +326,10 @@ impl Dock {
             let mut s = state.borrow_mut();
             if s.flyout.is_invalid() {
                 s.flyout = window;
-            } else {
+            } else if s.tip.is_invalid() {
                 s.tip = window;
+            } else {
+                s.windows = window;
             }
         }
         EVENT_TARGET.with(|target| target.set(hwnd));
@@ -353,7 +381,8 @@ impl Dock {
     }
 
     pub fn owns_message(msg: u32, wp: WPARAM) -> bool {
-        msg == WM_TIMER && (101..=106).contains(&wp.0) || matches!(msg, WM_REFRESH | WM_TRAY_CHANGED)
+        msg == WM_TIMER && (REFRESH_TIMER..=WINDOWS_HIDE_TIMER).contains(&wp.0)
+            || matches!(msg, WM_REFRESH | WM_TRAY_CHANGED)
     }
 
     pub fn mostly_visible(&self) -> bool {
@@ -398,6 +427,7 @@ impl Dock {
         let mut s = self.state.borrow_mut();
         s.close_flyout();
         s.hide_tip();
+        s.hide_windows();
         let mut rect = RECT::default();
         unsafe {
             let _ = GetWindowRect(self.hwnd, &mut rect);
@@ -451,6 +481,14 @@ impl Dock {
             s.icons.entry(id.clone()).or_insert_with(|| pixels.clone());
         }
         s.refresh();
+    }
+
+    pub fn set_window_list_mode(&mut self, mode: WindowListMode) {
+        let mut s = self.state.borrow_mut();
+        s.window_list_mode = mode;
+        if mode == WindowListMode::Off {
+            s.hide_windows();
+        }
     }
 
     pub fn refresh(&mut self) {
@@ -564,6 +602,7 @@ impl Dock {
         let mut s = self.state.borrow_mut();
         s.close_flyout();
         s.hide_tip();
+        s.hide_windows();
         s.visible = false;
         s.stop_slide();
         s.revealed = false;
@@ -587,9 +626,11 @@ impl Drop for Dock {
             let _ = KillTimer(Some(self.hwnd), TIP_TIMER);
             let _ = KillTimer(Some(self.hwnd), HOVER_TIMER);
             let _ = KillTimer(Some(self.hwnd), DESKTOP_TIMER);
+            let _ = KillTimer(Some(self.hwnd), WINDOWS_TIMER);
+            let _ = KillTimer(Some(self.hwnd), WINDOWS_HIDE_TIMER);
             // Remove the pointer before synchronous destruction can reenter the wndproc.
             let s = self.state.borrow();
-            for hwnd in [s.flyout, s.tip, self.hwnd] {
+            for hwnd in [s.flyout, s.tip, s.windows, self.hwnd] {
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             }
             drop(s);
@@ -597,6 +638,7 @@ impl Drop for Dock {
             if self.shared {
                 let _ = DestroyWindow(self.state.borrow().flyout);
                 let _ = DestroyWindow(self.state.borrow().tip);
+                let _ = DestroyWindow(self.state.borrow().windows);
             } else {
                 let _ = DestroyWindow(self.hwnd);
             }
@@ -650,7 +692,7 @@ impl State {
     fn apply_material(&mut self, dark: bool, backdrop: Backdrop) {
         self.backdrop = backdrop;
         self.palette = crate::theme::apply_backdrop(self.hwnd, dark, backdrop, true);
-        for hwnd in [self.flyout, self.tip] {
+        for hwnd in [self.flyout, self.tip, self.windows] {
             crate::theme::apply_backdrop(hwnd, dark, backdrop, true);
             unsafe {
                 let _ = InvalidateRect(Some(hwnd), None, false);
@@ -701,6 +743,11 @@ impl State {
         self.items = logic::stable_order(std::mem::take(&mut self.items), items, |old, new| {
             old.app.id.eq_ignore_ascii_case(&new.app.id)
         });
+        if let Some(slot) = self.windows_slot
+            && self.item_at(slot).is_none_or(|item| item.windows.is_empty())
+        {
+            self.hide_windows();
+        }
         self.status = status::read();
         self.place();
         if self.suspended {
@@ -742,6 +789,7 @@ impl State {
             self.revealed = false;
             self.close_flyout();
             self.hide_tip();
+            self.hide_windows();
             unsafe {
                 let _ = ShowWindow(self.hwnd, SW_HIDE);
             }
@@ -781,9 +829,18 @@ impl State {
         let slack = (12 * self.dpi / 96) as i32;
         // The gap below the dock counts as on it, so the pointer can rest on the edge.
         // The dock stays while its flyout is open.
+        let mut windows_rect = RECT::default();
+        let windows_open = unsafe { IsWindowVisible(self.windows) }.as_bool()
+            && unsafe { GetWindowRect(self.windows, &mut windows_rect) }.is_ok();
+        let over_windows = windows_open
+            && cursor.x >= windows_rect.left
+            && cursor.x < windows_rect.right
+            && cursor.y >= windows_rect.top
+            && cursor.y < windows_rect.bottom;
         let near = !self.autohide
             || self.held
             || self.flyout_open
+            || over_windows
             || cursor.x >= rect.left - slack && cursor.x < rect.right + slack && cursor.y >= rect.top - slack;
         if near {
             self.away = 0;
@@ -791,6 +848,7 @@ impl State {
             self.away += 1;
             if self.away >= HIDE_AFTER {
                 self.hide_tip();
+                self.hide_windows();
                 self.revealed = false;
                 self.start_slide(1.0);
                 return;
@@ -1030,6 +1088,28 @@ impl State {
         })
     }
 
+    /// An app slot's rectangle on screen where the dock rests, in physical pixels.
+    fn item_rect(&self, slot: usize) -> RECT {
+        let scale = self.dpi as f32 / 96.0;
+        let px = |dip: f32| (dip * scale).round() as i32;
+        let rect = self.surface_rect;
+        let x = |dip| match rect {
+            Some(rect) => {
+                rect.left + (px(dip) as f32 * (rect.right - rect.left) as f32 / self.width.max(1) as f32).round() as i32
+            }
+            None => self.left + px(dip),
+        };
+        let top = rect.map_or(self.top + self.slide_offset(px(logic::HEIGHT)), |r| {
+            r.bottom - px(logic::HEIGHT)
+        });
+        RECT {
+            left: x(logic::left(slot)),
+            top,
+            right: x(logic::left(slot) + logic::SLOT),
+            bottom: top + px(logic::HEIGHT),
+        }
+    }
+
     /// A flyout cell's rectangle on screen, in physical pixels.
     fn cell_rect(&self, index: usize) -> RECT {
         let scale = self.dpi as f32 / 96.0;
@@ -1130,6 +1210,7 @@ impl State {
 
     fn open_flyout(&mut self) {
         self.hide_tip();
+        self.hide_windows();
         self.flyout_open = true;
         self.flyout_hover = None;
         self.layout_flyout();
@@ -1244,6 +1325,135 @@ impl State {
         }
     }
 
+    /// Lists the windows of the app under the pointer, or of none.
+    fn hover_windows(&mut self, slot: Option<usize>) {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), WINDOWS_HIDE_TIMER);
+        }
+        let slot = slot.filter(|&slot| {
+            self.window_list_mode != WindowListMode::Off
+                && self
+                    .item_at(slot)
+                    .is_some_and(|item| logic::show_window_list(self.window_list_mode, item.windows.len()))
+        });
+        if self.windows_slot == slot {
+            return;
+        }
+        let shown = self.windows_slot.is_some();
+        self.hide_windows();
+        self.windows_slot = slot;
+        if slot.is_some() {
+            unsafe {
+                let _ = SetTimer(Some(self.hwnd), WINDOWS_TIMER, if shown { 0 } else { TIP_MS }, None);
+            }
+        }
+    }
+
+    /// The item in a visible slot.
+    fn item_at(&self, slot: usize) -> Option<&Item> {
+        slot.checked_sub(1).and_then(|i| self.items.get(i + self.scroll))
+    }
+
+    /// Hides the window list and forgets its windows.
+    fn hide_windows(&mut self) {
+        self.windows_slot = None;
+        self.windows_hover = None;
+        self.windows_rows.clear();
+        self.windows_targets.clear();
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), WINDOWS_TIMER);
+            let _ = KillTimer(Some(self.hwnd), WINDOWS_HIDE_TIMER);
+            let _ = ShowWindow(self.windows, SW_HIDE);
+        }
+    }
+
+    /// Keeps the list a moment while the pointer crosses to it, then hides it.
+    fn leave_windows(&mut self) {
+        if self.windows_slot.is_none() {
+            return;
+        }
+        let shown = unsafe { IsWindowVisible(self.windows) }.as_bool();
+        if !shown {
+            // It never appeared, so a pending hover is now stale.
+            self.hide_windows();
+            return;
+        }
+        unsafe {
+            let _ = SetTimer(Some(self.hwnd), WINDOWS_HIDE_TIMER, WINDOWS_HIDE_MS, None);
+        }
+    }
+
+    /// Draws the hovered app's windows above its icon.
+    fn show_windows(&mut self) {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), WINDOWS_TIMER);
+        }
+        let Some(slot) = self.windows_slot else { return };
+        let Some(item) = self.item_at(slot) else {
+            self.hide_windows();
+            return;
+        };
+        if !logic::show_window_list(self.window_list_mode, item.windows.len()) {
+            self.hide_windows();
+            return;
+        }
+        let rows: Vec<String> = item
+            .windows
+            .iter()
+            .map(|window| match window.title.trim() {
+                "" => item.app.name.clone(),
+                title => title.to_string(),
+            })
+            .collect();
+        let targets: Vec<isize> = item.windows.iter().map(|window| window.hwnd).collect();
+        if rows.is_empty() {
+            self.hide_windows();
+            return;
+        }
+        let scale = self.dpi as f32 / 96.0;
+        let Ok((width, height)) = self.windows_renderer.measure_windows(&rows) else {
+            return;
+        };
+        let (width, height) = ((width * scale).ceil() as i32, (height * scale).ceil() as i32);
+        let mut info = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        unsafe {
+            let _ = GetMonitorInfoW(MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST), &mut info);
+        }
+        let anchor = self.item_rect(slot);
+        let gap = (6.0 * scale).round() as i32;
+        let x = ((anchor.left + anchor.right - width) / 2)
+            .min(info.rcMonitor.right - gap - width)
+            .max(info.rcMonitor.left + gap);
+        self.windows_hover = None;
+        self.windows_rows = rows;
+        self.windows_targets = targets;
+        unsafe {
+            let _ = SetWindowPos(
+                self.windows,
+                Some(HWND_TOPMOST),
+                x,
+                anchor.top - gap - height,
+                width,
+                height,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            );
+            let _ = InvalidateRect(Some(self.windows), None, false);
+        }
+    }
+
+    /// The row of the window list under a popup pointer position.
+    fn windows_hit(&self, lp: LPARAM) -> Option<usize> {
+        let scale = self.dpi as f32 / 96.0;
+        let y = ((lp.0 >> 16) as i16) as f32 / scale;
+        let row = (y - logic::LIST_PAD.1) / logic::LIST_ROW;
+        (row >= 0.0)
+            .then_some(row as usize)
+            .filter(|&row| row < self.windows_rows.len())
+    }
+
     fn hide_tip(&mut self) {
         self.tip_target = None;
         self.desktop_pill = None;
@@ -1314,6 +1524,7 @@ impl State {
     fn chevron_menu(&mut self) {
         self.close_flyout();
         self.hide_tip();
+        self.hide_windows();
         unsafe {
             let Ok(menu) = CreatePopupMenu() else {
                 return;
@@ -1718,6 +1929,25 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     }
                     return LRESULT(0);
                 }
+                WM_TIMER if wp.0 == WINDOWS_TIMER => {
+                    s.show_windows();
+                    return LRESULT(0);
+                }
+                WM_TIMER if wp.0 == WINDOWS_HIDE_TIMER => {
+                    let _ = KillTimer(Some(hwnd), WINDOWS_HIDE_TIMER);
+                    let mut cursor = POINT::default();
+                    let _ = GetCursorPos(&mut cursor);
+                    let over = |window: HWND| {
+                        let mut rect = RECT::default();
+                        GetWindowRect(window, &mut rect).is_ok()
+                            && (rect.left..rect.right).contains(&cursor.x)
+                            && (rect.top..rect.bottom).contains(&cursor.y)
+                    };
+                    if !over(s.hwnd) && !over(s.windows) {
+                        s.hide_windows();
+                    }
+                    return LRESULT(0);
+                }
                 WM_TRAY_CHANGED => {
                     s.sync_tray();
                     return LRESULT(0);
@@ -1746,6 +1976,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         Some(logic::Part::Tray(i)) => Some(tray::Tip::Inline(i)),
                         _ => None,
                     });
+                    s.hover_windows(if hover_part.is_none() { hover } else { None });
                     let _ = TrackMouseEvent(&mut TRACKMOUSEEVENT {
                         cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
                         dwFlags: TME_LEAVE,
@@ -1759,6 +1990,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     s.animate_hover();
                     s.hover_part = None;
                     s.hover_tip(None);
+                    s.leave_windows();
                     let _ = InvalidateRect(Some(hwnd), None, false);
                     return LRESULT(0);
                 }
@@ -1767,6 +1999,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     if s.hit_part(lp) != Some(logic::Part::Chevron) {
                         s.close_flyout();
                     }
+                    s.hide_windows();
                     if let Some(index) = s.hit(lp) {
                         s.click(index, msg == WM_MBUTTONUP);
                     } else if let Some(part) = s.hit_part(lp)
@@ -1778,6 +2011,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 }
                 WM_RBUTTONUP => {
                     s.close_flyout();
+                    s.hide_windows();
                     if let Some(index) = s.hit(lp) {
                         s.menu(index);
                     } else {
@@ -1812,6 +2046,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         s.wheel_desktops(delta.into());
                         return LRESULT(0);
                     }
+                    s.hide_windows();
                     s.scroll = if delta < 0 {
                         (s.scroll + 1).min(s.items.len().saturating_sub(s.capacity))
                     } else {
@@ -1835,6 +2070,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     return LRESULT(0);
                 }
                 WM_CLOSE => {
+                    s.hide_windows();
                     s.stop_slide();
                     s.visible = false;
                     let _ = ShowWindow(hwnd, SW_HIDE);
@@ -1877,6 +2113,75 @@ unsafe extern "system" fn popup_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LP
             }
         } else if msg == WM_NCHITTEST {
             return LRESULT(HTCLIENT as isize);
+        }
+        let windows = cell.try_borrow().is_ok_and(|s| s.windows == hwnd);
+        if windows {
+            match msg {
+                // Clicks land here, but the list never takes the focus.
+                WM_MOUSEACTIVATE => return LRESULT(MA_NOACTIVATE as isize),
+                WM_MOUSEMOVE => {
+                    let Ok(mut s) = cell.try_borrow_mut() else {
+                        return DefWindowProcW(hwnd, msg, wp, lp);
+                    };
+                    s.away = 0;
+                    let _ = KillTimer(Some(s.hwnd), WINDOWS_HIDE_TIMER);
+                    let hover = s.windows_hit(lp);
+                    if s.windows_hover != hover {
+                        s.windows_hover = hover;
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
+                    let _ = TrackMouseEvent(&mut TRACKMOUSEEVENT {
+                        cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                        dwFlags: TME_LEAVE,
+                        hwndTrack: hwnd,
+                        dwHoverTime: 0,
+                    });
+                    return LRESULT(0);
+                }
+                WM_MOUSELEAVE => {
+                    let Ok(mut s) = cell.try_borrow_mut() else {
+                        return DefWindowProcW(hwnd, msg, wp, lp);
+                    };
+                    s.leave_windows();
+                    return LRESULT(0);
+                }
+                WM_LBUTTONUP => {
+                    let Ok(mut s) = cell.try_borrow_mut() else {
+                        return DefWindowProcW(hwnd, msg, wp, lp);
+                    };
+                    if let Some(row) = s.windows_hit(lp)
+                        && let Some(&target) = s.windows_targets.get(row)
+                    {
+                        s.hide_windows();
+                        if let Err(error) = open_windows::focus(target) {
+                            eprintln!("Dock window: {error}");
+                        }
+                    }
+                    return LRESULT(0);
+                }
+                WM_PAINT => {
+                    let Ok(mut s) = cell.try_borrow_mut() else {
+                        return DefWindowProcW(hwnd, msg, wp, lp);
+                    };
+                    let mut paint = PAINTSTRUCT::default();
+                    let _ = BeginPaint(hwnd, &mut paint);
+                    let State {
+                        windows_renderer,
+                        palette,
+                        dpi,
+                        windows_rows,
+                        windows_hover,
+                        ..
+                    } = &mut *s;
+                    if let Err(error) = windows_renderer.draw_windows(hwnd, *dpi, palette, windows_rows, *windows_hover)
+                    {
+                        eprintln!("Dock window list: {error}");
+                    }
+                    let _ = EndPaint(hwnd, &paint);
+                    return LRESULT(0);
+                }
+                _ => return DefWindowProcW(hwnd, msg, wp, lp),
+            }
         }
         let Ok(mut s) = cell.try_borrow_mut() else {
             return DefWindowProcW(hwnd, msg, wp, lp);
