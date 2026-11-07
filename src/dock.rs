@@ -36,6 +36,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, GetDoubleClickTime, GetKeyState, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE,
     VK_LBUTTON, VK_RBUTTON, VK_SHIFT,
 };
+use windows::Win32::UI::Input::{RAWINPUTDEVICE, RIDEV_INPUTSINK, RIDEV_REMOVE, RegisterRawInputDevices};
 use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow};
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{Error, GUID, Result, w};
@@ -69,6 +70,14 @@ const REFRESH_TIMER: usize = 101;
 /// for leaving while it shows.
 const POLL_TIMER: usize = 102;
 const POLL_MS: u32 = 100;
+/// Polls faster while the pointer moves in the lower part of a screen and the
+/// dock is hidden, so the dock starts to slide in soon after the pointer
+/// reaches the edge.
+const NEAR_POLL_MS: u32 = 15;
+/// Fast polls without pointer movement before the dock goes back to the slow
+/// poll. Windows then wakes it on the next movement (`WM_INPUT`), so a
+/// resting pointer costs what it does far from the edge.
+const STILL_POLLS: u8 = 4;
 /// Polls the pointer may spend away from the dock before it hides.
 const HIDE_AFTER: u8 = 5;
 /// Steps the slide-in animation.
@@ -111,6 +120,15 @@ struct State {
     /// The pointer touched the bottom edge, so the dock slid in.
     revealed: bool,
     away: u8,
+    /// The poll timer's current interval.
+    poll_ms: u32,
+    /// The pointer at the last poll, and how many fast polls in a row found it
+    /// there.
+    last_cursor: POINT,
+    still_polls: u8,
+    /// Windows reports the next pointer movement, while the pointer rests in
+    /// the lower part of a screen and the dock is hidden.
+    listening: bool,
     /// Stays revealed regardless of the pointer, for the demo's screenshots,
     /// optionally at another DPI than the monitor's.
     held: bool,
@@ -210,6 +228,10 @@ impl Dock {
             hover_part: None,
             revealed: false,
             away: 0,
+            poll_ms: POLL_MS,
+            last_cursor: POINT::default(),
+            still_polls: 0,
+            listening: false,
             held: false,
             autohide: true,
             suspended: false,
@@ -384,7 +406,7 @@ impl Dock {
 
     pub fn owns_message(msg: u32, wp: WPARAM) -> bool {
         msg == WM_TIMER && (REFRESH_TIMER..=WINDOWS_HIDE_TIMER).contains(&wp.0)
-            || matches!(msg, WM_REFRESH | WM_TRAY_CHANGED)
+            || matches!(msg, WM_REFRESH | WM_TRAY_CHANGED | WM_INPUT)
     }
 
     pub fn mostly_visible(&self) -> bool {
@@ -441,6 +463,7 @@ impl Dock {
             }
             let _ = KillTimer(Some(self.hwnd), POLL_TIMER);
         }
+        s.listen(false);
         s.stop_slide();
         s.suspended = true;
         rect
@@ -455,9 +478,7 @@ impl Dock {
         s.away = 0;
         s.stop_slide();
         s.refresh();
-        unsafe {
-            SetTimer(Some(self.hwnd), POLL_TIMER, POLL_MS, None);
-        }
+        s.start_poll(POLL_MS);
     }
 
     pub fn surface_rect(&mut self, rect: RECT) {
@@ -553,9 +574,7 @@ impl Dock {
         s.revealed = !s.autohide;
         s.surface_rect = None;
         s.stop_slide();
-        unsafe {
-            SetTimer(Some(self.hwnd), POLL_TIMER, POLL_MS, None);
-        }
+        s.start_poll(POLL_MS);
         s.refresh();
     }
     /// Reveals the dock for good, with a fixed hover, so screenshots can show it
@@ -628,6 +647,7 @@ impl Dock {
         s.visible = false;
         s.stop_slide();
         s.revealed = false;
+        s.listen(false);
         unsafe {
             let _ = KillTimer(Some(self.hwnd), POLL_TIMER);
             let _ = ShowWindow(self.hwnd, SW_HIDE);
@@ -638,6 +658,9 @@ impl Dock {
 impl Drop for Dock {
     fn drop(&mut self) {
         EVENT_TARGET.with(|target| target.set(HWND::default()));
+        if let Ok(mut s) = self.state.try_borrow_mut() {
+            s.listen(false);
+        }
         unsafe {
             for hook in self.hooks.drain(..) {
                 let _ = UnhookWinEvent(hook);
@@ -852,10 +875,34 @@ impl State {
             // Dragging along the bottom edge, such as a scroll bar, is not a request for the dock.
             let dragging =
                 unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0 || GetAsyncKeyState(VK_RBUTTON.0 as i32) < 0 };
+            let moved = cursor != self.last_cursor;
+            self.last_cursor = cursor;
             if !dragging && at_bottom_edge(cursor) && !fullscreen_foreground(self.hwnd) {
+                self.listen(false);
                 self.reveal();
+                self.start_poll(POLL_MS);
+            } else if !near_bottom_edge(cursor) || fullscreen_foreground(self.hwnd) {
+                // Away from the edge, or over a full-screen app, the slow poll is enough.
+                self.listen(false);
+                self.set_poll(POLL_MS);
+            } else if moved {
+                self.still_polls = 0;
+                self.listen(false);
+                self.set_poll(NEAR_POLL_MS);
+            } else {
+                // A resting pointer can't reach the edge. Poll slowly until it moves again.
+                self.still_polls = self.still_polls.saturating_add(1);
+                if self.still_polls >= STILL_POLLS {
+                    self.listen(true);
+                    self.set_poll(POLL_MS);
+                }
             }
             return;
+        }
+        self.listen(false);
+        if self.poll_ms != POLL_MS {
+            // HIDE_AFTER counts slow polls.
+            self.start_poll(POLL_MS);
         }
         let mut rect = RECT::default();
         let _ = unsafe { GetWindowRect(self.hwnd, &mut rect) };
@@ -902,6 +949,51 @@ impl State {
         }
         // Polling also catches volume changes from keys and other apps.
         self.update_status();
+    }
+
+    /// Starts or restarts the poll timer at `ms`.
+    fn start_poll(&mut self, ms: u32) {
+        self.poll_ms = ms;
+        unsafe {
+            SetTimer(Some(self.hwnd), POLL_TIMER, ms, None);
+        }
+    }
+
+    /// Changes the poll timer to `ms` unless it already runs at that interval.
+    fn set_poll(&mut self, ms: u32) {
+        if ms != self.poll_ms {
+            self.start_poll(ms);
+        }
+    }
+
+    /// Asks Windows to report pointer movement (`WM_INPUT`), or stops it. Only
+    /// a resting pointer listens; a moving one is followed by the fast poll.
+    fn listen(&mut self, on: bool) {
+        if self.listening == on {
+            return;
+        }
+        let device = RAWINPUTDEVICE {
+            // The generic desktop page's mouse.
+            usUsagePage: 0x01,
+            usUsage: 0x02,
+            dwFlags: if on { RIDEV_INPUTSINK } else { RIDEV_REMOVE },
+            hwndTarget: if on { self.hwnd } else { HWND::default() },
+        };
+        let result = unsafe { RegisterRawInputDevices(&[device], size_of::<RAWINPUTDEVICE>() as u32) };
+        if let Err(error) = &result {
+            eprintln!("Dock pointer listener: {error}");
+        }
+        // Without the listener, a resting pointer keeps the slow poll as before.
+        self.listening = on && result.is_ok();
+    }
+
+    /// The pointer moved while resting near the edge: follow it with the fast poll.
+    fn wake(&mut self) {
+        if self.listening {
+            self.listen(false);
+            self.still_polls = 0;
+            self.start_poll(NEAR_POLL_MS);
+        }
     }
 
     /// Shows the dock, or reverses an outgoing slide at its current position.
@@ -1910,6 +2002,20 @@ fn at_bottom_edge(cursor: POINT) -> bool {
     }
 }
 
+/// Whether the pointer is in the lower third of its screen, where a quick
+/// move can reach the bottom edge before the next slow poll.
+fn near_bottom_edge(cursor: POINT) -> bool {
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        GetMonitorInfoW(MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST), &mut info).as_bool()
+            && cursor.y >= info.rcMonitor.bottom - (info.rcMonitor.bottom - info.rcMonitor.top) / 3
+            && (info.rcMonitor.left..info.rcMonitor.right).contains(&cursor.x)
+    }
+}
+
 fn fullscreen_foreground(dock: HWND) -> bool {
     unsafe {
         let hwnd = GetForegroundWindow();
@@ -2024,6 +2130,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 WM_TIMER if wp.0 == POLL_TIMER => {
                     s.poll();
                     return LRESULT(0);
+                }
+                WM_INPUT => {
+                    s.wake();
+                    // Windows frees the input data in DefWindowProc.
+                    return DefWindowProcW(hwnd, msg, wp, lp);
                 }
                 WM_TIMER if wp.0 == SLIDE_TIMER => {
                     s.step_slide();

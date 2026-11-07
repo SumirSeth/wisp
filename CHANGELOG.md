@@ -4,6 +4,10 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ## Unreleased
 
+### New
+
+- The autohide dock starts to slide in sooner when you move the pointer to the bottom edge. (#25, by @RayTrunk, fixes #20)
+
 ## 0.6.1 - 2026-11-09
 
 ### Fixes
