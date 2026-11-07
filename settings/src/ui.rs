@@ -629,6 +629,19 @@ impl Settings {
                     ))
                     .child(divider(p))
                     .child(row(
+                        "Keep the dock visible",
+                        "Show the dock all the time on the main screen instead of when the pointer touches the bottom edge. While the taskbar is hidden, windows stop above the dock.",
+                        Switch::new("dock-visible")
+                            .checked(!self.config.dock_autohide)
+                            .disabled(!self.config.dock)
+                            .accessibility_label("Keep the dock visible")
+                            .on_change(cx.listener(|this, enabled: &bool, window, cx| {
+                                this.save("dock_autohide", (!*enabled).into(), window, cx);
+                            })),
+                        p,
+                    ))
+                    .child(divider(p))
+                    .child(row(
                         "Hide the taskbar",
                         "Hide the Windows taskbar while Wisp runs. The taskbar comes back when Wisp quits.",
                         Switch::new("hide-taskbar")

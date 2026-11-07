@@ -25,7 +25,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{Error, Result};
 
 pub use model::{Action, Key};
-pub use proxy::PROXY_PROP;
+pub use proxy::{PROXY_PROP, explorer_tray};
 
 /// A copy of an app's icon, destroyed with its last reference.
 #[derive(Debug)]

@@ -25,6 +25,9 @@ const TRAY_CLASS: PCWSTR = w!("Shell_TrayWnd");
 /// Checks Explorer, our FindWindow ordering and icon owners.
 const CHECK_TIMER: usize = 1;
 const CHECK_MS: u32 = 1000;
+/// Checks in a row Explorer must outrank the proxy before apps are asked to
+/// add their icons again through it.
+const OUTRANKED_REFRESH: u32 = 3;
 /// Rereads promotion settings after they settle.
 const SETTINGS_TIMER: usize = 2;
 /// Below shell32's own 7 second timeout, so senders hear our answer.
@@ -246,7 +249,8 @@ impl Host {
             if !self.outrank() {
                 let found = FindWindowW(TRAY_CLASS, None).unwrap_or_default();
                 eprintln!("Tray host: {:?} outranks the proxy in FindWindow for now", found.0);
-                self.outranked = 1;
+                // Apps answering the startup refresh reach Explorer.
+                self.outranked = OUTRANKED_REFRESH;
             }
         }
         self.waiting = 0;
@@ -364,6 +368,11 @@ impl Host {
                     }
                     self.outranked += 1;
                 } else {
+                    // Apps that added icons meanwhile reached Explorer. Only
+                    // for long spells: brief ones come and go with flyouts.
+                    if self.outranked >= OUTRANKED_REFRESH {
+                        refresh_icons();
+                    }
                     self.outranked = 0;
                 }
             }
@@ -450,7 +459,7 @@ fn owner_alive(hwnd: u32, pid: u32) -> bool {
 }
 
 /// Explorer's own primary taskbar: the class, minus our proxy, in an explorer.exe.
-fn explorer_tray() -> Option<(HWND, u32)> {
+pub fn explorer_tray() -> Option<(HWND, u32)> {
     crate::taskbar::taskbar_windows().into_iter().find_map(|hwnd| {
         let mut class = [0u16; 32];
         let len = unsafe { GetClassNameW(hwnd, &mut class) } as usize;
@@ -657,13 +666,16 @@ fn forward_copy(wp: WPARAM, tag: usize, bytes: &[u8]) -> LRESULT {
         lpData: bytes.as_ptr() as *mut _,
     };
     let mut result = 0usize;
+    // Not SMTO_BLOCK: while Explorer handles an app bar message it sends
+    // broadcasts back to this thread, and a blocked thread stalls Explorer
+    // until the broadcast times out.
     let sent = unsafe {
         SendMessageTimeoutW(
             tray,
             WM_COPYDATA,
             wp,
             LPARAM(&data as *const _ as isize),
-            SMTO_BLOCK | SMTO_ABORTIFHUNG,
+            SMTO_NORMAL | SMTO_ABORTIFHUNG,
             FORWARD_MS,
             Some(&mut result),
         )
@@ -788,7 +800,7 @@ fn forward_other(msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
                 msg,
                 wp,
                 lp,
-                SMTO_BLOCK | SMTO_ABORTIFHUNG,
+                SMTO_NORMAL | SMTO_ABORTIFHUNG,
                 OTHER_MS,
                 Some(&mut result),
             );

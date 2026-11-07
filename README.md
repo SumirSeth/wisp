@@ -22,7 +22,7 @@
 
 Wisp hides the taskbar. A dock takes its place.
 
-Touch the bottom edge of the screen. The dock slides up.
+Touch the bottom edge of the screen. The dock slides up. To keep it on screen, turn on **Keep the dock visible** in Settings.
 
 Press <kbd>Alt</kbd>+<kbd>Space</kbd>. The dock grows into the launcher. Type, then press <kbd>Enter</kbd>.
 
@@ -126,6 +126,7 @@ theme = "system"            # "system" | "dark" | "light"
 backdrop = "acrylic"        # "acrylic" | "mica" | "solid"
 position = "bottom"         # "bottom" | "center"
 dock = true
+dock_autohide = true        # false keeps the dock on screen
 hide_taskbar = true
 max_results = 8
 show_recent = true

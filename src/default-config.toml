@@ -39,3 +39,8 @@ hide_taskbar = true
 # Show the dock: running apps, notification icons, volume, battery and the
 # clock. It appears when the pointer touches the bottom edge of a screen.
 dock = true
+
+# Hide the dock until the pointer touches the bottom edge of a screen. With
+# false, the dock stays on the main screen and windows stop above it while the
+# taskbar is hidden.
+dock_autohide = true

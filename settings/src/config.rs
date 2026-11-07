@@ -22,6 +22,7 @@ pub struct Config {
     pub file_search_exclude: Vec<String>,
     pub position: String,
     pub dock: bool,
+    pub dock_autohide: bool,
     pub hide_taskbar: bool,
 }
 
@@ -80,6 +81,7 @@ impl Config {
             file_search_exclude,
             position,
             dock: boolean("dock")?,
+            dock_autohide: boolean("dock_autohide")?,
             hide_taskbar: boolean("hide_taskbar")?,
         })
     }
@@ -201,6 +203,7 @@ fn validate_edit(key: &str, value: &Value) -> Result<(), String> {
         | "file_search_exclude"
         | "position"
         | "dock"
+        | "dock_autohide"
         | "hide_taskbar" => {}
         _ => return Err(format!("Unknown setting: {key}")),
     }
@@ -221,7 +224,7 @@ mod tests {
         assert!(config.show_recent && config.file_search);
         assert_eq!(config.file_search_exclude.len(), 14);
         assert_eq!(config.position, "bottom");
-        assert!(config.dock && config.hide_taskbar);
+        assert!(config.dock && config.dock_autohide && config.hide_taskbar);
         // A config from Wisp 0.3 has no dock keys and keeps the taskbar, as in the launcher.
         let old = Config::from_document(&"hotkey = 'Alt+Space'".parse().unwrap()).unwrap();
         assert!(!old.dock && !old.hide_taskbar);

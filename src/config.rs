@@ -44,6 +44,7 @@ pub enum Position {
 pub struct Config {
     pub hide_taskbar: bool,
     pub dock: bool,
+    pub dock_autohide: bool,
     pub hotkey: String,
     pub max_results: usize,
     pub theme: Theme,

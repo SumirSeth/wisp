@@ -6,6 +6,12 @@ mod desktops;
 mod logic;
 #[path = "dock/render.rs"]
 mod render;
+#[path = "dock/space.rs"]
+pub mod space;
+
+/// The room a dock that stays visible keeps at the bottom of the primary
+/// screen, in DIPs: its height and the margins above and below it.
+pub const RESERVED_HEIGHT: f32 = logic::HEIGHT + 2.0 * logic::MARGIN;
 #[path = "dock/status.rs"]
 mod status;
 #[path = "dock/tray.rs"]
@@ -101,6 +107,9 @@ struct State {
     /// Stays revealed regardless of the pointer, for the demo's screenshots,
     /// optionally at another DPI than the monitor's.
     held: bool,
+    /// Whether the dock hides until the pointer touches a bottom edge. When
+    /// false it stays on the primary screen.
+    autohide: bool,
     suspended: bool,
     frame_paced: bool,
     held_dpi: Option<u32>,
@@ -185,6 +194,7 @@ impl Dock {
             revealed: false,
             away: 0,
             held: false,
+            autohide: true,
             suspended: false,
             frame_paced: false,
             held_dpi: None,
@@ -480,7 +490,8 @@ impl Dock {
         self.state.borrow_mut().suspended = false;
         let mut s = self.state.borrow_mut();
         s.visible = true;
-        s.revealed = false;
+        // A dock that stays visible comes back in place, without sliding.
+        s.revealed = !s.autohide;
         s.surface_rect = None;
         s.stop_slide();
         unsafe {
@@ -520,6 +531,27 @@ impl Dock {
         }
         s.sync_tray();
     }
+    /// Keeps the dock visible on the primary screen, or lets it auto-hide.
+    pub fn set_autohide(&mut self, autohide: bool) {
+        let mut s = self.state.borrow_mut();
+        if s.autohide == autohide {
+            return;
+        }
+        s.autohide = autohide;
+        if !autohide && s.visible && !s.suspended && !s.revealed {
+            s.reveal();
+        } else {
+            // Move to the primary screen, or start the hide countdown.
+            s.away = 0;
+            s.place();
+        }
+    }
+
+    /// Whether the dock stays on screen instead of auto-hiding.
+    pub fn stays_visible(&self) -> bool {
+        !self.state.borrow().autohide
+    }
+
     /// Hides the dock until `show`, such as while the launcher is open.
     pub fn hide(&mut self) {
         let mut s = self.state.borrow_mut();
@@ -709,6 +741,13 @@ impl State {
             return;
         }
         if !self.revealed {
+            if !self.autohide {
+                // Back after a fullscreen app, or after the launcher closed.
+                if !fullscreen_foreground(self.hwnd) {
+                    self.reveal();
+                }
+                return;
+            }
             // Dragging along the bottom edge, such as a scroll bar, is not a request for the dock.
             let dragging =
                 unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0 || GetAsyncKeyState(VK_RBUTTON.0 as i32) < 0 };
@@ -735,7 +774,8 @@ impl State {
         let slack = (12 * self.dpi / 96) as i32;
         // The gap below the dock counts as on it, so the pointer can rest on the edge.
         // The dock stays while its flyout is open.
-        let near = self.held
+        let near = !self.autohide
+            || self.held
             || self.flyout_open
             || cursor.x >= rect.left - slack && cursor.x < rect.right + slack && cursor.y >= rect.top - slack;
         if near {
@@ -872,9 +912,12 @@ impl State {
             return;
         }
         unsafe {
-            // The dock appears on the screen whose bottom edge the pointer touched.
+            // The dock appears on the screen whose bottom edge the pointer
+            // touched, or stays on the primary screen.
             let mut cursor = POINT::default();
-            let _ = GetCursorPos(&mut cursor);
+            if self.autohide {
+                let _ = GetCursorPos(&mut cursor);
+            }
             let monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTOPRIMARY);
             let mut info = MONITORINFO {
                 cbSize: size_of::<MONITORINFO>() as u32,
