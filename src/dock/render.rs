@@ -477,7 +477,7 @@ fn background(target: &Target, palette: &Palette, layout_scale: f32) {
 
 /// Draws a notification icon centered on (`x`, `y`). Its pixels are made
 /// for this DPI, so they map one to one onto the screen.
-fn tray_icon(target: &mut Target, dpi: u32, layout_scale: f32, shown: &Shown, x: f32, y: f32) -> Result<()> {
+fn tray_icon(target: &mut Target, dpi: u32, shown: &Shown, x: f32, y: f32) -> Result<()> {
     let Some(pixels) = &shown.pixels else { return Ok(()) };
     let key = shown.icon.key();
     let scale = dpi as f32 / 96.0;
@@ -502,10 +502,7 @@ fn tray_icon(target: &mut Target, dpi: u32, layout_scale: f32, shown: &Shown, x:
             )?;
             target.tray.insert(key, (pixels.clone(), bitmap));
         }
-        let (width, height) = (
-            pixels.width as f32 / scale * layout_scale,
-            pixels.height as f32 / scale * layout_scale,
-        );
+        let (width, height) = (pixels.width as f32 / scale, pixels.height as f32 / scale);
         let left = ((x - width / 2.0) * scale).round() / scale;
         let top = ((y - height / 2.0) * scale).round() / scale;
         target.rt.DrawBitmap(
@@ -546,7 +543,7 @@ fn draw_flyout(target: &mut Target, frame: &FlyoutFrame) -> Result<()> {
                 );
             }
         }
-        tray_icon(target, frame.dpi, 1.0, shown, left + cell / 2.0, top + cell / 2.0)?;
+        tray_icon(target, frame.dpi, shown, left + cell / 2.0, top + cell / 2.0)?;
     }
     Ok(())
 }
@@ -777,7 +774,6 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
                     tray_icon(
                         target,
                         frame.dpi,
-                        frame.layout_scale,
                         shown,
                         left + part.width_scaled(frame.layout_scale) / 2.0,
                         middle,
