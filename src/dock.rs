@@ -1470,25 +1470,41 @@ impl State {
     }
 
     /// Measures and places the list after its row text changes.
-    fn layout_windows(&mut self, slot: usize, rows: Vec<String>, targets: Vec<isize>) {
+    fn layout_windows(&mut self, slot: usize, mut rows: Vec<String>, mut targets: Vec<isize>) {
         let scale = self.dpi as f32 / 96.0;
+        let mut info = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !unsafe { GetMonitorInfoW(MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST), &mut info) }.as_bool() {
+            self.hide_windows();
+            return;
+        }
+        let anchor = self.item_rect(slot);
+        let gap = (6.0 * scale).round() as i32;
+        let available = anchor.top - gap - (info.rcWork.top + gap);
+        let capacity = logic::window_list_rows(available, scale, logic::LIST_PAD.1);
+        if capacity == 0 {
+            self.hide_windows();
+            return;
+        }
+        if rows.len() > capacity {
+            // Keep the first (most recently used) windows. The final row only
+            // reports the remainder and has no target or hover highlight.
+            let visible = capacity - 1;
+            let total = self.item_at(slot).map_or(targets.len(), |item| item.windows.len());
+            rows.truncate(visible);
+            targets.truncate(visible);
+            rows.push(format!("+{} more", total - visible));
+        }
         let Ok((width, height)) = self.windows_renderer.measure_windows(&rows) else {
             self.hide_windows();
             return;
         };
         let (width, height) = ((width * scale).ceil() as i32, (height * scale).ceil() as i32);
-        let mut info = MONITORINFO {
-            cbSize: size_of::<MONITORINFO>() as u32,
-            ..Default::default()
-        };
-        unsafe {
-            let _ = GetMonitorInfoW(MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST), &mut info);
-        }
-        let anchor = self.item_rect(slot);
-        let gap = (6.0 * scale).round() as i32;
         let x = ((anchor.left + anchor.right - width) / 2)
-            .min(info.rcMonitor.right - gap - width)
-            .max(info.rcMonitor.left + gap);
+            .min(info.rcWork.right - gap - width)
+            .max(info.rcWork.left + gap);
         self.hide_tip();
         self.windows_hover = self.windows_hover.filter(|&row| row < targets.len());
         self.windows_rows = rows;
@@ -1514,7 +1530,7 @@ impl State {
         let row = (y - logic::LIST_PAD.1) / logic::LIST_ROW;
         (row >= 0.0)
             .then_some(row as usize)
-            .filter(|&row| row < self.windows_rows.len())
+            .filter(|&row| row < self.windows_targets.len())
     }
 
     fn hide_tip(&mut self) {
