@@ -60,7 +60,8 @@ impl Config {
         choice(&window_list, &["always", "multiple", "off"], "window_list")?;
         let dock_icon_size = get("dock_icon_size")
             .as_integer()
-            .ok_or("dock_icon_size must be a whole number of DIP.")?
+            .filter(|value| *value >= 0)
+            .ok_or("dock_icon_size must be a positive whole number of DIP.")?
             .clamp(24, 40);
         let max_results = get("max_results")
             .as_integer()
@@ -354,6 +355,8 @@ mod tests {
             assert_eq!(Config::from_document(&doc).unwrap().max_results, expected);
         }
         assert!(Config::from_document(&"max_results = -1".parse().unwrap()).is_err());
+        // The launcher reads the size as unsigned, so Settings rejects a negative one too.
+        assert!(Config::from_document(&"dock_icon_size = -1".parse().unwrap()).is_err());
     }
 
     #[test]
