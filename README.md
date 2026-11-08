@@ -131,6 +131,8 @@ Open **Settings** from Wisp's tray icon, or edit `%APPDATA%\wisp\config.toml`. T
 | `file_search_exclude` | `["node_modules", …]` | Folder names file search skips |
 | `search_url` | Google | Web search URL. `{query}` is replaced by your search. |
 
+In the dock's app-window list, left-click a title to switch to that window or middle-click it to close that window.
+
 Configs from Wisp 0.3 keep the taskbar. To switch, set `dock` and `hide_taskbar` to `true` and `position` to `"bottom"`.
 
 To add your own panel, put a TOML file in `%APPDATA%\wisp\surfaces`. See [`src/surface/now.toml`](src/surface/now.toml) for an example.

@@ -2145,7 +2145,7 @@ unsafe extern "system" fn popup_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LP
                     s.leave_windows();
                     return LRESULT(0);
                 }
-                WM_LBUTTONUP => {
+                WM_LBUTTONUP | WM_MBUTTONUP => {
                     let Ok(mut s) = cell.try_borrow_mut() else {
                         return DefWindowProcW(hwnd, msg, wp, lp);
                     };
@@ -2153,7 +2153,12 @@ unsafe extern "system" fn popup_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LP
                         && let Some(&target) = s.windows_targets.get(row)
                     {
                         s.hide_windows();
-                        if let Err(error) = open_windows::focus(target) {
+                        let result = if msg == WM_MBUTTONUP {
+                            open_windows::close(target)
+                        } else {
+                            open_windows::focus(target)
+                        };
+                        if let Err(error) = result {
                             eprintln!("Dock window: {error}");
                         }
                     }
