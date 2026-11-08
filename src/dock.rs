@@ -282,6 +282,12 @@ impl Dock {
             }
         };
         state.borrow_mut().hwnd = hwnd;
+        let mut dock = Self {
+            hwnd,
+            shared,
+            state,
+            hooks: Vec::new(),
+        };
         // The flyout and tooltips are owned by the dock, so they stay above it.
         let popup = WNDCLASSEXW {
             cbSize: size_of::<WNDCLASSEXW>() as u32,
@@ -320,10 +326,10 @@ impl Dock {
                     Some(hwnd),
                     None,
                     Some(instance.into()),
-                    Some((&raw mut *state).cast()),
+                    Some((&raw mut *dock.state).cast()),
                 )?
             };
-            let mut s = state.borrow_mut();
+            let mut s = dock.state.borrow_mut();
             if s.flyout.is_invalid() {
                 s.flyout = window;
             } else if s.tip.is_invalid() {
@@ -333,12 +339,6 @@ impl Dock {
             }
         }
         EVENT_TARGET.with(|target| target.set(hwnd));
-        let mut dock = Self {
-            hwnd,
-            shared,
-            state,
-            hooks: Vec::new(),
-        };
         for (first, last) in [
             (EVENT_OBJECT_CREATE, EVENT_OBJECT_HIDE),
             (EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_NAMECHANGE),
@@ -629,10 +629,12 @@ impl Drop for Dock {
             // Remove the pointer before synchronous destruction can reenter the wndproc.
             let s = self.state.borrow();
             for hwnd in [s.flyout, s.tip, s.windows, self.hwnd] {
-                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+                if !hwnd.is_invalid() {
+                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+                }
             }
             drop(s);
-            // Destroys the owned flyout and tooltip too.
+            // Destroys the owned flyout, tooltip and window list too.
             if self.shared {
                 let _ = DestroyWindow(self.state.borrow().flyout);
                 let _ = DestroyWindow(self.state.borrow().tip);
