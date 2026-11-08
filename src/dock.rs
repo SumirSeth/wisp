@@ -1319,6 +1319,7 @@ impl State {
         self.hide_tip();
         self.tip_target = target;
         if target.is_some() {
+            self.hide_windows();
             unsafe {
                 SetTimer(Some(self.hwnd), TIP_TIMER, TIP_MS, None);
             }
@@ -1343,6 +1344,7 @@ impl State {
         self.hide_windows();
         self.windows_slot = slot;
         if slot.is_some() {
+            self.hide_tip();
             unsafe {
                 let _ = SetTimer(Some(self.hwnd), WINDOWS_TIMER, if shown { 0 } else { TIP_MS }, None);
             }
@@ -1427,6 +1429,7 @@ impl State {
         let x = ((anchor.left + anchor.right - width) / 2)
             .min(info.rcMonitor.right - gap - width)
             .max(info.rcMonitor.left + gap);
+        self.hide_tip();
         self.windows_hover = None;
         self.windows_rows = rows;
         self.windows_targets = targets;
@@ -1638,6 +1641,7 @@ impl State {
 
     /// Shows the desktops in a pill above the dock for a moment.
     fn show_desktops(&mut self, desktops: desktops::Desktops) {
+        self.hide_windows();
         self.tip_target = None;
         let name = &desktops.names[desktops.current];
         let Ok((width, height)) = self.tip_renderer.measure_desktops(desktops.names.len(), name) else {
