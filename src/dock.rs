@@ -486,9 +486,7 @@ impl Dock {
     pub fn set_window_list_mode(&mut self, mode: WindowListMode) {
         let mut s = self.state.borrow_mut();
         s.window_list_mode = mode;
-        if mode == WindowListMode::Off {
-            s.hide_windows();
-        }
+        s.hide_windows();
     }
 
     pub fn refresh(&mut self) {
@@ -740,11 +738,21 @@ impl State {
                 });
             }
         }
+        // A slot may now belong to another app, or contain different windows.
+        let previous = self
+            .windows_slot
+            .and_then(|slot| self.item_at(slot))
+            .map(|item| (item.app.id.clone(), item.app.name.clone(), item.windows.clone()));
         self.items = logic::stable_order(std::mem::take(&mut self.items), items, |old, new| {
             old.app.id.eq_ignore_ascii_case(&new.app.id)
         });
         if let Some(slot) = self.windows_slot
-            && self.item_at(slot).is_none_or(|item| item.windows.is_empty())
+            && self.item_at(slot).is_none_or(|item| {
+                !logic::show_window_list(self.window_list_mode, item.windows.len())
+                    || previous.as_ref().is_none_or(|(id, name, windows)| {
+                        *id != item.app.id || *name != item.app.name || *windows != item.windows
+                    })
+            })
         {
             self.hide_windows();
         }
@@ -755,6 +763,7 @@ impl State {
         }
         self.fullscreen = fullscreen_foreground(self.hwnd);
         if self.fullscreen {
+            self.hide_windows();
             self.stop_slide();
             self.revealed = false;
         }
