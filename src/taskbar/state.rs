@@ -37,6 +37,20 @@ pub fn visibility_diff(previous: bool, current: bool) -> Option<bool> {
     (previous != current).then_some(previous)
 }
 
+/// Keep a full-window region the size of the taskbar after a display change.
+pub fn restored_region(region: Option<Rect>, previous: Rect, current: Rect) -> Option<Rect> {
+    let full = |rect: Rect| Rect {
+        right: rect.right - rect.left,
+        bottom: rect.bottom - rect.top,
+        ..Rect::default()
+    };
+    if region == Some(full(previous)) {
+        Some(full(current))
+    } else {
+        region
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,6 +68,47 @@ mod tests {
         assert_eq!(visibility_diff(false, true), Some(false));
         assert_eq!(visibility_diff(false, false), None);
         assert_eq!(visibility_diff(true, true), None);
+    }
+
+    #[test]
+    fn restores_full_window_regions_at_the_current_size() {
+        let previous = Rect {
+            left: -2560,
+            top: 1380,
+            right: 0,
+            bottom: 1440,
+        };
+        let region = Rect {
+            right: 2560,
+            bottom: 60,
+            ..Rect::default()
+        };
+        for (width, height) in [(3840, 90), (1920, 40), (60, 1440), (2560, 60)] {
+            let current = Rect {
+                left: 100,
+                top: -200,
+                right: 100 + width,
+                bottom: -200 + height,
+            };
+            assert_eq!(
+                restored_region(Some(region), previous, current),
+                Some(Rect {
+                    right: width,
+                    bottom: height,
+                    ..Rect::default()
+                })
+            );
+            assert_eq!(restored_region(None, previous, current), None);
+            for custom in [
+                Rect { right: 2500, ..region },
+                Rect { bottom: 50, ..region },
+                Rect { left: 1, ..region },
+                Rect { top: 1, ..region },
+                Rect::default(),
+            ] {
+                assert_eq!(restored_region(Some(custom), previous, current), Some(custom));
+            }
+        }
     }
 
     #[test]

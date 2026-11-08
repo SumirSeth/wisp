@@ -44,7 +44,7 @@ struct Bar {
     visible: bool,
     monitor: Rect,
     rect: Rect,
-    /// Explorer's own window region, which it keeps the size of the window.
+    /// Explorer's own window region at snapshot time.
     region: Option<Rect>,
 }
 
@@ -140,9 +140,16 @@ fn clip(hwnd: HWND) {
 }
 
 /// Gives a clipped taskbar back the region Explorer gave it.
-fn unclip(hwnd: HWND, original: Option<Rect>) {
+fn unclip(hwnd: HWND, original: Option<&Bar>) {
     if is_clipped(hwnd) {
-        set_region(hwnd, original, true);
+        let mut region = original.and_then(|bar| bar.region);
+        let mut current = RECT::default();
+        if let Some(bar) = original
+            && unsafe { GetWindowRect(hwnd, &mut current) }.is_ok()
+        {
+            region = state::restored_region(bar.region, bar.rect, current.into());
+        }
+        set_region(hwnd, region, true);
     }
 }
 
@@ -314,7 +321,7 @@ fn restore_snapshot(snapshot: &Snapshot) -> Result<()> {
     let mut error = set_state(snapshot.state).err();
     for bar in bars()? {
         let prior = prior(snapshot, &bar);
-        unclip(HWND(bar.hwnd as _), prior.and_then(|b| b.region));
+        unclip(HWND(bar.hwnd as _), prior);
         let visible = prior.map(|b| b.visible).unwrap_or(true);
         if state::visibility_diff(visible, bar.visible).is_some() {
             unsafe {
@@ -425,7 +432,7 @@ impl Watchdog {
         for bar in &snapshot.bars {
             let region = bar.region.unwrap_or_default();
             command.arg("--bar").arg(format!(
-                "{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                 bar.hwnd,
                 bar.pid,
                 u8::from(bar.visible),
@@ -438,7 +445,9 @@ impl Watchdog {
                 region.left,
                 region.top,
                 region.right,
-                region.bottom
+                region.bottom,
+                bar.rect.right - bar.rect.left,
+                bar.rect.bottom - bar.rect.top
             ));
         }
         let mut child = command
@@ -639,7 +648,7 @@ impl TaskbarHider {
         self.peek = Some(Instant::now());
         let current = bars()?;
         for bar in &current {
-            unclip(HWND(bar.hwnd as _), prior(&self.snapshot, bar).and_then(|b| b.region));
+            unclip(HWND(bar.hwnd as _), prior(&self.snapshot, bar));
             unsafe {
                 let _ = ShowWindow(HWND(bar.hwnd as _), SW_SHOWNOACTIVATE);
             }
@@ -871,7 +880,7 @@ fn watchdog_args(args: &[String]) -> Result<()> {
                     .map(str::parse)
                     .collect::<std::result::Result<_, _>>()
                     .map_err(|_| invalid())?;
-                if n.len() != 13 {
+                if n.len() != 15 {
                     return Err(invalid());
                 }
                 bars.push(Bar {
@@ -890,7 +899,12 @@ fn watchdog_args(args: &[String]) -> Result<()> {
                         right: n[6] as i32,
                         bottom: n[7] as i32,
                     },
-                    rect: Rect::default(),
+                    // Only the snapshot size is needed to recognize a full-window region.
+                    rect: Rect {
+                        right: n[13] as i32,
+                        bottom: n[14] as i32,
+                        ..Rect::default()
+                    },
                     region: (n[8] != 0).then(|| Rect {
                         left: n[9] as i32,
                         top: n[10] as i32,
