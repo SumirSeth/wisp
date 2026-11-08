@@ -752,7 +752,12 @@ impl State {
             && self.item_at(slot).is_none_or(|item| {
                 !logic::show_window_list(self.window_list_mode, item.windows.len())
                     || previous.as_ref().is_none_or(|(id, name, windows)| {
-                        *id != item.app.id || *name != item.app.name || *windows != item.windows
+                        !id.eq_ignore_ascii_case(&item.app.id)
+                            || *name != item.app.name
+                            || windows.len() != item.windows.len()
+                            || windows
+                                .iter()
+                                .any(|old| !item.windows.iter().any(|new| old.hwnd == new.hwnd))
                     })
             })
         {
@@ -764,6 +769,9 @@ impl State {
             return;
         }
         self.fullscreen = fullscreen_foreground(self.hwnd);
+        if !self.fullscreen {
+            self.refresh_window_titles();
+        }
         if self.fullscreen {
             self.hide_windows();
             self.stop_slide();
@@ -1434,8 +1442,38 @@ impl State {
             self.hide_windows();
             return;
         }
+        self.windows_hover = None;
+        self.layout_windows(slot, rows, targets);
+    }
+
+    /// Updates titles by handle, preserving the displayed order and click targets
+    /// even when a foreground change has reordered the app's windows.
+    fn refresh_window_titles(&mut self) {
+        let Some(slot) = self.windows_slot.filter(|_| !self.windows_rows.is_empty()) else {
+            return;
+        };
+        let Some(item) = self.item_at(slot) else { return };
+        let mut rows = self.windows_rows.clone();
+        for (row, target) in rows.iter_mut().zip(&self.windows_targets) {
+            let Some(window) = item.windows.iter().find(|window| window.hwnd == *target) else {
+                self.hide_windows();
+                return;
+            };
+            *row = match window.title.trim() {
+                "" => item.app.name.clone(),
+                title => title.to_string(),
+            };
+        }
+        if rows != self.windows_rows {
+            self.layout_windows(slot, rows, self.windows_targets.clone());
+        }
+    }
+
+    /// Measures and places the list after its row text changes.
+    fn layout_windows(&mut self, slot: usize, rows: Vec<String>, targets: Vec<isize>) {
         let scale = self.dpi as f32 / 96.0;
         let Ok((width, height)) = self.windows_renderer.measure_windows(&rows) else {
+            self.hide_windows();
             return;
         };
         let (width, height) = ((width * scale).ceil() as i32, (height * scale).ceil() as i32);
@@ -1452,7 +1490,7 @@ impl State {
             .min(info.rcMonitor.right - gap - width)
             .max(info.rcMonitor.left + gap);
         self.hide_tip();
-        self.windows_hover = None;
+        self.windows_hover = self.windows_hover.filter(|&row| row < targets.len());
         self.windows_rows = rows;
         self.windows_targets = targets;
         unsafe {
