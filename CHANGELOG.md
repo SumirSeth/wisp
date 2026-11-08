@@ -7,7 +7,7 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 ### New
 
 - Hover an app with several windows to see its windows. Click one to switch to it, or middle-click to close it. (#21, by @JulienMaille)
-- Set the dock scale in Settings. The dock layout, spacing and icons scale together.
+- Set the app icon size in Settings. The dock layout, spacing and icons scale together. (#39, by @JulienMaille)
 
 ### Fixes
 
