@@ -9,8 +9,6 @@ mod render;
 #[path = "dock/space.rs"]
 pub mod space;
 
-/// The room a dock that stays visible keeps at the bottom of the primary
-/// screen, in DIPs: its height and the margins above and below it.
 #[path = "dock/status.rs"]
 mod status;
 #[path = "dock/tray.rs"]
@@ -613,6 +611,8 @@ impl Dock {
         !self.state.borrow().autohide
     }
 
+    /// The room a dock that stays visible keeps at the bottom of the primary
+    /// screen, in DIPs: its height and the margins above and below it.
     pub fn reserved_height(&self) -> f32 {
         let s = self.state.borrow();
         let scale = logic::layout_scale(s.app_icon_size);
