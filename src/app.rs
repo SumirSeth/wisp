@@ -2238,6 +2238,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     match msg {
         // DWM needs the frame styles for acrylic. Make the full window client area.
         WM_NCCALCSIZE if wparam.0 != 0 => return LRESULT(0),
+        // Keep the activation state but never paint the caption. It lands on
+        // the client area, as a "Wisp" title strip across the top of the dock.
+        // This also covers the dock's menus: while one is open the launcher is
+        // borrowed, so the dock's own handler above never sees the message.
+        WM_NCACTIVATE => return unsafe { DefWindowProcW(hwnd, msg, wparam, LPARAM(-1)) },
         WM_NCHITTEST => return LRESULT(HTCLIENT as isize),
         WM_HOTKEY => {
             util::perf::input("hotkey_to_content");

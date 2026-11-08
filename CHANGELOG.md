@@ -4,6 +4,10 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ## Unreleased
 
+### Fixes
+
+- Right-clicking the dock no longer shows a "Wisp" title strip across its top.
+
 ## 0.5.0 - 2026-11-07
 
 ### New
