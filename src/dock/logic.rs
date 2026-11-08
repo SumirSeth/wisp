@@ -28,12 +28,40 @@ pub const SLOT: f32 = 48.0;
 pub const PAD: f32 = 8.0;
 pub const SEPARATOR: f32 = 9.0;
 
+pub fn layout_scale(app_icon_size: f32) -> f32 {
+    app_icon_size / DEFAULT_APP_ICON_SIZE
+}
+
+pub fn height(scale: f32) -> f32 {
+    HEIGHT * scale
+}
+pub fn margin(scale: f32) -> f32 {
+    MARGIN * scale
+}
+pub fn slot(scale: f32) -> f32 {
+    SLOT * scale
+}
+pub fn pad(scale: f32) -> f32 {
+    PAD * scale
+}
+pub fn separator_width(scale: f32) -> f32 {
+    SEPARATOR * scale
+}
+
 pub fn width(running: usize) -> f32 {
     2.0 * PAD + (1 + running) as f32 * SLOT
 }
 
+pub fn width_scaled(running: usize, scale: f32) -> f32 {
+    width(running) * scale
+}
+
 pub fn left(index: usize) -> f32 {
     PAD + index as f32 * SLOT
+}
+
+pub fn left_scaled(index: usize, scale: f32) -> f32 {
+    left(index) * scale
 }
 
 pub fn hit(x: f32, y: f32, running: usize) -> Option<usize> {
@@ -41,6 +69,10 @@ pub fn hit(x: f32, y: f32, running: usize) -> Option<usize> {
         return None;
     }
     (0..1 + running).find(|&i| (left(i)..left(i) + SLOT).contains(&x))
+}
+
+pub fn hit_scaled(x: f32, y: f32, running: usize, scale: f32) -> Option<usize> {
+    hit(x / scale, y / scale, running)
 }
 
 pub const CHEVRON_W: f32 = 28.0;
@@ -95,6 +127,10 @@ impl Part {
             Part::Battery => BATTERY_W,
             Part::Clock => CLOCK_W,
         }
+    }
+
+    pub fn width_scaled(self, scale: f32) -> f32 {
+        self.width() * scale
     }
 }
 
@@ -152,8 +188,16 @@ pub fn status_width(parts: &[Part]) -> f32 {
     SEPARATOR + parts.iter().map(|part| part.width()).sum::<f32>()
 }
 
+pub fn status_width_scaled(parts: &[Part], scale: f32) -> f32 {
+    status_width(parts) * scale
+}
+
 pub fn total_width(running: usize, parts: &[Part]) -> f32 {
     width(running) + status_width(parts)
+}
+
+pub fn total_width_scaled(running: usize, parts: &[Part], scale: f32) -> f32 {
+    total_width(running, parts) * scale
 }
 
 /// Left edge of `part`, or `None` for a part the PC lacks.
@@ -161,6 +205,10 @@ pub fn part_left(part: Part, running: usize, parts: &[Part]) -> Option<f32> {
     let index = parts.iter().position(|&p| p == part)?;
     let start = width(running) - PAD + SEPARATOR;
     Some(start + parts[..index].iter().map(|part| part.width()).sum::<f32>())
+}
+
+pub fn part_left_scaled(part: Part, running: usize, parts: &[Part], scale: f32) -> Option<f32> {
+    part_left(part, running, parts).map(|left| left * scale)
 }
 
 pub fn part_hit(x: f32, y: f32, running: usize, parts: &[Part]) -> Option<Part> {
@@ -171,6 +219,10 @@ pub fn part_hit(x: f32, y: f32, running: usize, parts: &[Part]) -> Option<Part> 
         .iter()
         .copied()
         .find(|&part| part_left(part, running, parts).is_some_and(|left| (left..left + part.width()).contains(&x)))
+}
+
+pub fn part_hit_scaled(x: f32, y: f32, running: usize, parts: &[Part], scale: f32) -> Option<Part> {
+    part_hit(x / scale, y / scale, running, parts)
 }
 
 /// Wheel delta per volume percent, for 2% per 120-delta notch.
@@ -284,6 +336,25 @@ mod tests {
         assert_eq!(icon_pixels(144, DEFAULT_APP_ICON_SIZE), 48);
         assert_eq!(icon_pixels(192, MAX_APP_ICON_SIZE), 80);
     }
+    #[test]
+    fn dock_geometry_scales_with_app_icon_size() {
+        let small = layout_scale(MIN_APP_ICON_SIZE);
+        let normal = layout_scale(DEFAULT_APP_ICON_SIZE);
+        let large = layout_scale(MAX_APP_ICON_SIZE);
+        assert_eq!((small, normal, large), (0.75, 1.0, 1.25));
+        assert_eq!(height(small), 42.0);
+        assert_eq!(slot(small), 36.0);
+        assert_eq!(height(large), 70.0);
+        assert_eq!(slot(large), 60.0);
+
+        for scale in [small, normal, large] {
+            let parts = parts(None, true, true);
+            assert_eq!(total_width_scaled(2, &parts, scale), total_width(2, &parts) * scale);
+            let x = left_scaled(1, scale) + slot(scale) / 2.0;
+            assert_eq!(hit_scaled(x, height(scale) / 2.0, 2, scale), Some(1));
+        }
+    }
+
     #[test]
     fn slide_endpoints_and_reversal_are_continuous() {
         assert_eq!(slide_value(1.0, 0.0, 0.0), 1.0);

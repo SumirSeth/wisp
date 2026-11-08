@@ -25,6 +25,8 @@ use windows::core::{Error, HRESULT, Result, w};
 const WM_APPBAR: u32 = WM_APP + 40;
 /// Asks the space's thread to check the space is still kept.
 const WM_CHECK: u32 = WM_APP + 41;
+/// Updates the reserved height as the dock's icon size changes.
+const WM_SET_HEIGHT: u32 = WM_APP + 42;
 /// Windows sends no message when it works the work area out again without
 /// the space, so the space's thread also checks on a timer.
 const CHECK_TIMER: usize = 1;
@@ -84,6 +86,17 @@ impl DockSpace {
     pub fn check(&self) {
         unsafe {
             let _ = PostMessageW(Some(self.hwnd), WM_CHECK, WPARAM(0), LPARAM(0));
+        }
+    }
+
+    pub fn set_height(&self, height: f32) {
+        unsafe {
+            let _ = PostMessageW(
+                Some(self.hwnd),
+                WM_SET_HEIGHT,
+                WPARAM(height.to_bits() as usize),
+                LPARAM(0),
+            );
         }
     }
 
@@ -354,6 +367,11 @@ unsafe extern "system" fn space_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpara
         }
         WM_CHECK => {
             check(hwnd);
+            LRESULT(0)
+        }
+        WM_SET_HEIGHT => {
+            HEIGHT.set(f32::from_bits(wparam.0 as u32));
+            place(hwnd);
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == CHECK_TIMER => {

@@ -636,9 +636,12 @@ impl Launcher {
             self.dock_space = None;
         } else if let Some(space) = &self.dock_space {
             // The taskbar hider may have just changed the work area.
+            let reserved_height = self.dock.as_ref().map_or(74.0, Dock::reserved_height);
+            space.set_height(reserved_height);
             space.check();
         } else {
-            match DockSpace::new(dock::RESERVED_HEIGHT) {
+            let reserved_height = self.dock.as_ref().map_or(74.0, Dock::reserved_height);
+            match DockSpace::new(reserved_height) {
                 Ok(space) => self.dock_space = Some(space),
                 Err(e) => eprintln!("could not keep space for the dock: {e}"),
             }
@@ -1801,11 +1804,12 @@ impl Launcher {
                 let size = unsafe { rt.GetSize() };
                 let rect = dock.resting_rect();
                 let scale = self.dpi as f32 / 96.0;
+                let dock_height = (rect.bottom - rect.top) as f32 / scale;
                 let (x, y) = crate::morph::content_offset(
                     size.width,
                     size.height,
                     (rect.right - rect.left) as f32 / scale,
-                    56.0,
+                    dock_height,
                 );
                 unsafe {
                     rt.SetTransform(&windows_numerics::Matrix3x2::translation(x, y));

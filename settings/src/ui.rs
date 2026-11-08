@@ -692,7 +692,7 @@ impl Settings {
                         item(
                             "App icon size",
                             format!(
-                                "{} DIP. Changes running app icons only; notification icons stay the same.",
+                                "{} DIP. Scales the dock layout and all dock icons.",
                                 self.config.dock_icon_size
                             ),
                             p,

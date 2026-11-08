@@ -11,7 +11,6 @@ pub mod space;
 
 /// The room a dock that stays visible keeps at the bottom of the primary
 /// screen, in DIPs: its height and the margins above and below it.
-pub const RESERVED_HEIGHT: f32 = logic::HEIGHT + 2.0 * logic::MARGIN;
 #[path = "dock/status.rs"]
 mod status;
 #[path = "dock/tray.rs"]
@@ -435,7 +434,8 @@ impl Dock {
             let _ = GetWindowRect(self.hwnd, &mut rect);
             if !IsWindowVisible(self.hwnd).as_bool() {
                 let height = rect.bottom - rect.top;
-                rect.top = s.top + height + (logic::MARGIN * s.dpi as f32 / 96.0).round() as i32;
+                let layout_scale = logic::layout_scale(s.app_icon_size);
+                rect.top = s.top + height + (logic::margin(layout_scale) * s.dpi as f32 / 96.0).round() as i32;
                 rect.bottom = rect.top + height;
             }
             let _ = KillTimer(Some(self.hwnd), POLL_TIMER);
@@ -471,7 +471,7 @@ impl Dock {
             left: s.left,
             top: s.top,
             right: s.left + s.width,
-            bottom: s.top + (logic::HEIGHT * s.dpi as f32 / 96.0).round() as i32,
+            bottom: s.top + (logic::height(logic::layout_scale(s.app_icon_size)) * s.dpi as f32 / 96.0).round() as i32,
         }
     }
 
@@ -610,6 +610,12 @@ impl Dock {
         !self.state.borrow().autohide
     }
 
+    pub fn reserved_height(&self) -> f32 {
+        let s = self.state.borrow();
+        let scale = logic::layout_scale(s.app_icon_size);
+        logic::height(scale) + 2.0 * logic::margin(scale)
+    }
+
     /// Hides the dock until `show`, such as while the launcher is open.
     pub fn hide(&mut self) {
         let mut s = self.state.borrow_mut();
@@ -691,6 +697,7 @@ impl State {
             hover: *hover,
             hover_levels,
             app_icon_size: *app_icon_size,
+            layout_scale: logic::layout_scale(*app_icon_size),
             capacity: *capacity,
             scroll: *scroll,
             status,
@@ -940,7 +947,9 @@ impl State {
     }
 
     fn slide_offset(&self, height: i32) -> i32 {
-        ((height + (logic::MARGIN * self.dpi as f32 / 96.0).round() as i32) as f32 * self.slide_value()).round() as i32
+        let layout_scale = logic::layout_scale(self.app_icon_size);
+        ((height + (logic::margin(layout_scale) * self.dpi as f32 / 96.0).round() as i32) as f32 * self.slide_value())
+            .round() as i32
     }
 
     fn step_slide(&mut self) {
@@ -1073,20 +1082,23 @@ impl State {
                 }
             }
             let parts = self.parts();
-            let available =
-                (info.rcMonitor.right - info.rcMonitor.left) as f32 / scale - 8.0 - logic::status_width(&parts);
-            self.capacity =
-                (((available - 2.0 * logic::PAD - logic::SEPARATOR) / logic::SLOT) as usize).saturating_sub(1);
+            let layout_scale = logic::layout_scale(self.app_icon_size);
+            let available = (info.rcMonitor.right - info.rcMonitor.left) as f32 / scale
+                - 8.0 * layout_scale
+                - logic::status_width_scaled(&parts, layout_scale);
+            self.capacity = (((available - 2.0 * logic::pad(layout_scale) - logic::separator_width(layout_scale))
+                / logic::slot(layout_scale)) as usize)
+                .saturating_sub(1);
             self.scroll = self.scroll.min(self.items.len().saturating_sub(self.capacity));
             let running = self.count();
-            let width = (logic::total_width(running, &parts) * scale).ceil() as i32;
-            let height = (logic::HEIGHT * scale).round() as i32;
+            let width = (logic::total_width_scaled(running, &parts, layout_scale) * scale).ceil() as i32;
+            let height = (logic::height(layout_scale) * scale).round() as i32;
             let x = info.rcMonitor.left + (info.rcMonitor.right - info.rcMonitor.left - width) / 2;
-            self.top = info.rcMonitor.bottom - height - (logic::MARGIN * scale).round() as i32;
+            self.top = info.rcMonitor.bottom - height - (logic::margin(layout_scale) * scale).round() as i32;
             self.left = x;
             self.width = width;
             let y = self.top + self.slide_offset(height);
-            crate::theme::shape(self.hwnd, width, height, 8.0, self.dpi);
+            crate::theme::shape(self.hwnd, width, height, 8.0 * layout_scale, self.dpi);
             let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), x, y, width, height, SWP_NOACTIVATE);
         }
         if previous != (self.dpi, self.left, self.top, self.width, self.scroll, self.capacity) {
@@ -1111,7 +1123,7 @@ impl State {
     fn part_rect(&self, part: logic::Part) -> Option<RECT> {
         let scale = self.dpi as f32 / 96.0;
         let running = self.count();
-        let left = logic::part_left(part, running, &self.parts())?;
+        let left = logic::part_left_scaled(part, running, &self.parts(), logic::layout_scale(self.app_icon_size))?;
         let px = |dip: f32| (dip * scale).round() as i32;
         let rect = self.surface_rect;
         let x = |dip| match rect {
@@ -1120,14 +1132,14 @@ impl State {
             }
             None => self.left + px(dip),
         };
-        let top = rect.map_or(self.top + self.slide_offset(px(logic::HEIGHT)), |r| {
-            r.bottom - px(logic::HEIGHT)
-        });
+        let layout_scale = logic::layout_scale(self.app_icon_size);
+        let height = logic::height(layout_scale);
+        let top = rect.map_or(self.top + self.slide_offset(px(height)), |r| r.bottom - px(height));
         Some(RECT {
             left: x(left),
             top,
-            right: x(left + part.width()),
-            bottom: top + px(logic::HEIGHT),
+            right: x(left + part.width_scaled(layout_scale)),
+            bottom: top + px(height),
         })
     }
 
@@ -1658,21 +1670,23 @@ impl State {
     fn hit(&self, lp: LPARAM) -> Option<usize> {
         let scale = self.dpi as f32 / 96.0;
         let running = self.count();
-        logic::hit(
+        logic::hit_scaled(
             (lp.0 as i16) as f32 / scale,
             ((lp.0 >> 16) as i16) as f32 / scale,
             running,
+            logic::layout_scale(self.app_icon_size),
         )
     }
 
     fn hit_part(&self, lp: LPARAM) -> Option<logic::Part> {
         let scale = self.dpi as f32 / 96.0;
         let running = self.count();
-        logic::part_hit(
+        logic::part_hit_scaled(
             (lp.0 as i16) as f32 / scale,
             ((lp.0 >> 16) as i16) as f32 / scale,
             running,
             &self.parts(),
+            logic::layout_scale(self.app_icon_size),
         )
     }
 

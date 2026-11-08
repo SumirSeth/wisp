@@ -50,6 +50,10 @@ pub struct Renderer {
     factory: ID2D1Factory,
     dw: IDWriteFactory,
     formats: Formats,
+    text_font: PCWSTR,
+    display_font: PCWSTR,
+    icon_font: PCWSTR,
+    format_scale: f32,
     target: Option<Target>,
     shared_target: Option<Target>,
 }
@@ -62,6 +66,7 @@ pub struct Frame<'a> {
     pub hover: Option<usize>,
     pub hover_levels: &'a [f32],
     pub app_icon_size: f32,
+    pub layout_scale: f32,
     pub capacity: usize,
     pub scroll: usize,
     pub status: &'a Status,
@@ -79,6 +84,58 @@ pub struct FlyoutFrame<'a> {
     pub palette: &'a Palette,
     pub tray: &'a [Shown],
     pub hover: Option<usize>,
+}
+
+fn create_formats(dw: &IDWriteFactory, text: PCWSTR, display: PCWSTR, icons: PCWSTR, scale: f32) -> Result<Formats> {
+    unsafe {
+        let format = |family: PCWSTR, weight, size| -> Result<IDWriteTextFormat> {
+            let format = dw.CreateTextFormat(
+                family,
+                None,
+                weight,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                size * scale,
+                w!("en-us"),
+            )?;
+            format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+            format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+            format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+            Ok(format)
+        };
+        let tip = dw.CreateTextFormat(
+            text,
+            None,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            12.0,
+            w!("en-us"),
+        )?;
+        tip.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        tip.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
+        tip.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP)?;
+        let row = dw.CreateTextFormat(
+            text,
+            None,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            11.5 * scale,
+            w!("en-us"),
+        )?;
+        row.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        Ok(Formats {
+            letter: format(display, DWRITE_FONT_WEIGHT_SEMI_BOLD, 15.0)?,
+            time: format(text, DWRITE_FONT_WEIGHT_SEMI_BOLD, 14.0)?,
+            small: format(text, DWRITE_FONT_WEIGHT_NORMAL, 12.5)?,
+            search: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 21.0)?,
+            glyph: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 17.0)?,
+            chevron: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 12.0)?,
+            tip,
+            row,
+        })
+    }
 }
 
 impl Frame<'_> {
@@ -107,41 +164,15 @@ impl Renderer {
         unsafe {
             let factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
             let dw: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
-            let format = |family: PCWSTR, weight, size| -> Result<IDWriteTextFormat> {
-                let format = dw.CreateTextFormat(
-                    family,
-                    None,
-                    weight,
-                    DWRITE_FONT_STYLE_NORMAL,
-                    DWRITE_FONT_STRETCH_NORMAL,
-                    size,
-                    w!("en-us"),
-                )?;
-                format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
-                format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
-                format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
-                Ok(format)
-            };
             let fonts = crate::render::Fonts::installed(&dw);
-            let (text, icons) = (fonts.text, fonts.icons);
-            let tip = format(text, DWRITE_FONT_WEIGHT_NORMAL, 12.0)?;
-            tip.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
-            tip.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
-            tip.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP)?;
-            let row = format(text, DWRITE_FONT_WEIGHT_NORMAL, 11.5)?;
-            row.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
+            let formats = create_formats(&dw, fonts.text, fonts.display, fonts.icons, 1.0)?;
             Ok(Self {
                 factory,
-                formats: Formats {
-                    letter: format(fonts.display, DWRITE_FONT_WEIGHT_SEMI_BOLD, 15.0)?,
-                    time: format(text, DWRITE_FONT_WEIGHT_SEMI_BOLD, 14.0)?,
-                    small: format(text, DWRITE_FONT_WEIGHT_NORMAL, 12.5)?,
-                    search: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 21.0)?,
-                    glyph: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 17.0)?,
-                    chevron: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 12.0)?,
-                    tip,
-                    row,
-                },
+                formats,
+                text_font: fonts.text,
+                display_font: fonts.display,
+                icon_font: fonts.icons,
+                format_scale: 1.0,
                 dw,
                 target: None,
                 shared_target: None,
@@ -150,13 +181,15 @@ impl Renderer {
     }
 
     pub fn draw(&mut self, hwnd: HWND, frame: &Frame) -> Result<()> {
+        self.update_formats(frame.layout_scale)?;
         self.paint(hwnd, frame.dpi, frame.palette, |target, formats| {
-            background(target, frame.palette);
+            background(target, frame.palette, frame.layout_scale);
             unsafe { draw(target, formats, frame) }.and_then(|()| draw_status(target, formats, frame))
         })
     }
 
     pub fn draw_on(&mut self, rt: &ID2D1HwndRenderTarget, frame: &Frame) -> Result<()> {
+        self.update_formats(frame.layout_scale)?;
         if self.shared_target.as_ref().is_none_or(|t| t.rt != *rt) {
             self.shared_target = Some(Target {
                 rt: rt.clone(),
@@ -170,13 +203,21 @@ impl Renderer {
         unsafe { draw(target, &self.formats, frame) }.and_then(|()| draw_status(target, &self.formats, frame))
     }
 
+    fn update_formats(&mut self, scale: f32) -> Result<()> {
+        if self.format_scale != scale {
+            self.formats = create_formats(&self.dw, self.text_font, self.display_font, self.icon_font, scale)?;
+            self.format_scale = scale;
+        }
+        Ok(())
+    }
+
     pub fn draw_flyout(&mut self, hwnd: HWND, frame: &FlyoutFrame) -> Result<()> {
         self.paint(hwnd, frame.dpi, frame.palette, |target, _| draw_flyout(target, frame))
     }
 
     pub fn draw_tip(&mut self, hwnd: HWND, dpi: u32, palette: &Palette, tip: &str) -> Result<()> {
         self.paint(hwnd, dpi, palette, |target, formats| {
-            background(target, palette);
+            background(target, palette, 1.0);
             let size = unsafe { target.rt.GetSize() };
             unsafe { target.brush.SetColor(&palette.text) };
             text(
@@ -214,7 +255,7 @@ impl Renderer {
         hover: Option<usize>,
     ) -> Result<()> {
         self.paint(hwnd, dpi, palette, |target, formats| {
-            background(target, palette);
+            background(target, palette, 1.0);
             let size = unsafe { target.rt.GetSize() };
             for (index, row) in rows.iter().enumerate() {
                 let top = logic::LIST_PAD.1 + index as f32 * logic::LIST_ROW;
@@ -277,7 +318,7 @@ impl Renderer {
         name: &str,
     ) -> Result<()> {
         self.paint(hwnd, dpi, palette, |target, formats| {
-            background(target, palette);
+            background(target, palette, 1.0);
             let size = unsafe { target.rt.GetSize() };
             let middle = size.height / 2.0;
             let mut x = DESKTOP_PAD;
@@ -415,20 +456,28 @@ fn tile(target: &Target, frame: &Frame, left: f32, right: f32, color: &D2D1_COLO
     unsafe {
         target.brush.SetColor(color);
         target.rt.FillRoundedRectangle(
-            &rounded(frame.snap_rect(left, TILE_TOP, right, TILE_BOTTOM), TILE_RADIUS),
+            &rounded(
+                frame.snap_rect(
+                    left,
+                    TILE_TOP * frame.layout_scale,
+                    right,
+                    TILE_BOTTOM * frame.layout_scale,
+                ),
+                TILE_RADIUS * frame.layout_scale,
+            ),
             &target.brush,
         );
     }
 }
 
 /// DWM rounds the corners and draws the backdrop; this only tints it.
-fn background(target: &Target, palette: &Palette) {
-    crate::theme::paint_background(&target.rt, &target.brush, palette, 8.0);
+fn background(target: &Target, palette: &Palette, layout_scale: f32) {
+    crate::theme::paint_background(&target.rt, &target.brush, palette, 8.0 * layout_scale);
 }
 
 /// Draws a notification icon centered on (`x`, `y`). Its pixels are made
 /// for this DPI, so they map one to one onto the screen.
-fn tray_icon(target: &mut Target, dpi: u32, shown: &Shown, x: f32, y: f32) -> Result<()> {
+fn tray_icon(target: &mut Target, dpi: u32, layout_scale: f32, shown: &Shown, x: f32, y: f32) -> Result<()> {
     let Some(pixels) = &shown.pixels else { return Ok(()) };
     let key = shown.icon.key();
     let scale = dpi as f32 / 96.0;
@@ -453,7 +502,10 @@ fn tray_icon(target: &mut Target, dpi: u32, shown: &Shown, x: f32, y: f32) -> Re
             )?;
             target.tray.insert(key, (pixels.clone(), bitmap));
         }
-        let (width, height) = (pixels.width as f32 / scale, pixels.height as f32 / scale);
+        let (width, height) = (
+            pixels.width as f32 / scale * layout_scale,
+            pixels.height as f32 / scale * layout_scale,
+        );
         let left = ((x - width / 2.0) * scale).round() / scale;
         let top = ((y - height / 2.0) * scale).round() / scale;
         target.rt.DrawBitmap(
@@ -468,7 +520,7 @@ fn tray_icon(target: &mut Target, dpi: u32, shown: &Shown, x: f32, y: f32) -> Re
 }
 
 fn draw_flyout(target: &mut Target, frame: &FlyoutFrame) -> Result<()> {
-    background(target, frame.palette);
+    background(target, frame.palette, 1.0);
     target
         .tray
         .retain(|key, _| frame.tray.iter().any(|shown| shown.icon.key() == *key));
@@ -494,7 +546,7 @@ fn draw_flyout(target: &mut Target, frame: &FlyoutFrame) -> Result<()> {
                 );
             }
         }
-        tray_icon(target, frame.dpi, shown, left + cell / 2.0, top + cell / 2.0)?;
+        tray_icon(target, frame.dpi, 1.0, shown, left + cell / 2.0, top + cell / 2.0)?;
     }
     Ok(())
 }
@@ -504,9 +556,15 @@ fn separator(target: &Target, frame: &Frame, x: f32) {
     let x = frame.snap(x);
     unsafe {
         target.brush.SetColor(&frame.palette.divider);
-        target
-            .rt
-            .FillRectangle(&frame.snap_rect(x, 17.0, x + frame.hairline(), 39.0), &target.brush);
+        target.rt.FillRectangle(
+            &frame.snap_rect(
+                x,
+                17.0 * frame.layout_scale,
+                x + frame.hairline(),
+                39.0 * frame.layout_scale,
+            ),
+            &target.brush,
+        );
     }
 }
 
@@ -525,23 +583,36 @@ unsafe fn draw(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
         let foreground = GetForegroundWindow().0 as isize;
         target.bitmaps.retain(|key, _| icons.contains_key(key));
         for index in 0..=running {
-            let x = logic::left(index);
+            let x = logic::left_scaled(index, frame.layout_scale);
+            let slot = logic::slot(frame.layout_scale);
             let item = index.checked_sub(1).and_then(|i| items.get(i + scroll));
             let active = item.is_some_and(|item| item.windows.iter().any(|window| window.hwnd == foreground));
             if active {
-                tile(target, frame, x + 2.0, x + logic::SLOT - 2.0, &p.tile);
+                tile(
+                    target,
+                    frame,
+                    x + 2.0 * frame.layout_scale,
+                    x + slot - 2.0 * frame.layout_scale,
+                    &p.tile,
+                );
             }
             if *hover == Some(index) {
-                tile(target, frame, x + 2.0, x + logic::SLOT - 2.0, &p.row_selected);
+                tile(
+                    target,
+                    frame,
+                    x + 2.0 * frame.layout_scale,
+                    x + slot - 2.0 * frame.layout_scale,
+                    &p.row_selected,
+                );
             }
             let progress = frame.hover_levels.get(index).copied().unwrap_or(0.0);
             let lift = 2.0 * progress * progress * (3.0 - 2.0 * progress);
             let icon_size = *app_icon_size;
-            let icon_top = ICON_CENTER_Y - icon_size / 2.0 - lift;
+            let icon_top = ICON_CENTER_Y * frame.layout_scale - icon_size / 2.0 - lift * frame.layout_scale;
             let icon_rect = frame.snap_rect(
-                x + (logic::SLOT - icon_size) / 2.0,
+                x + (slot - icon_size) / 2.0,
                 icon_top,
-                x + (logic::SLOT + icon_size) / 2.0,
+                x + (slot + icon_size) / 2.0,
                 icon_top + icon_size,
             );
             let Some(item) = item else {
@@ -596,12 +667,17 @@ unsafe fn draw(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
             if !item.windows.is_empty() {
                 // A short dash for running apps, longer and in accent for the foreground one.
                 let half = if active { 6.0 } else { 1.5 };
-                let center = x + logic::SLOT / 2.0;
+                let center = x + slot / 2.0;
                 target.brush.SetColor(if active { &p.accent } else { &p.subtext });
                 target.rt.FillRoundedRectangle(
                     &rounded(
-                        frame.snap_rect(center - half, INDICATOR_TOP, center + half, INDICATOR_TOP + 3.0),
-                        1.5,
+                        frame.snap_rect(
+                            center - half * frame.layout_scale,
+                            INDICATOR_TOP * frame.layout_scale,
+                            center + half * frame.layout_scale,
+                            (INDICATOR_TOP + 3.0) * frame.layout_scale,
+                        ),
+                        1.5 * frame.layout_scale,
                     ),
                     &target.brush,
                 );
@@ -664,37 +740,56 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
     separator(
         target,
         frame,
-        logic::width(running) - logic::PAD + logic::SEPARATOR / 2.0,
+        logic::width_scaled(running, frame.layout_scale) - logic::pad(frame.layout_scale)
+            + logic::separator_width(frame.layout_scale) / 2.0,
     );
     for &part in parts.iter() {
-        let Some(left) = logic::part_left(part, running, parts) else {
+        let Some(left) = logic::part_left_scaled(part, running, parts, frame.layout_scale) else {
             continue;
         };
-        let right = left + part.width();
+        let right = left + part.width_scaled(frame.layout_scale);
         if *hover_part == Some(part) || part == Part::Chevron && frame.flyout_open {
-            tile(target, frame, left + 2.0, right - 2.0, &p.row_selected);
+            tile(
+                target,
+                frame,
+                left + 2.0 * frame.layout_scale,
+                right - 2.0 * frame.layout_scale,
+                &p.row_selected,
+            );
         }
         match part {
             Part::Chevron => {
                 unsafe { target.brush.SetColor(&p.text) };
                 // Up opens the flyout and down closes it, as on the taskbar.
                 let glyph = if frame.flyout_open { "\u{E70D}" } else { "\u{E70E}" };
-                let area = rect(left, TILE_TOP, right, TILE_BOTTOM);
+                let area = rect(
+                    left,
+                    TILE_TOP * frame.layout_scale,
+                    right,
+                    TILE_BOTTOM * frame.layout_scale,
+                );
                 text(&target.rt, &target.brush, &formats.chevron, glyph, area);
                 continue;
             }
             Part::Tray(index) => {
                 if let Some(shown) = frame.inline.get(index).and_then(|&i| frame.tray.get(i)) {
-                    let middle = (TILE_TOP + TILE_BOTTOM) / 2.0;
-                    tray_icon(target, frame.dpi, shown, left + part.width() / 2.0, middle)?;
+                    let middle = (TILE_TOP + TILE_BOTTOM) / 2.0 * frame.layout_scale;
+                    tray_icon(
+                        target,
+                        frame.dpi,
+                        frame.layout_scale,
+                        shown,
+                        left + part.width_scaled(frame.layout_scale) / 2.0,
+                        middle,
+                    )?;
                 }
                 continue;
             }
             _ => {}
         }
         let (rt, brush) = (&target.rt, &target.brush);
-        let upper = rect(left, UPPER.0, right, UPPER.1);
-        let lower = rect(left, LOWER.0, right, LOWER.1);
+        let upper = rect(left, UPPER.0 * frame.layout_scale, right, UPPER.1 * frame.layout_scale);
+        let lower = rect(left, LOWER.0 * frame.layout_scale, right, LOWER.1 * frame.layout_scale);
         unsafe {
             match part {
                 Part::Volume => {
