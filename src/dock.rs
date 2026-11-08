@@ -16,6 +16,9 @@ mod status;
 #[path = "dock/tray.rs"]
 mod tray;
 
+/// Reserved height in DIPs at the default app icon size.
+pub const DEFAULT_RESERVED_HEIGHT: f32 = logic::HEIGHT + 2.0 * logic::MARGIN;
+
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;

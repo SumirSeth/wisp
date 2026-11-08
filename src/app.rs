@@ -627,6 +627,10 @@ impl Launcher {
     fn sync_reserve(&mut self) {
         let hidden = self.taskbar.as_ref().is_some_and(TaskbarHider::is_active);
         let wanted = hidden && self.dock.as_ref().is_some_and(Dock::stays_visible);
+        let reserved_height = self
+            .dock
+            .as_ref()
+            .map_or(dock::DEFAULT_RESERVED_HEIGHT, Dock::reserved_height);
         // Before the space exists, so a re-hide while Windows places it
         // cannot take the bottom back.
         if wanted && let Some(hider) = &mut self.taskbar {
@@ -636,11 +640,9 @@ impl Launcher {
             self.dock_space = None;
         } else if let Some(space) = &self.dock_space {
             // The taskbar hider may have just changed the work area.
-            let reserved_height = self.dock.as_ref().map_or(74.0, Dock::reserved_height);
             space.set_height(reserved_height);
             space.check();
         } else {
-            let reserved_height = self.dock.as_ref().map_or(74.0, Dock::reserved_height);
             match DockSpace::new(reserved_height) {
                 Ok(space) => self.dock_space = Some(space),
                 Err(e) => eprintln!("could not keep space for the dock: {e}"),
