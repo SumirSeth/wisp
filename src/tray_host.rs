@@ -128,6 +128,13 @@ impl TrayHost {
     pub fn set_rects(&self, rects: Rects) {
         *lock(&self.shared.rects) = rects;
     }
+
+    /// Restores FindWindow ordering on the host thread after Explorer shows its tray.
+    pub fn outrank(&self) {
+        unsafe {
+            let _ = PostMessageW(Some(self.control), proxy::WM_OUTRANK, WPARAM(0), LPARAM(0));
+        }
+    }
 }
 
 impl Drop for TrayHost {

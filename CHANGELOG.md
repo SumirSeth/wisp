@@ -6,6 +6,7 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ### Fixes
 
+- Notification icons keep reaching Wisp when Explorer shows its taskbar. (fixes #19)
 - Right-clicking the dock no longer shows a "Wisp" title strip across its top.
 - Wisp hides the taskbar reliably when it starts. Before, the taskbar sometimes stayed visible for several seconds, especially with a second screen. (fixes #28)
 - The Windows taskbar no longer flashes when you switch the dock between autohide and Keep the dock visible. (#24, fixes #18)

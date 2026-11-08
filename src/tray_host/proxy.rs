@@ -22,6 +22,7 @@ use super::{OwnedIcon, Shared, lock};
 pub const PROXY_PROP: PCWSTR = w!("Wisp.TrayProxy");
 const CONTROL_CLASS: PCWSTR = w!("Wisp.TrayHost");
 const TRAY_CLASS: PCWSTR = w!("Shell_TrayWnd");
+pub(super) const WM_OUTRANK: u32 = WM_APP + 1;
 /// Checks Explorer, our FindWindow ordering and icon owners.
 const CHECK_TIMER: usize = 1;
 const CHECK_MS: u32 = 1000;
@@ -631,6 +632,9 @@ fn reg_binary(key: HKEY, sub: PCWSTR, value: PCWSTR) -> Vec<u8> {
 
 unsafe extern "system" fn control_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
+        WM_OUTRANK => with_host(|host| {
+            host.outrank();
+        }),
         WM_TIMER if wp.0 == CHECK_TIMER => with_host(Host::check),
         WM_TIMER if wp.0 == SETTINGS_TIMER => {
             unsafe {

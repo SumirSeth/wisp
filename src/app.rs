@@ -729,6 +729,13 @@ impl Launcher {
         // Explorer restarting or the hider reclaiming space can take the
         // dock's space away.
         self.sync_reserve();
+        // Re-hide and reclaim space first, since those operations can change
+        // Explorer's z-order. Don't wait for the tray host's periodic check.
+        if msg == taskbar::WM_TASKBAR_SHOW
+            && let Some(dock) = &self.dock
+        {
+            dock.outrank_tray();
+        }
     }
 
     fn update_dock_apps(&mut self) {

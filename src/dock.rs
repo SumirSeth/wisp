@@ -484,6 +484,13 @@ impl Dock {
         s.sync_tray();
     }
 
+    /// Keeps notification icons reaching Wisp after Explorer shows its taskbar.
+    pub fn outrank_tray(&self) {
+        if let Some(host) = &self.state.borrow().tray_host {
+            host.outrank();
+        }
+    }
+
     /// Lets the dock auto-hide: it appears when the pointer reaches the
     /// bottom edge of a screen.
     pub fn show(&mut self) {
