@@ -349,7 +349,7 @@ fn place(hwnd: HWND) {
     PLACED_FOR.set((monitor, height));
 }
 
-/// Places the strip again only if the screen or its scale changed, so a
+/// Places the strip again only if the screen or strip height changed, so a
 /// broadcast caused by the strip itself does not repeat forever.
 fn place_if_changed(hwnd: HWND) {
     let Some((monitor, _, height)) = primary() else { return };
@@ -371,7 +371,7 @@ unsafe extern "system" fn space_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpara
         }
         WM_SET_HEIGHT => {
             HEIGHT.set(f32::from_bits(wparam.0 as u32));
-            place(hwnd);
+            place_if_changed(hwnd);
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == CHECK_TIMER => {
