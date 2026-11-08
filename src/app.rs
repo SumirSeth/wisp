@@ -417,6 +417,7 @@ struct Launcher {
     selected: usize,
     scroll: usize,
     caret_visible: bool,
+    /// Last cursor position in screen pixels, independent of the launcher layout.
     last_mouse: Option<(i32, i32)>,
     drag_press: Option<((i32, i32), Payload)>,
     drag_consumed: bool,
@@ -804,7 +805,7 @@ impl Launcher {
         if let Some(from) = from {
             self.begin_morph(from, self.launcher_rect(), true, opacity);
         }
-        self.last_mouse = None;
+        self.last_mouse = cursor_pos();
         self.visible = true;
         // The launcher takes the dock's place while it is open.
         if let Some(dock) = &mut self.dock
@@ -1696,9 +1697,12 @@ impl Launcher {
     }
 
     fn on_mouse_move(&mut self, x: i32, y: i32) {
-        // Windows sends a mouse move when the launcher appears under the cursor.
-        // Ignore it to keep the initial result selected.
-        if self.last_mouse.replace((x, y)).is_none_or(|last| last == (x, y)) {
+        // Windows also sends mouse moves when the launcher moves under the cursor.
+        // Compare screen positions so resizing and morphing keep the selection.
+        let Some(position) = cursor_pos() else {
+            return;
+        };
+        if !mouse_moved(&mut self.last_mouse, position) {
             return;
         }
         if self.surface.is_some() {
@@ -2157,6 +2161,15 @@ fn mouse_pos(lparam: LPARAM) -> (i32, i32) {
     )
 }
 
+fn cursor_pos() -> Option<(i32, i32)> {
+    let mut point = POINT::default();
+    unsafe { GetCursorPos(&mut point) }.ok().map(|()| (point.x, point.y))
+}
+
+fn mouse_moved(last: &mut Option<(i32, i32)>, position: (i32, i32)) -> bool {
+    last.replace(position).is_some_and(|previous| previous != position)
+}
+
 // Run OLE without borrowing the launcher: its modal loop dispatches window messages.
 fn run_drag(hwnd: HWND, payload: Payload) {
     unsafe {
@@ -2561,4 +2574,35 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         _ => {}
     }
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mouse_moved;
+
+    #[test]
+    fn stationary_cursor_keeps_selection_across_layout_changes() {
+        let mut last = Some((800, 600));
+        // Growing or moving the launcher changes content coordinates, not these.
+        for _ in 0..3 {
+            assert!(!mouse_moved(&mut last, (800, 600)));
+        }
+    }
+
+    #[test]
+    fn real_cursor_movement_allows_hover() {
+        let mut last = Some((-800, 600));
+        assert!(mouse_moved(&mut last, (-799, 600)));
+        assert!(!mouse_moved(&mut last, (-799, 600)));
+        assert!(mouse_moved(&mut last, (-799, 601)));
+        assert!(mouse_moved(&mut last, (-800, 600)));
+    }
+
+    #[test]
+    fn unknown_cursor_position_needs_a_baseline() {
+        let mut last = None;
+        assert!(!mouse_moved(&mut last, (800, 600)));
+        assert_eq!(last, Some((800, 600)));
+        assert!(mouse_moved(&mut last, (801, 600)));
+    }
 }
