@@ -936,6 +936,8 @@ mod tests {
         );
         assert!(search("time", &state)[0].title.contains(" · "));
         assert_eq!(search("time tokyo", &state)[0].glyph, Some(glyph::CLOCK));
+        assert!(search("time tokyo", &state)[0].subtitle.starts_with("Tokyo · "));
+        assert!(search("time vienna", &state)[0].subtitle.starts_with("Vienna · "));
         assert_eq!(titles("display", &state), ["Display"]);
         // The Bluetooth command already links to its settings page, so the
         // matching Settings page is not listed again.

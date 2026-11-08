@@ -1,8 +1,9 @@
 //! The time and date, here or in another city.
 //!
-//! Cities come from the Windows time zone list, whose names list cities, as
-//! in "(UTC+09:00) Osaka, Sapporo, Tokyo". A few large cities that the list
-//! omits are added.
+//! Cities come from both the localized Windows time zone list and a built-in
+//! English list. A few large cities that Windows omits are added too.
+
+mod english_cities;
 
 use std::sync::OnceLock;
 
@@ -40,36 +41,9 @@ const MONTHS: [&str; 12] = [
     "December",
 ];
 
-/// Cities that the Windows zone names leave out, and the zone they use.
-const MORE_CITIES: &[(&str, &str)] = &[
-    ("New York", "Eastern Standard Time"),
-    ("Boston", "Eastern Standard Time"),
-    ("Toronto", "Eastern Standard Time"),
-    ("Miami", "Eastern Standard Time"),
-    ("Washington", "Eastern Standard Time"),
-    ("Chicago", "Central Standard Time"),
-    ("Dallas", "Central Standard Time"),
-    ("Houston", "Central Standard Time"),
-    ("Denver", "Mountain Standard Time"),
-    ("Los Angeles", "Pacific Standard Time"),
-    ("San Francisco", "Pacific Standard Time"),
-    ("Seattle", "Pacific Standard Time"),
-    ("Vancouver", "Pacific Standard Time"),
-    ("Bengaluru", "India Standard Time"),
-    ("Bangalore", "India Standard Time"),
-    ("Delhi", "India Standard Time"),
-    ("Hyderabad", "India Standard Time"),
-    ("Pune", "India Standard Time"),
-    ("Dubai", "Arabian Standard Time"),
-    ("Shanghai", "China Standard Time"),
-    ("San Jose", "Pacific Standard Time"),
-    ("UTC", "UTC"),
-    ("GMT", "UTC"),
-];
-
 pub struct Zone {
     pub info: DYNAMIC_TIME_ZONE_INFORMATION,
-    /// Cities in the zone's name, such as ["Osaka", "Sapporo", "Tokyo"].
+    /// Localized and English names, such as ["Osaka", "Sapporo", "Tokio", "Tokyo"].
     pub cities: Vec<String>,
 }
 
@@ -183,13 +157,7 @@ pub fn zones() -> &'static [Zone] {
             }
             let key = utf16(&info.TimeZoneKeyName);
             let display = display_name(&key).unwrap_or_default();
-            let mut cities = cities(&display);
-            cities.extend(
-                MORE_CITIES
-                    .iter()
-                    .filter(|(_, k)| *k == key)
-                    .map(|(city, _)| city.to_string()),
-            );
+            let cities = zone_cities(&key, &display);
             zones.push(Zone { info, cities });
         }
         zones
@@ -198,12 +166,16 @@ pub fn zones() -> &'static [Zone] {
 
 /// Zones with a city that starts with `query`, and that city's name.
 pub fn find(query: &str) -> Vec<(&'static Zone, &'static str)> {
+    find_in(zones(), query)
+}
+
+fn find_in<'a>(zones: &'a [Zone], query: &str) -> Vec<(&'a Zone, &'a str)> {
     let query = query.trim().to_lowercase();
     if query.chars().count() < 2 {
         return Vec::new();
     }
     let mut found = Vec::new();
-    for zone in zones() {
+    for zone in zones {
         if let Some(city) = zone.cities.iter().find(|city| city.to_lowercase().starts_with(&query)) {
             found.push((zone, city.as_str()));
         }
@@ -211,6 +183,17 @@ pub fn find(query: &str) -> Vec<(&'static Zone, &'static str)> {
     found.sort_by_key(|(_, city)| city.len());
     found.truncate(3);
     found
+}
+
+/// Keep localized spellings first when a prefix matches both languages.
+fn zone_cities(key: &str, display: &str) -> Vec<String> {
+    let mut names = cities(display);
+    if let Some((_, english)) = english_cities::CITIES.iter().find(|(k, _)| *k == key) {
+        names.extend(cities(english));
+    }
+    let mut seen = std::collections::HashSet::new();
+    names.retain(|name| seen.insert(name.to_lowercase()));
+    names
 }
 
 fn display_name(key: &str) -> Option<String> {
@@ -292,9 +275,69 @@ mod tests {
     }
 
     #[test]
+    fn finds_english_and_localized_names_in_german_zones() {
+        let zones = [
+            ("Tokyo Standard Time", "(UTC+09:00) Osaka, Sapporo, Tokio"),
+            (
+                "W. Europe Standard Time",
+                "(UTC+01:00) Amsterdam, Berlin, Bern, Rom, Stockholm, Wien",
+            ),
+            ("Eastern Standard Time", "(UTC-05:00) Eastern Zeit (USA & Kanada)"),
+        ]
+        .map(|(key, display)| Zone {
+            info: DYNAMIC_TIME_ZONE_INFORMATION::default(),
+            cities: zone_cities(key, display),
+        });
+
+        for (query, expected, index) in [
+            (" TOKYO ", "Tokyo", 0),
+            ("tokio", "Tokio", 0),
+            ("rome", "Rome", 1),
+            ("vienna", "Vienna", 1),
+            ("wien", "Wien", 1),
+            ("new york", "New York", 2),
+            ("eastern zeit", "Eastern Zeit (USA & Kanada)", 2),
+        ] {
+            let found = find_in(&zones, query);
+            assert_eq!(found.len(), 1, "{query}");
+            assert_eq!(found[0].1, expected);
+            assert!(std::ptr::eq(found[0].0, &zones[index]));
+        }
+        // Shared names and prefixes still produce just one row per zone.
+        assert_eq!(find_in(&zones, "osaka").len(), 1);
+        assert_eq!(find_in(&zones, "tok").len(), 1);
+        assert_eq!(zones[0].cities, ["Osaka", "Sapporo", "Tokio", "Tokyo"]);
+        assert!(find_in(&zones, "t").is_empty());
+    }
+
+    #[test]
+    fn merges_names_without_case_duplicates_and_keeps_unknown_zones() {
+        assert_eq!(
+            zone_cities("Tokyo Standard Time", "(UTC+09:00) OSAKA, Sapporo, Tokyo, Tokyo"),
+            ["OSAKA", "Sapporo", "Tokyo"]
+        );
+        assert_eq!(zone_cities("Future Zone", "(UTC+01:00) Local City"), ["Local City"]);
+        assert_eq!(zone_cities("Tokyo Standard Time", ""), ["Osaka", "Sapporo", "Tokyo"]);
+    }
+
+    #[test]
+    fn english_table_has_unique_keys_and_names() {
+        let mut keys = std::collections::HashSet::new();
+        for (key, names) in english_cities::CITIES {
+            assert!(keys.insert(key), "duplicate zone: {key}");
+            let names = cities(names);
+            assert!(!names.is_empty(), "{key}");
+            let unique: std::collections::HashSet<_> = names.iter().map(|name| name.to_lowercase()).collect();
+            assert_eq!(names.len(), unique.len(), "duplicate city in {key}");
+        }
+    }
+
+    #[test]
     fn finds_cities_in_the_windows_zone_list() {
+        // These English names come from our table on every Windows display language.
         let found = find("tokyo");
         assert_eq!(found.first().map(|(_, city)| *city), Some("Tokyo"));
+        assert_eq!(find("vienna").first().map(|(_, city)| *city), Some("Vienna"));
         assert_eq!(find("new york").first().map(|(_, city)| *city), Some("New York"));
         assert!(find("t").is_empty());
     }

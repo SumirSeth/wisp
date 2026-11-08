@@ -10,6 +10,7 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 - Wisp hides the taskbar reliably when it starts. Before, the taskbar sometimes stayed visible for several seconds, especially with a second screen. (fixes #28)
 - The Windows taskbar no longer flashes when you switch the dock between autohide and Keep the dock visible. (#24, fixes #18)
 - The best match stays selected while typing in the launcher when the mouse rests over the results. Move the mouse to highlight another result. (fixes #35)
+- Time searches now find English city names on non-English Windows, while still finding names in the Windows display language. (fixes #26)
 
 ## 0.5.0 - 2026-11-07
 
