@@ -230,7 +230,17 @@ impl Renderer {
                     }
                 }
                 unsafe { target.brush.SetColor(&palette.text) };
-                text(&target.rt, &target.brush, &formats.row, row, line);
+                let wide: Vec<u16> = row.encode_utf16().collect();
+                unsafe {
+                    target.rt.DrawText(
+                        &wide,
+                        &formats.row,
+                        &line,
+                        &target.brush,
+                        D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                }
             }
             Ok(())
         })
