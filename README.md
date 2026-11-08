@@ -48,6 +48,7 @@ The dock appears when the pointer touches the bottom edge of a screen, and hides
 | Click the app in front | Minimize it |
 | Middle-click an app | Open a new window of it |
 | Right-click an app | Close its windows |
+| Hover an app with several windows | See its windows. Click one to switch to it, middle-click to close it. |
 | Click a tray icon | Use it as you would on the taskbar |
 | Click **⌄** | Show the hidden tray icons |
 | Right-click **⌄** | Show the taskbar, or open taskbar settings |
@@ -120,7 +121,7 @@ Open **Settings** from Wisp's tray icon, or edit `%APPDATA%\wisp\config.toml`. T
 | `hotkey` | `"Alt+Space"` | Shows or hides the launcher |
 | `dock` | `true` | Shows the dock |
 | `dock_autohide` | `true` | Hides the dock until the pointer touches the bottom edge. `false` keeps it visible. |
-| `window_list` | `"multiple"` | Shows the app's window list for multiple windows, always, or never |
+| `window_list` | `"multiple"` | `"multiple"` lists an app's windows when it has more than one; `"always"` or `"off"` |
 | `hide_taskbar` | `true` | Hides the Windows taskbar while Wisp runs |
 | `position` | `"bottom"` | `"bottom"` grows the launcher from the dock; `"center"` opens it in the middle |
 | `theme` | `"system"` | `"system"`, `"dark"` or `"light"` |
@@ -130,8 +131,6 @@ Open **Settings** from Wisp's tray icon, or edit `%APPDATA%\wisp\config.toml`. T
 | `file_search` | `true` | Searches files in the Windows Search index |
 | `file_search_exclude` | `["node_modules", …]` | Folder names file search skips |
 | `search_url` | Google | Web search URL. `{query}` is replaced by your search. |
-
-In the dock's app-window list, left-click a title to switch to that window or middle-click it to close that window.
 
 Configs from Wisp 0.3 keep the taskbar. To switch, set `dock` and `hide_taskbar` to `true` and `position` to `"bottom"`.
 

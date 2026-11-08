@@ -195,7 +195,7 @@ impl Dock {
             items: Vec::new(),
             palette: Palette::new(true, true),
             backdrop: Backdrop::Acrylic,
-            window_list_mode: WindowListMode::Always,
+            window_list_mode: WindowListMode::default(),
             renderer: render::Renderer::new()?,
             dpi: 96,
             hover: None,

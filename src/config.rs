@@ -37,9 +37,7 @@ pub enum Position {
     Bottom,
 }
 
-/// Keys missing from the user's file take their value from `config-0.3.toml`,
-/// then from the default config, as in wisp-settings, so both apps agree on
-/// what an old config means.
+/// When hovering an app shows its window list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum WindowListMode {
@@ -49,6 +47,9 @@ pub enum WindowListMode {
     Off,
 }
 
+/// Keys missing from the user's file take their value from `config-0.3.toml`,
+/// then from the default config, as in wisp-settings, so both apps agree on
+/// what an old config means.
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub hide_taskbar: bool,

@@ -4,6 +4,10 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ## Unreleased
 
+### New
+
+- Hover an app with several windows to see its windows. Click one to switch to it, or middle-click to close it. (#21, by @JulienMaille)
+
 ### Fixes
 
 - Notification icons keep reaching Wisp when Explorer shows its taskbar. (fixes #19)
