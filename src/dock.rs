@@ -97,6 +97,7 @@ struct State {
     palette: Palette,
     backdrop: Backdrop,
     window_list_mode: WindowListMode,
+    app_icon_size: f32,
     renderer: render::Renderer,
     dpi: u32,
     hover: Option<usize>,
@@ -196,6 +197,7 @@ impl Dock {
             palette: Palette::new(true, true),
             backdrop: Backdrop::Acrylic,
             window_list_mode: WindowListMode::default(),
+            app_icon_size: logic::DEFAULT_APP_ICON_SIZE,
             renderer: render::Renderer::new()?,
             dpi: 96,
             hover: None,
@@ -489,6 +491,19 @@ impl Dock {
         s.hide_windows();
     }
 
+    pub fn set_app_icon_size(&mut self, size: u32) {
+        let size = (size as f32).clamp(logic::MIN_APP_ICON_SIZE, logic::MAX_APP_ICON_SIZE);
+        let mut s = self.state.borrow_mut();
+        if s.app_icon_size == size {
+            return;
+        }
+        s.app_icon_size = size;
+        s.place();
+        unsafe {
+            let _ = InvalidateRect(Some(s.hwnd), None, false);
+        }
+    }
+
     pub fn refresh(&mut self) {
         self.state.borrow_mut().refresh();
     }
@@ -658,6 +673,7 @@ impl State {
             dpi,
             hover,
             hover_levels,
+            app_icon_size,
             capacity,
             scroll,
             status,
@@ -674,6 +690,7 @@ impl State {
             icons,
             hover: *hover,
             hover_levels,
+            app_icon_size: *app_icon_size,
             capacity: *capacity,
             scroll: *scroll,
             status,
@@ -1042,7 +1059,7 @@ impl State {
                     .collect();
                 (self.tray, self.inline) = tray::update(Vec::new(), icons, size);
             }
-            let size = logic::icon_pixels(self.dpi);
+            let size = logic::icon_pixels(self.dpi, self.app_icon_size);
             for item in &self.items {
                 if self.icons.get(&item.app.id).is_none_or(|p| p.width != size as u32) {
                     let path = item

@@ -23,6 +23,7 @@ pub struct Config {
     pub position: String,
     pub dock: bool,
     pub dock_autohide: bool,
+    pub dock_icon_size: i64,
     pub hide_taskbar: bool,
     pub window_list: String,
 }
@@ -57,6 +58,10 @@ impl Config {
         choice(&position, &["center", "bottom"], "position")?;
         let window_list = string("window_list")?;
         choice(&window_list, &["always", "multiple", "off"], "window_list")?;
+        let dock_icon_size = get("dock_icon_size")
+            .as_integer()
+            .ok_or("dock_icon_size must be a whole number of DIP.")?
+            .clamp(24, 40);
         let max_results = get("max_results")
             .as_integer()
             .filter(|value| *value >= 0)
@@ -85,6 +90,7 @@ impl Config {
             position,
             dock: boolean("dock")?,
             dock_autohide: boolean("dock_autohide")?,
+            dock_icon_size,
             hide_taskbar: boolean("hide_taskbar")?,
             window_list,
         })
@@ -199,6 +205,9 @@ fn validate_edit(key: &str, value: &Value) -> Result<(), String> {
         "position" if !matches!(value.as_str(), Some("center" | "bottom")) => {
             return Err("position must be center or bottom.".into());
         }
+        "dock_icon_size" if !value.as_integer().is_some_and(|size| (24..=40).contains(&size)) => {
+            return Err("Choose an app icon size between 24 and 40 DIP.".into());
+        }
         "theme"
         | "backdrop"
         | "max_results"
@@ -208,6 +217,7 @@ fn validate_edit(key: &str, value: &Value) -> Result<(), String> {
         | "position"
         | "dock"
         | "dock_autohide"
+        | "dock_icon_size"
         | "hide_taskbar" => {}
         "window_list" if !matches!(value.as_str(), Some("always" | "multiple" | "off")) => {
             return Err("window_list must be always, multiple or off.".into());
@@ -233,6 +243,7 @@ mod tests {
         assert_eq!(config.file_search_exclude.len(), 14);
         assert_eq!(config.position, "bottom");
         assert!(config.dock && config.dock_autohide && config.hide_taskbar);
+        assert_eq!(config.dock_icon_size, 32);
         // A config from Wisp 0.3 has no dock keys and keeps the taskbar, as in the launcher.
         let old = Config::from_document(&"hotkey = 'Alt+Space'".parse().unwrap()).unwrap();
         assert!(!old.dock && !old.hide_taskbar);
@@ -323,6 +334,8 @@ mod tests {
             ("max_results", 21.into()),
             ("theme", "blue".into()),
             ("window_list", "sometimes".into()),
+            ("dock_icon_size", 23.into()),
+            ("dock_icon_size", 41.into()),
             ("unknown", true.into()),
         ] {
             assert!(store.set(key, value).is_err(), "{key}");
@@ -331,6 +344,7 @@ mod tests {
         assert!(validate_url("https://example.com/?q={query}").is_ok());
         assert!(validate_url("https://example.com/?q={QUERY}").is_err());
         assert_eq!(store.set("max_results", 20.into()).unwrap().max_results, 20);
+        assert_eq!(store.set("dock_icon_size", 40.into()).unwrap().dock_icon_size, 40);
     }
 
     #[test]
@@ -340,5 +354,13 @@ mod tests {
             assert_eq!(Config::from_document(&doc).unwrap().max_results, expected);
         }
         assert!(Config::from_document(&"max_results = -1".parse().unwrap()).is_err());
+    }
+
+    #[test]
+    fn clamps_app_icon_size_to_supported_range() {
+        for (value, expected) in [(0, 24), (24, 24), (32, 32), (40, 40), (100, 40)] {
+            let doc = format!("dock_icon_size = {value}").parse().unwrap();
+            assert_eq!(Config::from_document(&doc).unwrap().dock_icon_size, expected);
+        }
     }
 }

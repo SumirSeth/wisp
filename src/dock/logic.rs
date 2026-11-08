@@ -3,11 +3,13 @@
 use crate::config::WindowListMode;
 use crate::indexer::AppEntry;
 
-pub const ICON: f32 = 32.0;
+pub const DEFAULT_APP_ICON_SIZE: f32 = 32.0;
+pub const MIN_APP_ICON_SIZE: f32 = 24.0;
+pub const MAX_APP_ICON_SIZE: f32 = 40.0;
 pub const TILE_TOP: f32 = 5.0;
 pub const TILE_BOTTOM: f32 = 51.0;
 pub const TILE_RADIUS: f32 = 8.0;
-pub const ICON_TOP: f32 = 10.0;
+pub const ICON_CENTER_Y: f32 = 26.0;
 pub const INDICATOR_TOP: f32 = 46.0;
 
 pub fn slide_value(from: f32, to: f32, progress: f32) -> f32 {
@@ -16,8 +18,8 @@ pub fn slide_value(from: f32, to: f32, progress: f32) -> f32 {
     from + (to - from) * ease
 }
 
-pub fn icon_pixels(dpi: u32) -> i32 {
-    (ICON * dpi as f32 / 96.0).round() as i32
+pub fn icon_pixels(dpi: u32, size: f32) -> i32 {
+    (size * dpi as f32 / 96.0).round() as i32
 }
 
 pub const HEIGHT: f32 = 56.0;
@@ -275,6 +277,13 @@ mod tests {
         assert!(!show_window_list(WindowListMode::Off, 2));
         assert!(!show_window_list(WindowListMode::Always, 0));
     }
+
+    #[test]
+    fn app_icon_pixel_size_scales_with_dpi() {
+        assert_eq!(icon_pixels(96, 24.0), 24);
+        assert_eq!(icon_pixels(144, DEFAULT_APP_ICON_SIZE), 48);
+        assert_eq!(icon_pixels(192, MAX_APP_ICON_SIZE), 80);
+    }
     #[test]
     fn slide_endpoints_and_reversal_are_continuous() {
         assert_eq!(slide_value(1.0, 0.0, 0.0), 1.0);
@@ -362,7 +371,10 @@ mod tests {
             assert_eq!(part_left(Part::Volume, count, &parts(None, false, false)), None);
         }
         for dpi in [96, 120, 144] {
-            assert_eq!(icon_pixels(dpi) as f32, ICON * dpi as f32 / 96.0);
+            assert_eq!(
+                icon_pixels(dpi, DEFAULT_APP_ICON_SIZE) as f32,
+                DEFAULT_APP_ICON_SIZE * dpi as f32 / 96.0
+            );
         }
         assert_eq!(((HEIGHT + MARGIN) * 120.0 / 96.0).round() as i32, 81);
     }

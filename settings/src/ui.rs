@@ -91,6 +91,7 @@ pub struct Settings {
     backdrop: Entity<Choices>,
     window_list: Entity<Choices>,
     results: Entity<SliderState>,
+    app_icon_size: Entity<SliderState>,
     autostart: bool,
     powertoys: Result<bool, String>,
     recording: bool,
@@ -162,6 +163,13 @@ impl Settings {
                 .step(1.)
                 .default_value(config.max_results as f32)
         });
+        let app_icon_size = cx.new(|_| {
+            SliderState::new()
+                .min(24.)
+                .max(40.)
+                .step(1.)
+                .default_value(config.dock_icon_size as f32)
+        });
         let focus = cx.focus_handle();
 
         cx.subscribe_in(&shortcut, window, |this, input, event, window, cx| {
@@ -224,6 +232,15 @@ impl Settings {
             }
         })
         .detach();
+        cx.subscribe_in(&app_icon_size, window, |this, _, event, window, cx| {
+            if let SliderEvent::Change(value) = event {
+                let value = (value.start().round() as i64).clamp(24, 40);
+                if value != this.config.dock_icon_size {
+                    this.save("dock_icon_size", value.into(), window, cx);
+                }
+            }
+        })
+        .detach();
         cx.observe_window_appearance(window, |this, window, cx| this.apply_theme(window, cx))
             .detach();
         cx.on_blur(&focus, window, |this, _, cx| {
@@ -251,6 +268,7 @@ impl Settings {
             backdrop,
             window_list,
             results,
+            app_icon_size,
             autostart: system::autostart_enabled(),
             powertoys: system::powertoys_run_enabled(),
             recording: false,
@@ -339,6 +357,9 @@ impl Settings {
                 let results = self.config.max_results as f32;
                 self.results
                     .update(cx, |state, cx| state.set_value(results, window, cx));
+                let app_icon_size = self.config.dock_icon_size as f32;
+                self.app_icon_size
+                    .update(cx, |state, cx| state.set_value(app_icon_size, window, cx));
                 self.apply_theme(window, cx);
             }
             Err(error) => self.error = Some(error),
@@ -666,6 +687,18 @@ impl Settings {
                             })),
                         p,
                     ))
+                    .child(divider(p))
+                    .child(
+                        item(
+                            "App icon size",
+                            format!(
+                                "{} DIP. Changes running app icons only; notification icons stay the same.",
+                                self.config.dock_icon_size
+                            ),
+                            p,
+                        )
+                        .child(Slider::new(&self.app_icon_size).accessibility_label("App icon size")),
+                    )
                     .child(divider(p))
                     .child(row(
                         "App window list",

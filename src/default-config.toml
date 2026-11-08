@@ -47,3 +47,6 @@ dock_autohide = true
 # App window list shown when hovering a running app icon:
 # "multiple" (only when the app has multiple windows), "always", or "off".
 window_list = "multiple"
+
+# App icons in the dock, in DIPs (24 to 40). The default is 32.
+dock_icon_size = 32

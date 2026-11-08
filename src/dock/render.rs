@@ -18,7 +18,7 @@ use windows::core::{PCWSTR, Result, w};
 
 /// Vertical layout, in DIPs, shared by the app slots and the status parts.
 /// Icons sit a little above center to leave room for the running indicator.
-use super::logic::{ICON, ICON_TOP, INDICATOR_TOP, TILE_BOTTOM, TILE_RADIUS, TILE_TOP};
+use super::logic::{ICON_CENTER_Y, INDICATOR_TOP, TILE_BOTTOM, TILE_RADIUS, TILE_TOP};
 const UPPER: (f32, f32) = (8.0, 29.0);
 const LOWER: (f32, f32) = (28.0, 48.0);
 
@@ -61,6 +61,7 @@ pub struct Frame<'a> {
     pub icons: &'a HashMap<String, Arc<IconPixels>>,
     pub hover: Option<usize>,
     pub hover_levels: &'a [f32],
+    pub app_icon_size: f32,
     pub capacity: usize,
     pub scroll: usize,
     pub status: &'a Status,
@@ -516,6 +517,7 @@ unsafe fn draw(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
             items,
             icons,
             hover,
+            app_icon_size,
             scroll,
             ..
         } = frame;
@@ -534,11 +536,13 @@ unsafe fn draw(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
             }
             let progress = frame.hover_levels.get(index).copied().unwrap_or(0.0);
             let lift = 2.0 * progress * progress * (3.0 - 2.0 * progress);
+            let icon_size = *app_icon_size;
+            let icon_top = ICON_CENTER_Y - icon_size / 2.0 - lift;
             let icon_rect = frame.snap_rect(
-                x + (logic::SLOT - ICON) / 2.0,
-                ICON_TOP - lift,
-                x + (logic::SLOT + ICON) / 2.0,
-                ICON_TOP + ICON - lift,
+                x + (logic::SLOT - icon_size) / 2.0,
+                icon_top,
+                x + (logic::SLOT + icon_size) / 2.0,
+                icon_top + icon_size,
             );
             let Some(item) = item else {
                 // A quiet search affordance leaves the accent to the running indicator.
