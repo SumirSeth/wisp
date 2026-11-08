@@ -1154,14 +1154,15 @@ impl State {
             }
             None => self.left + px(dip),
         };
-        let top = rect.map_or(self.top + self.slide_offset(px(logic::HEIGHT)), |r| {
-            r.bottom - px(logic::HEIGHT)
-        });
+        let layout_scale = logic::layout_scale(self.app_icon_size);
+        let height = logic::height(layout_scale);
+        let left = logic::left_scaled(slot, layout_scale);
+        let top = rect.map_or(self.top + self.slide_offset(px(height)), |r| r.bottom - px(height));
         RECT {
-            left: x(logic::left(slot)),
+            left: x(left),
             top,
-            right: x(logic::left(slot) + logic::SLOT),
-            bottom: top + px(logic::HEIGHT),
+            right: x(left + logic::slot(layout_scale)),
+            bottom: top + px(height),
         }
     }
 

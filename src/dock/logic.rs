@@ -356,6 +356,25 @@ mod tests {
     }
 
     #[test]
+    fn scaled_slot_edges_match_hit_targets() {
+        for size in [24.0, 28.0, 32.0, 36.0, 40.0] {
+            let scale = layout_scale(size);
+            for index in 0..=8 {
+                let left = left_scaled(index, scale);
+                let right = left + slot(scale);
+                let bottom = height(scale);
+                assert_eq!(left, (8.0 + index as f32 * 48.0) * size / 32.0);
+                assert_eq!(right, left_scaled(index + 1, scale));
+                assert_eq!(bottom, 56.0 * size / 32.0);
+                assert_eq!(hit_scaled(left, 0.0, 8, scale), Some(index));
+                assert_eq!(hit_scaled(right - 0.5, bottom - 0.5, 8, scale), Some(index));
+                assert_eq!(hit_scaled(left, bottom, 8, scale), None);
+                assert_ne!(hit_scaled(right, 0.0, 8, scale), Some(index));
+            }
+        }
+    }
+
+    #[test]
     fn slide_endpoints_and_reversal_are_continuous() {
         assert_eq!(slide_value(1.0, 0.0, 0.0), 1.0);
         assert_eq!(slide_value(1.0, 0.0, 1.0), 0.0);
