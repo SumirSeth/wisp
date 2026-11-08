@@ -889,6 +889,9 @@ impl State {
     }
 
     fn start_slide(&mut self, to: f32) {
+        if to > 0.5 {
+            self.hide_windows();
+        }
         crate::util::perf::event("slide_begin");
         self.slide_from = self.slide_value();
         self.slide_to = to;
@@ -982,6 +985,7 @@ impl State {
     }
 
     fn place(&mut self) {
+        let previous = (self.dpi, self.left, self.top, self.width, self.scroll, self.capacity);
         if self.suspended {
             return;
         }
@@ -1057,6 +1061,9 @@ impl State {
             let y = self.top + self.slide_offset(height);
             crate::theme::shape(self.hwnd, width, height, 8.0, self.dpi);
             let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), x, y, width, height, SWP_NOACTIVATE);
+        }
+        if previous != (self.dpi, self.left, self.top, self.width, self.scroll, self.capacity) {
+            self.hide_windows();
         }
         // The chevron and icons move whenever the dock's width changes.
         if self.flyout_open {
@@ -1398,6 +1405,10 @@ impl State {
     fn show_windows(&mut self) {
         unsafe {
             let _ = KillTimer(Some(self.hwnd), WINDOWS_TIMER);
+        }
+        if !self.visible || self.suspended || self.fullscreen || !self.revealed || self.slide_to > 0.5 {
+            self.hide_windows();
+            return;
         }
         let Some(slot) = self.windows_slot else { return };
         let Some(item) = self.item_at(slot) else {
@@ -2042,6 +2053,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     return LRESULT(0);
                 }
                 WM_MOUSEWHEEL => {
+                    s.hide_windows();
                     let delta = (wp.0 >> 16) as i16;
                     // Wheel messages carry screen coordinates.
                     let mut point = POINT {
@@ -2059,7 +2071,6 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         s.wheel_desktops(delta.into());
                         return LRESULT(0);
                     }
-                    s.hide_windows();
                     s.scroll = if delta < 0 {
                         (s.scroll + 1).min(s.items.len().saturating_sub(s.capacity))
                     } else {
@@ -2069,6 +2080,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     return LRESULT(0);
                 }
                 WM_MOUSEHWHEEL => {
+                    s.hide_windows();
                     // Positive is a swipe toward the right.
                     s.wheel_desktops(-i32::from((wp.0 >> 16) as i16));
                     return LRESULT(0);
