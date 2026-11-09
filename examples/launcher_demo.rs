@@ -21,6 +21,8 @@ mod history;
 mod hotkey;
 #[path = "../src/indexer.rs"]
 mod indexer;
+#[path = "../src/install.rs"]
+mod install;
 #[path = "../src/launch.rs"]
 mod launch;
 #[path = "../src/morph.rs"]

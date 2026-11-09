@@ -64,6 +64,9 @@ pub fn check() -> Result<Option<Release>, String> {
 /// Downloads, verifies and installs `release`. Restarts the launcher if it was
 /// running. This app keeps running the old version until it restarts.
 pub fn install(release: &Release) -> Result<(), String> {
+    if let Some(manager) = crate::install::current_manager() {
+        return Err(manager.instruction().into());
+    }
     let dir = install_dir()?;
     let _lock = UpdateLock::acquire().ok_or("Another update is running. Try again when it is done.")?;
     let sums = String::from_utf8_lossy(&get(release.asset_url("SHA256SUMS.txt")?)?).into_owned();
@@ -199,6 +202,9 @@ pub fn restart_settings() -> Result<(), String> {
 /// `wisp-settings.exe.old`, so this retries for a few seconds. It skips files
 /// while an update runs, because they are that update's backups.
 pub fn remove_old_files() {
+    if crate::install::current_manager().is_some() {
+        return;
+    }
     let Ok(dir) = install_dir() else {
         return;
     };
@@ -634,8 +640,14 @@ mod tests {
         let dir = test_dir();
         seed_install(dir.path());
         let mut release = release_with_zip();
-        release.tag = "v99.0.0-test".into();
-        release.assets[0].0 = path.file_name().unwrap().to_str().unwrap().into();
+        let name = path.file_name().unwrap().to_str().unwrap();
+        release.tag = name
+            .strip_prefix("wisp-")
+            .unwrap()
+            .strip_suffix("-x86_64-windows.zip")
+            .unwrap()
+            .into();
+        release.assets[0].0 = name.into();
         let staged = stage_release(&release, &parse_sums(&sums), dir.path(), |url| {
             assert_eq!(url, "zip");
             Ok(bytes.clone())

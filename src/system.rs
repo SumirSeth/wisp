@@ -68,6 +68,8 @@ pub fn set_autostart(enabled: bool) -> Result<()> {
     unsafe {
         if enabled {
             let exe = std::env::current_exe().map_err(|e| Error::new(windows::core::HRESULT(-1), e.to_string()))?;
+            let scoop = std::env::var_os("SCOOP").map(std::path::PathBuf::from);
+            let exe = crate::install::autostart_path(&exe, scoop.as_deref());
             let command: Vec<u16> = format!("\"{}\"", exe.display()).encode_utf16().chain(Some(0)).collect();
             RegSetKeyValueW(
                 HKEY_CURRENT_USER,

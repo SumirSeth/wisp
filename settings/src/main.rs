@@ -8,6 +8,8 @@ mod assets;
 mod channel;
 mod config;
 mod hotkey;
+#[path = "../../src/install.rs"]
+mod install;
 mod palette;
 mod system;
 mod ui;

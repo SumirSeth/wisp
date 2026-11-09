@@ -13,6 +13,9 @@ mod files;
 mod history;
 mod hotkey;
 mod indexer;
+// Settings also uses package-manager detection and update instructions.
+#[allow(dead_code)]
+mod install;
 mod launch;
 mod morph;
 mod render;

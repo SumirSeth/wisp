@@ -461,6 +461,9 @@ impl Settings {
     }
 
     fn install_update(&mut self, cx: &mut Context<Self>) {
+        if crate::install::current_manager().is_some() {
+            return;
+        }
         let Updates::Available(release) = &self.updates else {
             return;
         };
@@ -485,6 +488,7 @@ impl Settings {
     }
 
     fn updates_row(&self, p: Palette, cx: &mut Context<Self>) -> Div {
+        let manager = crate::install::current_manager();
         let current = env!("CARGO_PKG_VERSION");
         let check = |label: &'static str, cx: &mut Context<Self>| {
             Button::new("check-updates")
@@ -515,12 +519,12 @@ impl Settings {
                                 .label("What's new")
                                 .on_click(move |_, _, cx| cx.open_url(&page)),
                         )
-                        .child(
+                        .children(manager.is_none().then(|| {
                             Button::new("install-update")
                                 .primary()
                                 .label("Update")
-                                .on_click(cx.listener(|this, _, _, cx| this.install_update(cx))),
-                        )
+                                .on_click(cx.listener(|this, _, _, cx| this.install_update(cx)))
+                        }))
                         .into_any_element(),
                 )
             }
@@ -548,7 +552,17 @@ impl Settings {
             Updates::Failed(error) => Some(div().px_4().pb_3().child(error_text(error, p))),
             _ => None,
         };
-        v_flex().child(row("Updates", description, control, p)).children(error)
+        v_flex()
+            .child(row("Updates", description, control, p))
+            .children(manager.map(|manager| {
+                div()
+                    .px_4()
+                    .pb_3()
+                    .text_sm()
+                    .text_color(p.muted)
+                    .child(manager.instruction())
+            }))
+            .children(error)
     }
 
     /// A quiet link at the bottom of the sidebar while an update is waiting.

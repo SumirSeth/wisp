@@ -28,6 +28,8 @@ pub fn set_autostart(enabled: bool) -> Result<(), String> {
         if enabled {
             let settings_exe = std::env::current_exe().map_err(|error| error.to_string())?;
             let launcher = launcher_path(&settings_exe)?;
+            let scoop = std::env::var_os("SCOOP").map(PathBuf::from);
+            let launcher = crate::install::autostart_path(&launcher, scoop.as_deref());
             if !launcher.is_file() {
                 return Err("Place wisp.exe next to wisp-settings.exe, then try again.".into());
             }
