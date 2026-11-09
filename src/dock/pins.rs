@@ -59,11 +59,12 @@ pub fn save<'a>(path: &Path, apps: impl IntoIterator<Item = &'a Pin>) -> std::io
         .parent()
         .ok_or_else(|| std::io::Error::other("Cannot find the pins folder."))?;
     std::fs::create_dir_all(parent)?;
-    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    let tmp = path.with_extension("toml.tmp");
+    let mut file = std::fs::File::create(&tmp)?;
     file.write_all(text.as_bytes())?;
-    file.as_file().sync_all()?;
-    file.persist(path).map_err(|error| error.error)?;
-    Ok(())
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(&tmp, path)
 }
 
 #[cfg(test)]
