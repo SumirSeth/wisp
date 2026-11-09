@@ -4,6 +4,8 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ## Unreleased
 
+## 0.6.1 - 2026-11-09
+
 ### Fixes
 
 - The release zip has Wisp's files at its top level, so the install path stays the same across updates. (#50)
