@@ -335,9 +335,9 @@ pub fn run() -> Result<()> {
             }
             if flag("--show") {
                 l.show();
-            } else if first_run {
+            } else if first_run && let Err(error) = launch::settings(true) {
                 // Onboarding is optional. Without the settings app, Wisp starts as usual.
-                let _ = launch::settings(true);
+                tray::notify(l.hwnd, "Could not open Settings", &error.message(), true);
             }
         });
 
@@ -1836,9 +1836,12 @@ impl Launcher {
                 self.indexer.rescan();
                 self.last_scan = Instant::now();
             }
-            // Without the settings app, open the config file instead.
-            tray::CMD_SETTINGS if launch::settings(false).is_ok() => {}
-            tray::CMD_SETTINGS | tray::CMD_CONFIG => {
+            tray::CMD_SETTINGS => {
+                if let Err(error) = launch::settings(false) {
+                    tray::notify(self.hwnd, "Could not open Settings", &error.message(), true);
+                }
+            }
+            tray::CMD_CONFIG => {
                 let path = Config::path();
                 let path = path.to_string_lossy();
                 // Notepad can edit the config if Windows cannot open .toml files.
