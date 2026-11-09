@@ -4,6 +4,8 @@
 mod desktops;
 #[path = "dock/logic.rs"]
 mod logic;
+#[path = "dock/pins.rs"]
+mod pins;
 #[path = "dock/render.rs"]
 mod render;
 #[path = "dock/space.rs"]
@@ -103,6 +105,7 @@ struct State {
     apps: Vec<AppEntry>,
     icons: HashMap<String, Arc<IconPixels>>,
     items: Vec<Item>,
+    pinned: Vec<AppEntry>,
     palette: Palette,
     backdrop: Backdrop,
     window_list_mode: WindowListMode,
@@ -212,6 +215,7 @@ impl Dock {
             apps: Vec::new(),
             icons: HashMap::new(),
             items: Vec::new(),
+            pinned: load_pins(),
             palette: Palette::new(true, true),
             backdrop: Backdrop::Acrylic,
             window_list_mode: WindowListMode::default(),
@@ -507,6 +511,12 @@ impl Dock {
         s.refresh();
     }
 
+    pub fn reload_pins(&mut self) {
+        let mut s = self.state.borrow_mut();
+        s.pinned = load_pins();
+        s.update_pins();
+    }
+
     pub fn set_window_list_mode(&mut self, mode: WindowListMode) {
         let mut s = self.state.borrow_mut();
         s.window_list_mode = mode;
@@ -697,6 +707,7 @@ impl State {
     fn paint(&mut self, rt: Option<&windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget>) -> Result<()> {
         let hwnd = self.hwnd;
         let parts = self.parts();
+        let layout = self.app_layout();
         let State {
             renderer,
             items,
@@ -716,6 +727,7 @@ impl State {
             ..
         } = self;
         let frame = &render::Frame {
+            layout,
             dpi: *dpi,
             palette,
             items,
@@ -768,7 +780,8 @@ impl State {
         let mut items: Vec<Item> = Vec::new();
         for window in windows {
             let aumid = window_aumid(HWND(window.hwnd as _));
-            let app = logic::match_app(&self.apps, &window.exe, aumid.as_deref())
+            let app = logic::match_app(&self.pinned, &window.exe, aumid.as_deref())
+                .or_else(|| logic::match_app(&self.apps, &window.exe, aumid.as_deref()))
                 .cloned()
                 .unwrap_or_else(|| {
                     let id = aumid.filter(|s| !s.is_empty()).unwrap_or_else(|| window.exe.clone());
@@ -798,6 +811,7 @@ impl State {
         self.items = logic::stable_order(std::mem::take(&mut self.items), items, |old, new| {
             old.app.id.eq_ignore_ascii_case(&new.app.id)
         });
+        self.order_pins();
         if let Some(slot) = self.windows_slot
             && self.item_at(slot).is_none_or(|item| {
                 !logic::show_window_list(self.window_list_mode, item.windows.len())
@@ -837,6 +851,47 @@ impl State {
                 },
             );
             let _ = InvalidateRect(Some(self.hwnd), None, false);
+        }
+    }
+
+    fn order_pins(&mut self) {
+        if self.pinned.is_empty() {
+            self.items.retain(|item| !item.windows.is_empty());
+            return;
+        }
+        let running = std::mem::take(&mut self.items)
+            .into_iter()
+            .filter(|item| !item.windows.is_empty())
+            .collect();
+        self.items = logic::pinned_first(
+            self.pinned.iter().map(|pin| Item {
+                app: AppEntry {
+                    id: pin.id.clone(),
+                    name: pin.name.clone(),
+                    path: pin.path.clone(),
+                },
+                windows: Vec::new(),
+            }),
+            running,
+            |a, b| a.app.id.eq_ignore_ascii_case(&b.app.id),
+        );
+    }
+
+    fn update_pins(&mut self) {
+        self.hide_windows();
+        self.hide_tip();
+        self.hover = None;
+        self.order_pins();
+        self.place();
+        unsafe {
+            let _ = InvalidateRect(Some(self.hwnd), None, false);
+        }
+    }
+
+    fn app_layout(&self) -> logic::AppLayout {
+        logic::AppLayout {
+            count: self.count(),
+            pinned: self.pinned.len().saturating_sub(self.scroll).min(self.count()),
         }
     }
 
@@ -1193,13 +1248,17 @@ impl State {
             let layout_scale = logic::layout_scale(self.app_icon_size);
             let available = (info.rcMonitor.right - info.rcMonitor.left) as f32 / scale
                 - 8.0 * layout_scale
-                - logic::status_width_scaled(&parts, layout_scale);
+                - logic::status_width_scaled(&parts, layout_scale)
+                - if !self.pinned.is_empty() && self.items.len() > self.pinned.len() {
+                    logic::separator_width(layout_scale)
+                } else {
+                    0.0
+                };
             self.capacity = (((available - 2.0 * logic::pad(layout_scale) - logic::separator_width(layout_scale))
                 / logic::slot(layout_scale)) as usize)
                 .saturating_sub(1);
             self.scroll = self.scroll.min(self.items.len().saturating_sub(self.capacity));
-            let running = self.count();
-            let width = (logic::total_width_scaled(running, &parts, layout_scale) * scale).ceil() as i32;
+            let width = (self.app_layout().total_width(&parts, layout_scale) * scale).ceil() as i32;
             let height = (logic::height(layout_scale) * scale).round() as i32;
             let x = info.rcMonitor.left + (info.rcMonitor.right - info.rcMonitor.left - width) / 2;
             self.top = info.rcMonitor.bottom - height - (logic::margin(layout_scale) * scale).round() as i32;
@@ -1230,8 +1289,9 @@ impl State {
     /// A part's rectangle on screen where the dock rests, in physical pixels.
     fn part_rect(&self, part: logic::Part) -> Option<RECT> {
         let scale = self.dpi as f32 / 96.0;
-        let running = self.count();
-        let left = logic::part_left_scaled(part, running, &self.parts(), logic::layout_scale(self.app_icon_size))?;
+        let left = self
+            .app_layout()
+            .part_left(part, &self.parts(), logic::layout_scale(self.app_icon_size))?;
         let px = |dip: f32| (dip * scale).round() as i32;
         let rect = self.surface_rect;
         let x = |dip| match rect {
@@ -1264,7 +1324,7 @@ impl State {
         };
         let layout_scale = logic::layout_scale(self.app_icon_size);
         let height = logic::height(layout_scale);
-        let left = logic::left_scaled(slot, layout_scale);
+        let left = self.app_layout().left(slot, layout_scale);
         let top = rect.map_or(self.top + self.slide_offset(px(height)), |r| r.bottom - px(height));
         RECT {
             left: x(left),
@@ -1778,22 +1838,18 @@ impl State {
 
     fn hit(&self, lp: LPARAM) -> Option<usize> {
         let scale = self.dpi as f32 / 96.0;
-        let running = self.count();
-        logic::hit_scaled(
+        self.app_layout().hit(
             (lp.0 as i16) as f32 / scale,
             ((lp.0 >> 16) as i16) as f32 / scale,
-            running,
             logic::layout_scale(self.app_icon_size),
         )
     }
 
     fn hit_part(&self, lp: LPARAM) -> Option<logic::Part> {
         let scale = self.dpi as f32 / 96.0;
-        let running = self.count();
-        logic::part_hit_scaled(
+        self.app_layout().part_hit(
             (lp.0 as i16) as f32 / scale,
             ((lp.0 >> 16) as i16) as f32 / scale,
-            running,
             &self.parts(),
             logic::layout_scale(self.app_icon_size),
         )
@@ -1950,10 +2006,25 @@ impl State {
             return;
         };
         let windows: Vec<_> = item.windows.iter().map(|window| window.hwnd).collect();
+        let id = item.app.id.clone();
+        let pinned = self.pinned.iter().any(|pin| pin.id.eq_ignore_ascii_case(&id));
         unsafe {
             let Ok(menu) = CreatePopupMenu() else {
                 return;
             };
+            let _ = AppendMenuW(
+                menu,
+                MF_STRING,
+                1,
+                if pinned {
+                    w!("Unpin from dock")
+                } else {
+                    w!("Pin to dock")
+                },
+            );
+            if pinned {
+                let _ = AppendMenuW(menu, MF_STRING, 3, w!("Unpin all"));
+            }
             let _ = AppendMenuW(
                 menu,
                 MF_STRING | if windows.is_empty() { MF_GRAYED } else { MF_ENABLED },
@@ -1975,7 +2046,12 @@ impl State {
             )
             .0;
             let _ = DestroyMenu(menu);
-            if command == 2 {
+            if command == 1 {
+                self.toggle_pin(&id);
+            } else if command == 3 {
+                self.pinned.clear();
+                self.save_pins();
+            } else if command == 2 {
                 for hwnd in windows {
                     let _ = open_windows::close(hwnd);
                 }
@@ -1983,6 +2059,47 @@ impl State {
         }
         self.refresh();
     }
+
+    fn toggle_pin(&mut self, id: &str) {
+        if let Some(at) = self.pinned.iter().position(|pin| pin.id.eq_ignore_ascii_case(id)) {
+            self.pinned.remove(at);
+        } else if let Some(item) = self.items.iter().find(|item| item.app.id.eq_ignore_ascii_case(id)) {
+            self.pinned.push(AppEntry {
+                id: item.app.id.clone(),
+                name: item.app.name.clone(),
+                path: item.app.path.clone(),
+            });
+        }
+        self.save_pins();
+    }
+
+    fn save_pins(&mut self) {
+        let pins: Vec<_> = self
+            .pinned
+            .iter()
+            .map(|app| pins::Pin {
+                id: app.id.clone(),
+                name: app.name.clone(),
+                path: app.path.clone(),
+            })
+            .collect();
+        if let Err(error) = pins::save(&crate::util::data_dir().join("dock-pins.toml"), &pins) {
+            eprintln!("Dock pins: {error}");
+            self.pinned = load_pins();
+        }
+        self.update_pins();
+    }
+}
+
+fn load_pins() -> Vec<AppEntry> {
+    pins::load(&crate::util::data_dir().join("dock-pins.toml"))
+        .into_iter()
+        .map(|pin| AppEntry {
+            id: pin.id,
+            name: pin.name,
+            path: pin.path,
+        })
+        .collect()
 }
 
 fn window_aumid(hwnd: HWND) -> Option<String> {

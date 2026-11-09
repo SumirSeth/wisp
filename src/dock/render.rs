@@ -59,6 +59,7 @@ pub struct Renderer {
 }
 
 pub struct Frame<'a> {
+    pub layout: logic::AppLayout,
     pub dpi: u32,
     pub palette: &'a Palette,
     pub items: &'a [Item],
@@ -577,10 +578,18 @@ unsafe fn draw(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
             ..
         } = frame;
         let running = frame.count();
+        if frame.layout.divider() {
+            separator(
+                target,
+                frame,
+                logic::left_scaled(frame.layout.pinned + 1, frame.layout_scale)
+                    + logic::separator_width(frame.layout_scale) / 2.0,
+            );
+        }
         let foreground = GetForegroundWindow().0 as isize;
         target.bitmaps.retain(|key, _| icons.contains_key(key));
         for index in 0..=running {
-            let x = logic::left_scaled(index, frame.layout_scale);
+            let x = frame.layout.left(index, frame.layout_scale);
             let slot = logic::slot(frame.layout_scale);
             let item = index.checked_sub(1).and_then(|i| items.get(i + scroll));
             let active = item.is_some_and(|item| item.windows.iter().any(|window| window.hwnd == foreground));
@@ -730,18 +739,17 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
         parts,
         ..
     } = frame;
-    let running = frame.count();
     target
         .tray
         .retain(|key, _| frame.tray.iter().any(|shown| shown.icon.key() == *key));
     separator(
         target,
         frame,
-        logic::width_scaled(running, frame.layout_scale) - logic::pad(frame.layout_scale)
+        frame.layout.width(frame.layout_scale) - logic::pad(frame.layout_scale)
             + logic::separator_width(frame.layout_scale) / 2.0,
     );
     for &part in parts.iter() {
-        let Some(left) = logic::part_left_scaled(part, running, parts, frame.layout_scale) else {
+        let Some(left) = frame.layout.part_left(part, parts, frame.layout_scale) else {
             continue;
         };
         let right = left + part.width_scaled(frame.layout_scale);

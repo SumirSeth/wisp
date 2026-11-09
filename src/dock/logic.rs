@@ -75,6 +75,70 @@ pub fn hit_scaled(x: f32, y: f32, running: usize, scale: f32) -> Option<usize> {
     hit(x / scale, y / scale, running)
 }
 
+/// App slots and the optional rule between visible pinned and running apps.
+#[derive(Clone, Copy)]
+pub struct AppLayout {
+    pub count: usize,
+    pub pinned: usize,
+}
+
+impl AppLayout {
+    pub fn divider(self) -> bool {
+        self.pinned > 0 && self.pinned < self.count
+    }
+    pub fn gap(self) -> f32 {
+        if self.divider() { SEPARATOR } else { 0.0 }
+    }
+    pub fn left(self, index: usize, scale: f32) -> f32 {
+        (left(index)
+            + if self.divider() && index > self.pinned {
+                SEPARATOR
+            } else {
+                0.0
+            })
+            * scale
+    }
+    pub fn width(self, scale: f32) -> f32 {
+        width_scaled(self.count, scale) + self.gap() * scale
+    }
+    pub fn total_width(self, parts: &[Part], scale: f32) -> f32 {
+        total_width_scaled(self.count, parts, scale) + self.gap() * scale
+    }
+    pub fn hit(self, x: f32, y: f32, scale: f32) -> Option<usize> {
+        if !self.divider() {
+            return hit_scaled(x, y, self.count, scale);
+        }
+        if !(0.0..height(scale)).contains(&y) {
+            return None;
+        }
+        (0..=self.count).find(|&i| (self.left(i, scale)..self.left(i, scale) + slot(scale)).contains(&x))
+    }
+    pub fn part_left(self, part: Part, parts: &[Part], scale: f32) -> Option<f32> {
+        part_left_scaled(part, self.count, parts, scale).map(|x| x + self.gap() * scale)
+    }
+    pub fn part_hit(self, x: f32, y: f32, parts: &[Part], scale: f32) -> Option<Part> {
+        part_hit_scaled(x - self.gap() * scale, y, self.count, parts, scale)
+    }
+}
+
+/// Pins keep their saved order; running apps keep their first-seen order.
+pub fn pinned_first<T>(
+    pins: impl IntoIterator<Item = T>,
+    mut running: Vec<T>,
+    same: impl Fn(&T, &T) -> bool,
+) -> Vec<T> {
+    let mut ordered = Vec::new();
+    for pin in pins {
+        if let Some(at) = running.iter().position(|item| same(&pin, item)) {
+            ordered.push(running.remove(at));
+        } else {
+            ordered.push(pin);
+        }
+    }
+    ordered.extend(running);
+    ordered
+}
+
 pub const CHEVRON_W: f32 = 28.0;
 pub const TRAY_W: f32 = 32.0;
 pub const VOLUME_W: f32 = 46.0;
@@ -300,6 +364,48 @@ pub fn stable_order<T>(previous: Vec<T>, current: Vec<T>, same: impl Fn(&T, &T) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pins_precede_running_apps_without_duplicates() {
+        assert_eq!(
+            pinned_first(["c", "a", "closed"], vec!["b", "a", "c", "d"], |a, b| a == b),
+            ["c", "a", "closed", "b", "d"]
+        );
+        assert_eq!(pinned_first([], vec!["b", "a"], |a, b| a == b), ["b", "a"]);
+    }
+
+    #[test]
+    fn pin_divider_geometry_and_hits_agree() {
+        for scale in [0.75, 1.0, 1.25, 1.5, 2.0] {
+            for (count, pinned) in [(0, 0), (3, 0), (3, 3), (3, 1), (3, 2)] {
+                let layout = AppLayout { count, pinned };
+                assert_eq!(layout.divider(), pinned > 0 && pinned < count);
+                let extra = if layout.divider() { SEPARATOR * scale } else { 0.0 };
+                let parts = parts(Some(2), true, true);
+                assert_eq!(
+                    layout.total_width(&parts, scale),
+                    total_width_scaled(count, &parts, scale) + extra
+                );
+                for i in 0..=count {
+                    let x = layout.left(i, scale);
+                    assert_eq!(layout.hit(x, 0.0, scale), Some(i));
+                    assert_eq!(layout.hit(x + slot(scale) - 0.5, height(scale) - 0.5, scale), Some(i));
+                    assert_eq!(layout.hit(x, height(scale), scale), None);
+                }
+                if layout.divider() {
+                    let gap = left_scaled(pinned + 1, scale);
+                    assert_eq!(layout.hit(gap, 10.0, scale), None);
+                    assert_eq!(layout.hit(gap + extra - 0.1, 10.0, scale), None);
+                }
+                for part in &parts {
+                    let x = layout.part_left(*part, &parts, scale).unwrap();
+                    assert_eq!(layout.part_hit(x + 1.0, 10.0, &parts, scale), Some(*part));
+                }
+                let clock = layout.part_left(Part::Clock, &parts, scale).unwrap();
+                assert_eq!(clock + (CLOCK_W + PAD) * scale, layout.total_width(&parts, scale));
+            }
+        }
+    }
 
     #[test]
     fn window_list_fits_whole_rows_with_padding_at_each_scale() {

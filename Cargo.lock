@@ -7907,6 +7907,7 @@ version = "0.6.1"
 dependencies = [
  "nucleo-matcher",
  "serde",
+ "tempfile",
  "toml 1.1.8+spec-1.1.0",
  "windows 0.62.2",
  "windows-core 0.62.2",
@@ -7919,9 +7920,11 @@ name = "wisp-settings"
 version = "0.6.1"
 dependencies = [
  "gpui-kit",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "toml 1.1.8+spec-1.1.0",
  "toml_edit 0.23.10+spec-1.0.0",
  "windows 0.62.2",
  "winresource",

@@ -2392,7 +2392,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let _ = DestroyWindow(hwnd);
         },
         WM_APP_RELOAD => {
-            with_launcher(Launcher::reload_config_if_changed);
+            with_launcher(|l| {
+                l.reload_config_if_changed();
+                if let Some(dock) = &mut l.dock {
+                    dock.reload_pins();
+                }
+            });
         }
         WM_APP_FRAME => {
             with_launcher(|l| {

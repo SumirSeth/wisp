@@ -1,6 +1,8 @@
 #![windows_subsystem = "windows"]
 
 mod assets;
+#[path = "../../src/dock/pins.rs"]
+mod pins;
 
 // Shared with the launcher; this app uses only some of the names.
 #[allow(dead_code)]

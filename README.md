@@ -55,7 +55,7 @@ The dock appears when the pointer touches the bottom edge of a screen, and hides
 | Click an app | Switch to it |
 | Click the app in front | Minimize it |
 | Middle-click an app | Open a new window of it |
-| Right-click an app | Close its windows |
+| Right-click an app | Pin or unpin it, or close its windows |
 | Hover an app with several windows | See its windows. Click one to switch to it, middle-click to close it. |
 | Click a tray icon | Use it as you would on the taskbar |
 | Click **⌄** | Show the hidden tray icons |
@@ -67,6 +67,8 @@ The dock appears when the pointer touches the bottom edge of a screen, and hides
 | Click the battery | Open battery settings |
 | Scroll anywhere else | Switch virtual desktops |
 | <kbd>Shift</kbd>+scroll | Scroll through the apps |
+
+Right-click an app and choose **Pin to dock** to keep it before running apps, in pin order. Click a closed pinned app to start it. To clear pins, choose **Unpin all** on a pinned app, or **Unpin all apps** in Settings.
 
 The dock hides over full-screen apps. Tray icons you pin in Windows show in the dock; the rest are behind **⌄**.
 

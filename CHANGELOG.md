@@ -6,6 +6,8 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ### New
 
+- Pin apps to the dock: right-click an app and choose Pin to dock. Pinned apps stay in the dock, before running apps, and start with a click. (#31, by @SorbetMango)
+
 - The autohide dock starts to slide in sooner when you move the pointer to the bottom edge. (#25, by @RayTrunk, fixes #20)
 
 ## 0.6.1 - 2026-11-09

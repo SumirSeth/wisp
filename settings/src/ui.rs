@@ -92,6 +92,7 @@ pub struct Settings {
     window_list: Entity<Choices>,
     results: Entity<SliderState>,
     app_icon_size: Entity<SliderState>,
+    pinned_count: usize,
     autostart: bool,
     powertoys: Result<bool, String>,
     recording: bool,
@@ -241,6 +242,13 @@ impl Settings {
             }
         })
         .detach();
+        cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() {
+                this.pinned_count = Self::pinned_count();
+                cx.notify();
+            }
+        })
+        .detach();
         cx.observe_window_appearance(window, |this, window, cx| this.apply_theme(window, cx))
             .detach();
         cx.on_blur(&focus, window, |this, _, cx| {
@@ -250,6 +258,7 @@ impl Settings {
         .detach();
 
         let mut this = Self {
+            pinned_count: Self::pinned_count(),
             store,
             shortcut_error: hotkey::parse(&config.hotkey).err(),
             url_error: config::validate_url(&config.search_url).err(),
@@ -329,7 +338,30 @@ impl Settings {
         }
     }
 
+    fn pins_path() -> Result<std::path::PathBuf, String> {
+        config::path().map(|path| path.with_file_name("dock-pins.toml"))
+    }
+
+    fn pinned_count() -> usize {
+        Self::pins_path()
+            .map(|path| crate::pins::load(&path).len())
+            .unwrap_or(0)
+    }
+
+    fn unpin_all(&mut self, cx: &mut Context<Self>) {
+        match Self::pins_path().and_then(|path| crate::pins::save(&path, &[]).map_err(|error| error.to_string())) {
+            Ok(()) => {
+                self.pinned_count = 0;
+                self.error = None;
+                system::notify_launcher();
+            }
+            Err(error) => self.error = Some(error),
+        }
+        cx.notify();
+    }
+
     fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.pinned_count = Self::pinned_count();
         let result = self
             .store
             .as_ref()
@@ -713,6 +745,16 @@ impl Settings {
                         )
                         .child(Slider::new(&self.app_icon_size).accessibility_label("App icon size")),
                     )
+                    .child(divider(p))
+                    .child(row(
+                        "Pinned apps",
+                        format!("{} apps pinned", self.pinned_count),
+                        Button::new("unpin-all")
+                            .label("Unpin all apps")
+                            .disabled(self.pinned_count == 0)
+                            .on_click(cx.listener(|this, _, _, cx| this.unpin_all(cx))),
+                        p,
+                    ))
                     .child(divider(p))
                     .child(row(
                         "App window list",
