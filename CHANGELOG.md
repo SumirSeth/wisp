@@ -6,8 +6,8 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ### Fixes
 
-- The release zip has Wisp's files at its top level, so the install path stays the same across updates.
-- Wisp installed with winget updates through `winget upgrade` instead of the Update button in Settings.
+- The release zip has Wisp's files at its top level, so the install path stays the same across updates. (#50)
+- Wisp installed with winget updates through `winget upgrade` instead of the Update button in Settings. (#50)
 
 ## 0.6.0 - 2026-11-09
 
