@@ -11,7 +11,7 @@ publish = false
 nightly = []
 
 [dependencies]
-gpui-kit = "0.8"
+gpui-kit = { version = "0.8", default-features = false, features = ["component"] }
 toml_edit = "0.23"
 serde_json = "1"
 sha2 = "0.10"

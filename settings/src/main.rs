@@ -1,5 +1,7 @@
 #![windows_subsystem = "windows"]
 
+mod assets;
+
 // Shared with the launcher; this app uses only some of the names.
 #[allow(dead_code)]
 #[path = "../../src/channel.rs"]
@@ -24,7 +26,7 @@ fn main() {
         .cloned();
     update::remove_old_files();
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(crate::assets::SettingsAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
             cx.on_window_closed(|cx, _| {
