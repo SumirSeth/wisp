@@ -32,6 +32,14 @@ It is written in Rust with Win32 and Direct2D. It needs no .NET, web view or Pow
 
 Keep `wisp-settings.exe` beside `wisp.exe` for Settings and updates. To update, select **Update** on the **About** page in Settings.
 
+Once available, you can also install with winget:
+
+```powershell
+winget install SumirSeth.Wisp
+```
+
+Update that install with `winget upgrade SumirSeth.Wisp`.
+
 > [!NOTE]
 > PowerToys Run also uses <kbd>Alt</kbd>+<kbd>Space</kbd>. Turn it off, or change Wisp's shortcut.
 

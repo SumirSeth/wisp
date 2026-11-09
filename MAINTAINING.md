@@ -59,6 +59,20 @@ To release:
    ```
 
 4. The release workflow tests, builds and publishes the release. Its notes are the version's changelog section, followed by the pull requests. The settings app's updater then offers it to users.
+5. Download the workflow's `package-manifests-vX.Y.Z` artifact. It contains winget's three schema 1.10 manifests in `winget/X.Y.Z/` and Scoop's filled `scoop/wisp.json`. These are workflow artifacts, not release assets; the workflow does not submit them anywhere.
+6. For the first winget submission, run `winget validate --manifest <winget-version-directory>` and submit those files by hand to [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) under `manifests/s/SumirSeth/Wisp/X.Y.Z/`. Test installation and upgrade on an unlocked test desktop before submitting. Later releases can automate submissions once the package is accepted; that automation is not configured yet.
+7. For Scoop, first create a bucket or arrange a submission to an existing bucket, then submit the generated `scoop/wisp.json` by hand. It includes GitHub `checkver` and `autoupdate` rules using `SHA256SUMS.txt`; enable the bucket's update automation for later releases. Do not advertise `scoop install wisp` until a bucket exists.
+
+To regenerate the manifests locally with PowerShell 7:
+
+```powershell
+pwsh -File packaging/winget/generate.ps1 -Tag v0.6.0 -ZipPath ./wisp-v0.6.0-x86_64-windows.zip -OutputDirectory ./manifests
+winget validate --manifest ./manifests/winget/0.6.0
+```
+
+The generator hashes the zip and detects whether its files are at the root or in the old versioned folder. The checked-in Scoop manifest describes the published 0.6.0 zip; its autoupdate rule changes `extract_dir` to `.` for future root-layout zips. Generate each release's manifest from its actual archive. The new root layout keeps winget's executable paths stable across upgrades. Both autostart entry points use the current executable's folder; Scoop installs use the `apps/wisp/current` junction so upgrades can remove old versions. Winget's package folder is already stable and needs no path rewrite.
+
+Use the next release containing package-manager detection for the first public submission. The 0.6.0 manifests are useful for validation, but that binary still offers in-app updates and its versioned archive folder would leave stale paths on upgrade to the root layout.
 
 Never move or delete a published tag. If a release is broken, ship a patch release.
 

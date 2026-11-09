@@ -23,13 +23,24 @@ jobs:
           $name = "wisp-${{ github.ref_name }}-x86_64-windows"
           New-Item -ItemType Directory $name | Out-Null
           Copy-Item target/release/wisp.exe, target/release/wisp-settings.exe, README.md, LICENSE $name
-          Compress-Archive $name "$name.zip"
+          Compress-Archive "$name/*" "$name.zip"
           # Standalone exes are only for 0.5.x updaters. Drop them once those are rare,
           # no earlier than two releases after the zip updater ships.
           Copy-Item target/release/wisp.exe "wisp-${{ github.ref_name }}-x86_64.exe"
           Copy-Item target/release/wisp-settings.exe "wisp-settings-${{ github.ref_name }}-x86_64.exe"
           $files = "$name.zip", "wisp-${{ github.ref_name }}-x86_64.exe", "wisp-settings-${{ github.ref_name }}-x86_64.exe"
           $files | ForEach-Object { (Get-FileHash $_ -Algorithm SHA256).Hash + "  $_" } | Out-File -Encoding ascii SHA256SUMS.txt
+      - name: Generate package manifests
+        shell: pwsh
+        run: |
+          ./packaging/winget/generate.ps1 -Tag "${{ github.ref_name }}" `
+            -ZipPath "wisp-${{ github.ref_name }}-x86_64-windows.zip" -OutputDirectory manifests
+      - name: Upload package manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-manifests-${{ github.ref_name }}
+          path: manifests/
+          if-no-files-found: error
       # The notes start with the download, then the version's CHANGELOG.md section and the
       # pull requests GitHub lists for the release (.github/release.yml).
       - name: Notes
