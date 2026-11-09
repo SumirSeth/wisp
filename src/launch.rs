@@ -61,6 +61,11 @@ pub fn settings(welcome: bool) -> Result<()> {
     let exe = std::env::current_exe().map_err(|e| windows::core::Error::new(E_FAIL, e.to_string()))?;
     let settings = exe.with_file_name("wisp-settings.exe");
     if !settings.is_file() {
+        // One dialog at a time, however often Settings is chosen.
+        static ASKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if ASKING.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return Ok(());
+        }
         // Keep onboarding optional and avoid a modal loop while the launcher is borrowed.
         std::thread::spawn(|| {
             let com_initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok() };
@@ -82,6 +87,7 @@ pub fn settings(welcome: bool) -> Result<()> {
             if com_initialized {
                 unsafe { CoUninitialize() };
             }
+            ASKING.store(false, std::sync::atomic::Ordering::Release);
         });
         return Ok(());
     }
