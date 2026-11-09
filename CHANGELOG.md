@@ -6,9 +6,8 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ### Fixes
 
-- The release zip has Wisp's files at its top level.
-- Installs from winget or Scoop update through the package manager instead of the Update button.
-- Start with Windows keeps working after a Scoop update.
+- The release zip has Wisp's files at its top level, so the install path stays the same across updates.
+- Wisp installed with winget updates through `winget upgrade` instead of the Update button in Settings.
 
 ## 0.6.0 - 2026-11-09
 
