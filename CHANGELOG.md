@@ -11,7 +11,7 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ### Fixes
 
-- The settings app is smaller to download (15.2 MB → 10.0 MB).
+- The settings app is a third smaller to download (15.2 MB → 10.0 MB). (#46)
 - Notification icons keep reaching Wisp when Explorer shows its taskbar. (#38, fixes #19)
 - Right-clicking the dock no longer shows a "Wisp" title strip across its top. (#34, by @RayTrunk, fixes #33)
 - Wisp hides the taskbar reliably when it starts. Before, the taskbar sometimes stayed visible for several seconds, especially with a second screen. (#30, by @RayTrunk, fixes #28)
