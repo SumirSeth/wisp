@@ -1,7 +1,7 @@
 //! Checks GitHub for a newer release and installs it next to this app.
 //!
-//! An update downloads `wisp.exe` and `wisp-settings.exe` from the latest
-//! release, checks them against the release's SHA256SUMS.txt, then swaps them
+//! An update downloads the release zip, checks it against SHA256SUMS.txt,
+//! extracts `wisp.exe` and `wisp-settings.exe`, then swaps them
 //! in. Windows lets a running .exe be renamed but not overwritten, so each old
 //! file moves to `<name>.old` first. The next start deletes those files.
 
@@ -69,17 +69,7 @@ pub fn install(release: &Release) -> Result<(), String> {
     let sums = String::from_utf8_lossy(&get(release.asset_url("SHA256SUMS.txt")?)?).into_owned();
     let sums = parse_sums(&sums);
 
-    let mut staged: Vec<(PathBuf, PathBuf)> = Vec::new();
-    for (file, stem) in FILES {
-        let new = dir.join(format!("{file}.new"));
-        if let Err(error) = stage(release, &sums, stem, &new) {
-            for (_, new) in &staged {
-                let _ = std::fs::remove_file(new);
-            }
-            return Err(error);
-        }
-        staged.push((dir.join(file), new));
-    }
+    let staged = stage_release(release, &sums, &dir, get)?;
 
     let remove_staged = || {
         for (_, new) in &staged {
@@ -111,22 +101,87 @@ pub fn install(release: &Release) -> Result<(), String> {
     Ok(())
 }
 
-/// Downloads one release file to `new` and checks its checksum.
-fn stage(release: &Release, sums: &[(&str, &str)], stem: &str, new: &Path) -> Result<(), String> {
-    let asset = format!("{stem}-{}-x86_64.exe", release.tag);
+/// Verifies the complete download before writing either staged executable.
+/// Only releases without a zip use the legacy standalone assets.
+fn stage_release(
+    release: &Release,
+    sums: &[(&str, &str)],
+    dir: &Path,
+    mut download: impl FnMut(&str) -> Result<Vec<u8>, String>,
+) -> Result<Vec<(PathBuf, PathBuf)>, String> {
+    let zip_name = format!("wisp-{}-x86_64-windows.zip", release.tag);
+    let contents = if let Ok(url) = release.asset_url(&zip_name) {
+        let bytes = download(url)?;
+        verify(&zip_name, &bytes, sums)?;
+        extract_executables(&bytes, &release.tag)?
+    } else {
+        let mut contents = Vec::new();
+        for (_, stem) in FILES {
+            let name = format!("{stem}-{}-x86_64.exe", release.tag);
+            let bytes = download(release.asset_url(&name)?)?;
+            verify(&name, &bytes, sums)?;
+            contents.push(bytes);
+        }
+        contents
+    };
+    let staged: Vec<_> = FILES
+        .iter()
+        .map(|(file, _)| (dir.join(file), dir.join(format!("{file}.new"))))
+        .collect();
+    for ((_, new), bytes) in staged.iter().zip(contents) {
+        if let Err(error) = std::fs::write(new, bytes) {
+            for (_, new) in &staged {
+                let _ = std::fs::remove_file(new);
+            }
+            return Err(format!(
+                "Cannot save the update: {error}. Download it from the release page instead."
+            ));
+        }
+    }
+    Ok(staged)
+}
+
+fn verify(asset: &str, bytes: &[u8], sums: &[(&str, &str)]) -> Result<(), String> {
     let expected = sums
         .iter()
         .find(|(name, _)| *name == asset)
         .map(|(_, hash)| *hash)
         .ok_or_else(|| format!("SHA256SUMS.txt has no checksum for {asset}."))?;
-    let bytes = get(release.asset_url(&asset)?)?;
-    if !sha256_hex(&bytes).eq_ignore_ascii_case(expected) {
+    if !sha256_hex(bytes).eq_ignore_ascii_case(expected) {
         return Err(format!("{asset} does not match its checksum. Nothing was changed."));
     }
-    std::fs::write(new, &bytes).map_err(|error| {
-        let _ = std::fs::remove_file(new);
-        format!("Cannot save the update: {error}. Download it from the release page instead.")
-    })
+    Ok(())
+}
+
+fn extract_executables(bytes: &[u8], tag: &str) -> Result<Vec<Vec<u8>>, String> {
+    use std::io::{Cursor, Read};
+
+    let fail = |error| format!("Cannot read the release zip: {error}. Nothing was changed.");
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).map_err(fail)?;
+    let folder = format!("wisp-{tag}-x86_64-windows");
+    let mut contents = Vec::new();
+    for (file, _) in FILES {
+        // Look up exact names; never extract arbitrary paths from the archive.
+        // Windows PowerShell Compress-Archive can write backslash separators.
+        let slash = format!("{folder}/{file}");
+        let backslash = format!("{folder}\\{file}");
+        let name = [file, slash.as_str(), backslash.as_str()]
+            .into_iter()
+            .find(|candidate| archive.file_names().any(|name| name == *candidate))
+            .ok_or_else(|| format!("The release zip has no {file}. Nothing was changed."))?;
+        let mut entry = archive
+            .by_name(name)
+            .map_err(|error| format!("Cannot extract {file} from the release zip: {error}. Nothing was changed."))?;
+        if entry.is_dir() {
+            return Err(format!("The release zip has no {file}. Nothing was changed."));
+        }
+        let mut bytes = Vec::new();
+        entry
+            .read_to_end(&mut bytes)
+            .map_err(|error| format!("Cannot extract {file}: {error}. Nothing was changed."))?;
+        contents.push(bytes);
+    }
+    Ok(contents)
 }
 
 /// Starts the new settings app on the About page. The caller then quits.
@@ -452,5 +507,245 @@ mod tests {
             sha256_hex(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    fn test_dir() -> tempfile::TempDir {
+        match std::env::var_os("WISP_UPDATE_TEST_ROOT") {
+            Some(root) => tempfile::tempdir_in(root).unwrap(),
+            None => tempfile::tempdir().unwrap(),
+        }
+    }
+
+    fn zip_bytes(folder: bool, include_settings: bool) -> Vec<u8> {
+        use std::io::{Cursor, Write};
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for (file, _) in FILES {
+            if file == "wisp-settings.exe" && !include_settings {
+                continue;
+            }
+            let name = if folder {
+                format!("wisp-v99.0.0-x86_64-windows/{file}")
+            } else {
+                file.into()
+            };
+            writer
+                .start_file(
+                    name,
+                    zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated),
+                )
+                .unwrap();
+            writer.write_all(format!("new {file}").as_bytes()).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    }
+
+    fn release_with_zip() -> Release {
+        parse_release(
+            br#"{
+            "tag_name": "v99.0.0",
+            "assets": [
+                {"name": "wisp-v99.0.0-x86_64-windows.zip", "browser_download_url": "zip"},
+                {"name": "wisp-v99.0.0-x86_64.exe", "browser_download_url": "launcher"},
+                {"name": "wisp-settings-v99.0.0-x86_64.exe", "browser_download_url": "settings"}
+            ]
+        }"#,
+        )
+        .unwrap()
+    }
+
+    fn seed_install(dir: &Path) {
+        for (file, _) in FILES {
+            std::fs::write(dir.join(file), format!("old {file}")).unwrap();
+        }
+    }
+
+    fn assert_unchanged(dir: &Path) {
+        for (file, _) in FILES {
+            assert_eq!(std::fs::read(dir.join(file)).unwrap(), format!("old {file}").as_bytes());
+            assert!(!dir.join(format!("{file}.new")).exists());
+            assert!(!dir.join(format!("{file}.old")).exists());
+        }
+    }
+
+    #[test]
+    fn installs_verified_zip_with_or_without_top_folder_offline() {
+        for folder in [false, true] {
+            let fixture = test_dir();
+            let install = fixture.path().join("install");
+            std::fs::create_dir(&install).unwrap();
+            seed_install(&install);
+            let release = release_with_zip();
+            let zip_name = "wisp-v99.0.0-x86_64-windows.zip";
+            let bytes = zip_bytes(folder, true);
+            std::fs::write(fixture.path().join(zip_name), &bytes).unwrap();
+            std::fs::write(
+                fixture.path().join("SHA256SUMS.txt"),
+                format!("{}  {zip_name}\n", sha256_hex(&bytes)),
+            )
+            .unwrap();
+            let sums = std::fs::read_to_string(fixture.path().join("SHA256SUMS.txt")).unwrap();
+            let staged = stage_release(&release, &parse_sums(&sums), &install, |url| {
+                assert_eq!(url, "zip", "the zip must be preferred over standalone assets");
+                std::fs::read(fixture.path().join(zip_name)).map_err(|e| e.to_string())
+            })
+            .unwrap();
+            // Exercise the same rename/.old operations as install(), without stopping or starting Wisp.
+            for (target, new) in staged {
+                swap(&target, &new).unwrap();
+                let file = target.file_name().unwrap().to_str().unwrap();
+                assert_eq!(std::fs::read(&target).unwrap(), format!("new {file}").as_bytes());
+                assert_eq!(
+                    std::fs::read(old_path(&target)).unwrap(),
+                    format!("old {file}").as_bytes()
+                );
+                assert!(!new.exists());
+            }
+        }
+    }
+
+    #[test]
+    fn reads_backslash_folder_separators() {
+        use std::io::{Cursor, Write};
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for (file, _) in FILES {
+            writer
+                .start_file(
+                    format!("wisp-v99.0.0-x86_64-windows\\{file}"),
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .unwrap();
+            writer.write_all(file.as_bytes()).unwrap();
+        }
+        let bytes = writer.finish().unwrap().into_inner();
+        let contents = extract_executables(&bytes, "v99.0.0").unwrap();
+        assert_eq!(contents[0], b"wisp.exe");
+        assert_eq!(contents[1], b"wisp-settings.exe");
+    }
+
+    #[test]
+    fn reads_windows_powershell_archive_offline() {
+        // Optional fixture produced by dry-running the actual release Package step.
+        let Some(path) = std::env::var_os("WISP_UPDATE_TEST_ZIP") else {
+            return;
+        };
+        let path = PathBuf::from(path);
+        let bytes = std::fs::read(&path).unwrap();
+        let sums = std::fs::read_to_string(path.parent().unwrap().join("SHA256SUMS.txt")).unwrap();
+        let dir = test_dir();
+        seed_install(dir.path());
+        let mut release = release_with_zip();
+        release.tag = "v99.0.0-test".into();
+        release.assets[0].0 = path.file_name().unwrap().to_str().unwrap().into();
+        let staged = stage_release(&release, &parse_sums(&sums), dir.path(), |url| {
+            assert_eq!(url, "zip");
+            Ok(bytes.clone())
+        })
+        .unwrap();
+        for (target, new) in staged {
+            swap(&target, &new).unwrap();
+            assert!(old_path(&target).exists());
+            assert!(!new.exists());
+        }
+        assert!(
+            std::fs::read(dir.path().join("wisp.exe"))
+                .unwrap()
+                .starts_with(b"fake launcher")
+        );
+        assert!(
+            std::fs::read(dir.path().join("wisp-settings.exe"))
+                .unwrap()
+                .starts_with(b"fake settings")
+        );
+    }
+
+    #[test]
+    fn rejects_bad_zip_checksum_missing_file_and_invalid_archive_without_changes() {
+        for (bytes, checksum) in [
+            (zip_bytes(true, true), Some("wrong")),
+            (zip_bytes(true, false), None),
+            (zip_bytes(false, false), None),
+            (b"invalid zip".to_vec(), None),
+        ] {
+            let dir = test_dir();
+            seed_install(dir.path());
+            let hash = checksum.map(str::to_owned).unwrap_or_else(|| sha256_hex(&bytes));
+            let sums = [("wisp-v99.0.0-x86_64-windows.zip", hash.as_str())];
+            let error = stage_release(&release_with_zip(), &sums, dir.path(), |url| {
+                assert_eq!(url, "zip", "invalid zips must not fall back to standalone exes");
+                Ok(bytes.clone())
+            })
+            .unwrap_err();
+            assert!(error.contains("Nothing was changed"), "{error}");
+            assert_unchanged(dir.path());
+        }
+    }
+
+    #[test]
+    fn requires_zip_checksum_and_does_not_fall_back_after_download_failure() {
+        let dir = test_dir();
+        seed_install(dir.path());
+        let release = release_with_zip();
+        let error = stage_release(&release, &[], dir.path(), |_| Ok(zip_bytes(true, true))).unwrap_err();
+        assert!(error.contains("no checksum"));
+        let error = stage_release(&release, &[], dir.path(), |url| {
+            assert_eq!(url, "zip");
+            Err("offline".into())
+        })
+        .unwrap_err();
+        assert_eq!(error, "offline");
+        assert_unchanged(dir.path());
+    }
+
+    #[test]
+    fn falls_back_to_verified_standalone_assets_only_when_zip_is_absent() {
+        let dir = test_dir();
+        seed_install(dir.path());
+        let mut release = release_with_zip();
+        release.assets.retain(|(_, url)| url != "zip");
+        let launcher = b"new launcher";
+        let settings = b"new settings";
+        let launcher_hash = sha256_hex(launcher);
+        let settings_hash = sha256_hex(settings);
+        let mut sums = [
+            ("wisp-v99.0.0-x86_64.exe", launcher_hash.as_str()),
+            ("wisp-settings-v99.0.0-x86_64.exe", "wrong"),
+        ];
+        let download = |url: &str| match url {
+            "launcher" => Ok(launcher.to_vec()),
+            "settings" => Ok(settings.to_vec()),
+            _ => panic!("unexpected asset {url}"),
+        };
+        assert!(
+            stage_release(&release, &sums, dir.path(), download)
+                .unwrap_err()
+                .contains("checksum")
+        );
+        assert_unchanged(dir.path());
+        sums[1].1 = &settings_hash;
+        let staged = stage_release(&release, &sums, dir.path(), download).unwrap();
+        assert_eq!(staged.len(), 2);
+        assert_eq!(std::fs::read(&staged[0].1).unwrap(), launcher);
+        assert_eq!(std::fs::read(&staged[1].1).unwrap(), settings);
+    }
+
+    #[test]
+    fn removes_both_staged_files_if_writing_fails() {
+        let dir = test_dir();
+        seed_install(dir.path());
+        let blocked = dir.path().join("wisp-settings.exe.new");
+        std::fs::create_dir(&blocked).unwrap();
+        let bytes = zip_bytes(true, true);
+        let hash = sha256_hex(&bytes);
+        assert!(
+            stage_release(
+                &release_with_zip(),
+                &[("wisp-v99.0.0-x86_64-windows.zip", &hash)],
+                dir.path(),
+                |_| Ok(bytes.clone())
+            )
+            .is_err()
+        );
+        std::fs::remove_dir(blocked).unwrap();
+        assert_unchanged(dir.path());
     }
 }
