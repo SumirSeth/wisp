@@ -84,3 +84,7 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# Keep the launcher on the release profile above.
+[profile.release.package]
+wisp-settings = { opt-level = "z" }
