@@ -877,29 +877,42 @@ impl State {
                 unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0 || GetAsyncKeyState(VK_RBUTTON.0 as i32) < 0 };
             let moved = cursor != self.last_cursor;
             self.last_cursor = cursor;
-            if !dragging && at_bottom_edge(cursor) && !fullscreen_foreground(self.hwnd) {
+            let monitor = cursor_monitor(cursor);
+            let at_edge = monitor.is_some_and(|m| cursor.y >= m.bottom - 2);
+            let near_edge = monitor.is_some_and(|m| cursor.y >= m.bottom - (m.bottom - m.top) / 3);
+            if !dragging && at_edge && !fullscreen_foreground(self.hwnd) {
                 self.listen(false);
                 self.reveal();
                 self.start_poll(POLL_MS);
-            } else if !near_bottom_edge(cursor) || fullscreen_foreground(self.hwnd) {
-                // Away from the edge, or over a full-screen app, the slow poll is enough.
+            } else if !near_edge {
+                // Away from the edge, the slow poll is enough.
                 self.listen(false);
                 self.set_poll(POLL_MS);
             } else if moved {
+                // Over a full-screen app, the slow poll is enough. The check
+                // runs only when the pointer starts to move, so a resting
+                // pointer costs no more than before.
                 self.still_polls = 0;
                 self.listen(false);
-                self.set_poll(NEAR_POLL_MS);
-            } else {
-                // A resting pointer can't reach the edge. Poll slowly until it moves again.
-                self.still_polls = self.still_polls.saturating_add(1);
-                if self.still_polls >= STILL_POLLS {
-                    self.listen(true);
+                let fast = self.poll_ms == NEAR_POLL_MS || !fullscreen_foreground(self.hwnd);
+                self.set_poll(if fast { NEAR_POLL_MS } else { POLL_MS });
+            } else if self.still_polls < STILL_POLLS {
+                // A resting pointer can't reach the edge. Poll slowly until it
+                // moves again, and let Windows report that movement unless a
+                // full-screen app is in front. Checked once per rest.
+                self.still_polls += 1;
+                if self.still_polls == STILL_POLLS {
+                    if !fullscreen_foreground(self.hwnd) {
+                        self.listen(true);
+                    }
                     self.set_poll(POLL_MS);
                 }
             }
             return;
         }
         self.listen(false);
+        // Once the dock hides, a resting pointer counts its rest afresh.
+        self.still_polls = 0;
         if self.poll_ms != POLL_MS {
             // HIDE_AFTER counts slow polls.
             self.start_poll(POLL_MS);
@@ -1990,30 +2003,15 @@ fn window_aumid(hwnd: HWND) -> Option<String> {
     }
 }
 
-fn at_bottom_edge(cursor: POINT) -> bool {
+/// The screen under the pointer, if the pointer is within its width.
+fn cursor_monitor(cursor: POINT) -> Option<RECT> {
     let mut info = MONITORINFO {
         cbSize: size_of::<MONITORINFO>() as u32,
         ..Default::default()
     };
-    unsafe {
-        GetMonitorInfoW(MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST), &mut info).as_bool()
-            && cursor.y >= info.rcMonitor.bottom - 2
-            && (info.rcMonitor.left..info.rcMonitor.right).contains(&cursor.x)
-    }
-}
-
-/// Whether the pointer is in the lower third of its screen, where a quick
-/// move can reach the bottom edge before the next slow poll.
-fn near_bottom_edge(cursor: POINT) -> bool {
-    let mut info = MONITORINFO {
-        cbSize: size_of::<MONITORINFO>() as u32,
-        ..Default::default()
-    };
-    unsafe {
-        GetMonitorInfoW(MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST), &mut info).as_bool()
-            && cursor.y >= info.rcMonitor.bottom - (info.rcMonitor.bottom - info.rcMonitor.top) / 3
-            && (info.rcMonitor.left..info.rcMonitor.right).contains(&cursor.x)
-    }
+    let found = unsafe { GetMonitorInfoW(MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST), &mut info) }.as_bool();
+    let monitor = info.rcMonitor;
+    (found && (monitor.left..monitor.right).contains(&cursor.x)).then_some(monitor)
 }
 
 fn fullscreen_foreground(dock: HWND) -> bool {
