@@ -4,21 +4,23 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ## Unreleased
 
+## 0.6.0 - 2026-11-09
+
 ### New
 
-- Hover an app with several windows to see its windows. Click one to switch to it, or middle-click to close it. (#21, by @JulienMaille)
-- Set the app icon size in Settings. The dock layout, spacing and icons scale together. (#39, by @JulienMaille)
+- **See an app's windows.** Hover an app with several windows to list them. Click one to switch to it, or middle-click to close it. (#21, by @JulienMaille)
+- **Choose the dock's size.** Set the app icon size in Settings, from 24 to 40. The dock's height, spacing and status area scale with it. (#39, by @JulienMaille)
 
 ### Fixes
 
-- The settings app is a third smaller to download (15.2 MB → 10.0 MB). (#46)
-- Updates download the release zip, and Wisp tells you where to get Settings if it is missing. (#47)
-- Notification icons keep reaching Wisp when Explorer shows its taskbar. (#38, fixes #19)
-- Right-clicking the dock no longer shows a "Wisp" title strip across its top. (#34, by @RayTrunk, fixes #33)
 - Wisp hides the taskbar reliably when it starts. Before, the taskbar sometimes stayed visible for several seconds, especially with a second screen. (#30, by @RayTrunk, fixes #28)
 - The Windows taskbar no longer flashes when you switch the dock between autohide and Keep the dock visible. (#24, by @RayTrunk, fixes #18)
+- Notification icons keep reaching Wisp when Explorer shows its taskbar. (#38, fixes #19)
+- Right-clicking the dock no longer shows a "Wisp" title strip across its top. (#34, by @RayTrunk, fixes #33)
 - The best match stays selected while typing in the launcher when the mouse rests over the results. Move the mouse to highlight another result. (#36, fixes #35)
 - Time searches now find English city names on non-English Windows, while still finding names in the Windows display language. (#37, fixes #26)
+- The settings app is a third smaller to download (15.2 MB → 10.0 MB). (#46)
+- Updates download the release zip, and Wisp tells you where to get Settings if it is missing. (#47)
 
 ## 0.5.0 - 2026-11-07
 
