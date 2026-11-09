@@ -26,11 +26,11 @@ It is written in Rust with Win32 and Direct2D. It needs no .NET, web view or Pow
 
 ## Install
 
-1. Download the zip from the [latest release](https://github.com/SumirSeth/wisp/releases/latest).
+1. Download `wisp-vX-x86_64-windows.zip` from the [latest release](https://github.com/SumirSeth/wisp/releases/latest).
 2. Extract it to `%LOCALAPPDATA%\Programs\Wisp`.
 3. Run `wisp.exe`. The settings app opens and sets your shortcut and **Start with Windows**.
 
-To update, open the settings app and select **Update** on the **About** page.
+Keep `wisp-settings.exe` beside `wisp.exe` for Settings and updates. To update, select **Update** on the **About** page in Settings.
 
 > [!NOTE]
 > PowerToys Run also uses <kbd>Alt</kbd>+<kbd>Space</kbd>. Turn it off, or change Wisp's shortcut.

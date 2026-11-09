@@ -24,12 +24,13 @@ jobs:
           New-Item -ItemType Directory $name | Out-Null
           Copy-Item target/release/wisp.exe, target/release/wisp-settings.exe, README.md, LICENSE $name
           Compress-Archive $name "$name.zip"
+          # Standalone exes are only for 0.5.x updaters. Drop them once those are rare,
+          # no earlier than two releases after the zip updater ships.
           Copy-Item target/release/wisp.exe "wisp-${{ github.ref_name }}-x86_64.exe"
-          # The settings app's updater downloads the two .exe files and checks them against SHA256SUMS.txt.
           Copy-Item target/release/wisp-settings.exe "wisp-settings-${{ github.ref_name }}-x86_64.exe"
           $files = "$name.zip", "wisp-${{ github.ref_name }}-x86_64.exe", "wisp-settings-${{ github.ref_name }}-x86_64.exe"
           $files | ForEach-Object { (Get-FileHash $_ -Algorithm SHA256).Hash + "  $_" } | Out-File -Encoding ascii SHA256SUMS.txt
-      # The notes are the version's section of CHANGELOG.md, followed by the
+      # The notes start with the download, then the version's CHANGELOG.md section and the
       # pull requests GitHub lists for the release (.github/release.yml).
       - name: Notes
         env:
@@ -43,7 +44,8 @@ jobs:
           $pulls = gh api "repos/${{ github.repository }}/releases/generate-notes" `
             -f tag_name="${{ github.ref_name }}" --jq .body
           $pulls = $pulls -join "`n"
-          "$section`n`n<details>`n<summary>Pull requests</summary>`n`n$pulls`n`n</details>`n" |
+          $download = '**Download `wisp-${{ github.ref_name }}-x86_64-windows.zip`**, extract it and run `wisp.exe`. The separate .exe files are for the built-in updater.'
+          "$download`n`n$section`n`n<details>`n<summary>Pull requests</summary>`n`n$pulls`n`n</details>`n" |
             Out-File -Encoding utf8 notes.md
       - name: Publish
         env:
