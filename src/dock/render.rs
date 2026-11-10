@@ -671,22 +671,33 @@ unsafe fn draw(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
                 text(&target.rt, &target.brush, &formats.letter, &initial, icon_rect);
             }
             if !item.windows.is_empty() {
-                // A short dash for running apps, longer and in accent for the foreground one.
-                let half = if active { 6.0 } else { 1.5 };
-                let center = x + slot / 2.0;
+                // A dot for running apps, a longer accent dash for the foreground one, and
+                // a second dot when the app has more than one window.
+                const GAP: f32 = 2.0;
+                let marks: &[f32] = match (active, item.windows.len() > 1) {
+                    (false, false) => &[3.0],
+                    (false, true) => &[3.0, 3.0],
+                    (true, false) => &[12.0],
+                    (true, true) => &[12.0, 3.0],
+                };
+                let total = marks.iter().sum::<f32>() + GAP * (marks.len() - 1) as f32;
+                let mut left = x + slot / 2.0 - total / 2.0 * frame.layout_scale;
                 target.brush.SetColor(if active { &p.accent } else { &p.subtext });
-                target.rt.FillRoundedRectangle(
-                    &rounded(
-                        frame.snap_rect(
-                            center - half * frame.layout_scale,
-                            INDICATOR_TOP * frame.layout_scale,
-                            center + half * frame.layout_scale,
-                            (INDICATOR_TOP + 3.0) * frame.layout_scale,
+                for &width in marks {
+                    target.rt.FillRoundedRectangle(
+                        &rounded(
+                            frame.snap_rect(
+                                left,
+                                INDICATOR_TOP * frame.layout_scale,
+                                left + width * frame.layout_scale,
+                                (INDICATOR_TOP + 3.0) * frame.layout_scale,
+                            ),
+                            1.5 * frame.layout_scale,
                         ),
-                        1.5 * frame.layout_scale,
-                    ),
-                    &target.brush,
-                );
+                        &target.brush,
+                    );
+                    left += (width + GAP) * frame.layout_scale;
+                }
             }
         }
         Ok(())
