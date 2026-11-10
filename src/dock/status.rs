@@ -89,6 +89,8 @@ fn battery() -> Option<Battery> {
 /// Slow radio readings, owned by the UI after delivery.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Radios {
+    /// False until the first reading arrives, so the radios aren't shown as missing.
+    pub read: bool,
     pub wifi: Option<crate::commands::wifi::State>,
     pub bluetooth: Option<crate::commands::bluetooth::State>,
 }
@@ -110,6 +112,7 @@ impl Status {
                 .network
                 .as_ref()
                 .map_or_else(|| "Wi-Fi on, not connected".into(), |n| format!("Wi-Fi: {n}")),
+            None if !radios.read => "Wi-Fi: checking".into(),
             None => "No Wi-Fi".into(),
         };
         let bluetooth = match &radios.bluetooth {
@@ -119,6 +122,7 @@ impl Status {
                 Some(name) => format!("Bluetooth: {name}"),
                 None => "Bluetooth on".into(),
             },
+            None if !radios.read => "Bluetooth: checking".into(),
             None => "No Bluetooth".into(),
         };
         format!("{volume}\n{battery}\n{wifi}\n{bluetooth}")
@@ -163,7 +167,10 @@ impl RadioWorker {
             .name("dock-status".into())
             .spawn(move || {
                 let initialized = unsafe { RoInitialize(RO_INIT_MULTITHREADED).is_ok() };
-                let mut radios = Radios::default();
+                let mut radios = Radios {
+                    read: initialized,
+                    ..Radios::default()
+                };
                 if initialized {
                     if active.load(Ordering::Acquire) {
                         radios.wifi = crate::commands::wifi::state();
@@ -215,6 +222,12 @@ mod tests {
     fn tooltip_keeps_four_cells_with_or_without_hardware() {
         let mut status = Status::default();
         let mut radios = Radios::default();
+        assert!(
+            status
+                .tooltip(&radios)
+                .ends_with("Wi-Fi: checking\nBluetooth: checking")
+        );
+        radios.read = true;
         assert_eq!(
             status.tooltip(&radios),
             "No audio device\nNo battery\nNo Wi-Fi\nNo Bluetooth"

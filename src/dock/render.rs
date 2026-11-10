@@ -829,8 +829,9 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
                             status.battery.is_some(),
                             status.battery.is_some_and(|b| b.percent <= 20 && !b.charging),
                         ),
-                        (wifi, radios.wifi.is_some(), false),
-                        (bluetooth, radios.bluetooth.is_some(), false),
+                        // Until the first reading, the radios look present rather than missing.
+                        (wifi, !radios.read || radios.wifi.is_some(), false),
+                        (bluetooth, !radios.read || radios.bluetooth.is_some(), false),
                     ];
                     for (i, (glyph, present, low)) in cells.into_iter().enumerate() {
                         let (x, y) = logic::status_cell(i);
