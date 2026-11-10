@@ -15,6 +15,7 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 - Wisp checks daily for stable updates and shows a notification once per version, with an update row in the launcher. Turn checks off in Settings. Metered connections and Nightly builds skip checks. (#77, fixes #43)
 - Choose a color for the dock and the launcher in Settings, under Appearance > Advanced. Turn on Custom dock color, then pick a preset, set hue, saturation, lightness and alpha, or type a hex value or red, green and blue numbers. Text turns light or dark to stay readable, and with Acrylic the color's alpha sets how much of the theme's acrylic shows through. Turning the switch off returns to the theme's colors. (#72, by @Kendoismebutmaybenot, fixes #60)
 - A dock app's right-click menu shows an arrow beside its name, opening New window, Run as administrator, Open file location and Properties. Pin to dock or Unpin from dock stays in the main menu. Close window or Close all windows shows when the app has windows, and End task shows when it is turned on for the taskbar in Windows Settings (System > For developers). Items that don't apply are hidden. (#73, by @Kendoismebutmaybenot)
+- File search also finds words inside file names, such as `report` in `bug-reporting.txt`. (#57, by @RayTrunk, part of #56)
 
 ### Fixes
 
@@ -42,7 +43,6 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 - **Wi-Fi and Bluetooth in Now.** Pick a network to connect, entering its password right there, or a Bluetooth audio device to connect or disconnect it. Turn Wi-Fi and Bluetooth on or off. Type "wifi" or "bluetooth" in the launcher to go straight there. (#68)
 - Apps with more than one window open show a second dot under their dock icon. (#55)
 - The autohide dock starts to slide in sooner when you move the pointer to the bottom edge. (#25, by @RayTrunk, fixes #20)
-- File search also finds words inside file names, such as `report` in `bug-reporting.txt`. (by @RayTrunk, part of #56)
 
 ### Thanks
 
