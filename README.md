@@ -54,6 +54,7 @@ The dock appears when the pointer touches the bottom edge of a screen, and hides
 | --- | --- |
 | Click an app | Switch to it |
 | Click the app in front | Minimize it |
+| Drag the launcher, a gap beside the apps, the tray chevron, status or clock | Move that whole section; the order is saved |
 | Drag an app sideways | Rearrange it; drop among pins to pin it, or among running apps to unpin it |
 | Middle-click an app | Open a new window of it |
 | Right-click an app | Pin or unpin it, or close its windows |
@@ -68,6 +69,8 @@ The dock appears when the pointer touches the bottom edge of a screen, and hides
 | Click the clock | Open notifications and the calendar |
 | Scroll anywhere else | Switch virtual desktops |
 | <kbd>Shift</kbd>+scroll | Scroll through the apps |
+
+Tray icons keep their usual clicks; drag their chevron or the gap beside them to move the tray block. All app icons stay together when sections move. The section order is saved in `dock_order` in config.toml.
 
 Right-click an app and choose **Pin to dock** to keep it before running apps, in pin order. Click a closed pinned app to start it. To clear pins, choose **Unpin all** on a pinned app, or **Unpin all apps** in Settings.
 
@@ -133,6 +136,7 @@ Open **Settings** from Wisp's tray icon, or edit `%APPDATA%\wisp\config.toml`. T
 | `dock` | `true` | Shows the dock |
 | `dock_autohide` | `true` | Hides the dock until the pointer touches the bottom edge. `false` keeps it visible. |
 | `window_list` | `"multiple"` | `"multiple"` lists an app's windows when it has more than one; `"always"` or `"off"` |
+| `dock_order` | `["launcher", "apps", "tray", "status", "clock"]` | Sections from left to right; drag sections to change it. |
 | `dock_icon_size` | `32` | App icon size in the dock, 24–40 DIP. The dock's height, spacing and status area scale with it. |
 | `hide_taskbar` | `true` | Hides the Windows taskbar while Wisp runs |
 | `position` | `"bottom"` | `"bottom"` grows the launcher from the dock; `"center"` opens it in the middle |

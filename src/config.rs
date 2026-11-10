@@ -7,6 +7,9 @@ use serde::Deserialize;
 
 use crate::util;
 
+#[path = "config_write.rs"]
+mod write;
+
 /// wisp-settings includes the same file, so both apps create the same config.
 const DEFAULT_CONFIG: &str = include_str!("default-config.toml");
 /// Values for missing keys that differ from the default config, shared with wisp-settings.
@@ -56,6 +59,7 @@ pub struct Config {
     pub dock: bool,
     pub dock_autohide: bool,
     pub dock_icon_size: usize,
+    pub dock_order: Vec<String>,
     pub hotkey: String,
     pub max_results: usize,
     pub theme: Theme,
@@ -112,13 +116,76 @@ impl Config {
         let mut table: toml::Table = toml::from_str(DEFAULT_CONFIG)?;
         table.extend(toml::from_str::<toml::Table>(MISSING_KEYS)?);
         table.extend(toml::from_str::<toml::Table>(text)?);
+        let names = table
+            .get("dock_order")
+            .and_then(toml::Value::as_array)
+            .map(|values| values.iter().filter_map(toml::Value::as_str).collect::<Vec<_>>())
+            .unwrap_or_default();
+        let order = crate::dock::logic::section_order(names);
+        table.insert(
+            "dock_order".into(),
+            toml::Value::Array(
+                order
+                    .iter()
+                    .map(|section| toml::Value::String(section.name().into()))
+                    .collect(),
+            ),
+        );
         table.try_into()
+    }
+
+    /// Rereads the user's file and edits only the row order, preserving comments.
+    pub fn save_order(names: &[&str]) -> Result<(), String> {
+        Self::write_order(&Self::path(), names)
+    }
+
+    fn write_order(path: &std::path::Path, names: &[&str]) -> Result<(), String> {
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => DEFAULT_CONFIG.into(),
+            Err(error) => return Err(format!("Cannot read config.toml: {error}")),
+        };
+        Self::parse(&text).map_err(|error| error.to_string())?;
+        let mut doc: toml_edit::DocumentMut = text.parse().map_err(|error: toml_edit::TomlError| error.to_string())?;
+        let order = crate::dock::logic::section_order(names.iter().copied());
+        let array: toml_edit::Array = order.iter().map(|section| section.name()).collect();
+        write::replace(&mut doc, "dock_order", array.into());
+        write::save(path, &doc)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn order_defaults_normalizes_and_preserves_other_config_edits() {
+        let default = Config::default().dock_order;
+        assert_eq!(Config::parse("").unwrap().dock_order, default);
+        assert_eq!(
+            Config::parse("dock_order = ['clock', 'unknown', 'clock', 'apps']")
+                .unwrap()
+                .dock_order,
+            ["clock", "apps", "launcher", "tray", "status"]
+        );
+        assert_eq!(Config::parse("dock_order = 3").unwrap().dock_order, default);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let text = "# My config\nhotkey = 'Ctrl+Space' # Keep me\ndock_order = ['clock', 'apps'] # My row\n[extra]\nvalue = 42\n";
+        std::fs::write(&path, text).unwrap();
+        Config::write_order(&path, &["status", "clock"]).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("hotkey = 'Ctrl+Space' # Keep me"));
+        assert!(saved.contains("# My row"));
+        assert!(saved.contains("[extra]\nvalue = 42"));
+        assert_eq!(
+            Config::parse(&saved).unwrap().dock_order,
+            ["status", "clock", "launcher", "apps", "tray"]
+        );
+        std::fs::write(&path, "hotkey = [").unwrap();
+        assert!(Config::write_order(&path, &["apps"]).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hotkey = [");
+    }
 
     #[test]
     fn legacy_pins_are_ignored() {

@@ -60,7 +60,7 @@ pub struct Renderer {
 }
 
 pub struct Frame<'a> {
-    pub layout: logic::AppLayout,
+    pub layout: logic::RowLayout,
     pub dpi: u32,
     pub palette: &'a Palette,
     pub items: &'a [Item],
@@ -581,12 +581,12 @@ unsafe fn draw(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
             ..
         } = frame;
         let running = frame.count();
-        if frame.layout.divider() {
+        if frame.layout.apps.divider() {
             separator(
                 target,
                 frame,
-                logic::left_scaled(frame.layout.pinned + 1, frame.layout_scale)
-                    + logic::separator_width(frame.layout_scale) / 2.0,
+                frame.layout.left(frame.layout.apps.pinned + 1, frame.layout_scale)
+                    - logic::separator_width(frame.layout_scale) / 2.0,
             );
         }
         let foreground = GetForegroundWindow().0 as isize;
@@ -756,14 +756,11 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
     target
         .tray
         .retain(|key, _| frame.tray.iter().any(|shown| shown.icon.key() == *key));
-    separator(
-        target,
-        frame,
-        frame.layout.width(frame.layout_scale) - logic::pad(frame.layout_scale)
-            + logic::separator_width(frame.layout_scale) / 2.0,
-    );
+    for (_, left, _) in frame.layout.sections(frame.layout_scale).skip(1) {
+        separator(target, frame, left - logic::separator_width(frame.layout_scale) / 2.0);
+    }
     for &part in parts.iter() {
-        let Some(left) = frame.layout.part_left(part, parts, frame.layout_scale) else {
+        let Some(left) = frame.layout.part_left(part, frame.layout_scale) else {
             continue;
         };
         let right = left + part.width_scaled(frame.layout_scale);

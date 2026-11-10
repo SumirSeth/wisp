@@ -50,3 +50,6 @@ window_list = "multiple"
 
 # App icons in the dock, in DIPs (24 to 40). The default is 32.
 dock_icon_size = 32
+
+# Sections from left to right. Drag a section in the dock to change this order.
+dock_order = ["launcher", "apps", "tray", "status", "clock"]

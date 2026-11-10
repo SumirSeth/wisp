@@ -23,11 +23,10 @@ perf-trace = ["windows/Win32_System_Performance"]
 nucleo-matcher = "0.3"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
+toml_edit = "0.23"
+tempfile = "3"
 windows-core = "0.62"
 windows-numerics = "0.3"
-
-[dev-dependencies]
-tempfile = "3"
 
 [build-dependencies]
 winresource = "0.1"

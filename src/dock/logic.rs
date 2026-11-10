@@ -48,14 +48,6 @@ pub fn separator_width(scale: f32) -> f32 {
     SEPARATOR * scale
 }
 
-pub fn width(running: usize) -> f32 {
-    2.0 * PAD + (1 + running) as f32 * SLOT
-}
-
-pub fn width_scaled(running: usize, scale: f32) -> f32 {
-    width(running) * scale
-}
-
 pub fn left(index: usize) -> f32 {
     PAD + index as f32 * SLOT
 }
@@ -97,12 +89,6 @@ impl AppLayout {
                 0.0
             })
             * scale
-    }
-    pub fn width(self, scale: f32) -> f32 {
-        width_scaled(self.count, scale) + self.gap() * scale
-    }
-    pub fn total_width(self, parts: &[Part], scale: f32) -> f32 {
-        total_width_scaled(self.count, parts, scale) + self.gap() * scale
     }
     pub fn hit(self, x: f32, y: f32, scale: f32) -> Option<usize> {
         if !self.divider() {
@@ -147,13 +133,6 @@ impl AppLayout {
         }
         Some(DropTarget { index, pinned })
     }
-
-    pub fn part_left(self, part: Part, parts: &[Part], scale: f32) -> Option<f32> {
-        part_left_scaled(part, self.count, parts, scale).map(|x| x + self.gap() * scale)
-    }
-    pub fn part_hit(self, x: f32, y: f32, parts: &[Part], scale: f32) -> Option<Part> {
-        part_hit_scaled(x - self.gap() * scale, y, self.count, parts, scale)
-    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -182,6 +161,178 @@ pub fn move_item<T>(items: &mut Vec<T>, from: usize, to: usize) {
     if from != to && from < items.len() && to < items.len() {
         let item = items.remove(from);
         items.insert(to, item);
+    }
+}
+
+/// Blocks in the dock's saved row order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Section {
+    Launcher,
+    Apps,
+    Tray,
+    Status,
+    Clock,
+}
+
+pub const DEFAULT_ORDER: [Section; 5] = [
+    Section::Launcher,
+    Section::Apps,
+    Section::Tray,
+    Section::Status,
+    Section::Clock,
+];
+
+impl Section {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Launcher => "launcher",
+            Self::Apps => "apps",
+            Self::Tray => "tray",
+            Self::Status => "status",
+            Self::Clock => "clock",
+        }
+    }
+}
+
+/// Unknown and duplicate names disappear; omitted blocks follow in default order.
+pub fn section_order<'a>(names: impl IntoIterator<Item = &'a str>) -> [Section; 5] {
+    let mut order = Vec::with_capacity(5);
+    for section in names
+        .into_iter()
+        .filter_map(|name| DEFAULT_ORDER.into_iter().find(|section| section.name() == name))
+        .chain(DEFAULT_ORDER)
+    {
+        if !order.contains(&section) {
+            order.push(section);
+        }
+    }
+    order.try_into().unwrap()
+}
+
+pub fn move_section(order: &mut [Section; 5], section: Section, target: Section) {
+    let from = order.iter().position(|&item| item == section).unwrap();
+    let to = order.iter().position(|&item| item == target).unwrap();
+    if from < to {
+        order[from..=to].rotate_left(1);
+    } else {
+        order[to..=from].rotate_right(1);
+    }
+}
+
+/// One padded row, with one gap between each pair of nonempty blocks.
+#[derive(Clone, Copy)]
+pub struct RowLayout {
+    pub apps: AppLayout,
+    pub order: [Section; 5],
+    pub tray: Option<usize>,
+}
+
+impl RowLayout {
+    pub fn sections(self, scale: f32) -> impl Iterator<Item = (Section, f32, f32)> {
+        let mut x = pad(scale);
+        let mut first = true;
+        self.order.into_iter().filter_map(move |section| {
+            let width = match section {
+                Section::Launcher => SLOT,
+                Section::Apps => self.apps.count as f32 * SLOT + self.apps.gap(),
+                Section::Tray => self
+                    .tray
+                    .map_or(0.0, |count| CHEVRON_W + count.min(MAX_INLINE) as f32 * TRAY_W),
+                Section::Status => STATUS_W,
+                Section::Clock => CLOCK_W,
+            } * scale;
+            if width == 0.0 {
+                return None;
+            }
+            if !first {
+                x += separator_width(scale);
+            }
+            first = false;
+            let left = x;
+            x += width;
+            Some((section, left, width))
+        })
+    }
+
+    pub fn section_left(self, section: Section, scale: f32) -> Option<f32> {
+        self.sections(scale)
+            .find(|&(item, _, _)| item == section)
+            .map(|(_, left, _)| left)
+    }
+
+    pub fn width(self, scale: f32) -> f32 {
+        self.sections(scale)
+            .last()
+            .map_or(2.0 * pad(scale), |(_, left, width)| left + width + pad(scale))
+    }
+
+    pub fn left(self, index: usize, scale: f32) -> f32 {
+        if index == 0 {
+            return self.section_left(Section::Launcher, scale).unwrap();
+        }
+        self.section_left(Section::Apps, scale).unwrap_or(pad(scale)) + self.apps.left(index, scale)
+            - left_scaled(1, scale)
+    }
+
+    pub fn hit(self, x: f32, y: f32, scale: f32) -> Option<usize> {
+        if !(0.0..height(scale)).contains(&y) {
+            return None;
+        }
+        (0..=self.apps.count)
+            .find(|&index| (self.left(index, scale)..self.left(index, scale) + slot(scale)).contains(&x))
+    }
+
+    pub fn part_left(self, part: Part, scale: f32) -> Option<f32> {
+        let (section, offset) = match part {
+            Part::Chevron => (Section::Tray, 0.0),
+            Part::Tray(index) if self.tray.is_some_and(|count| index < count.min(MAX_INLINE)) => {
+                (Section::Tray, CHEVRON_W + index as f32 * TRAY_W)
+            }
+            Part::Tray(_) => return None,
+            Part::Status => (Section::Status, 0.0),
+            Part::Clock => (Section::Clock, 0.0),
+        };
+        self.section_left(section, scale).map(|left| left + offset * scale)
+    }
+
+    pub fn part_hit(self, x: f32, y: f32, parts: &[Part], scale: f32) -> Option<Part> {
+        if !(0.0..height(scale)).contains(&y) {
+            return None;
+        }
+        parts.iter().copied().find(|part| {
+            self.part_left(*part, scale)
+                .is_some_and(|left| (left..left + part.width_scaled(scale)).contains(&x))
+        })
+    }
+
+    /// Gaps belong to their nearest block; no target splits the apps or tray.
+    pub fn section_at(self, x: f32, scale: f32) -> Section {
+        self.sections(scale)
+            .min_by(|(_, a, aw), (_, b, bw)| {
+                let distance = |left: f32, width: f32| (left - x).max(0.0).max(x - left - width);
+                distance(*a, *aw).total_cmp(&distance(*b, *bw))
+            })
+            .unwrap()
+            .0
+    }
+
+    /// Cross a neighboring block's center before shifting it past the dragged block.
+    pub fn section_target(self, section: Section, x: f32, scale: f32) -> Section {
+        let from = self.order.iter().position(|&item| item == section).unwrap();
+        let mut target = section;
+        for (item, left, width) in self.sections(scale) {
+            let at = self.order.iter().position(|&entry| entry == item).unwrap();
+            let center = left + width / 2.0;
+            if (at < from && x < center && target == section) || (at > from && x >= center) {
+                target = item;
+            }
+        }
+        target
+    }
+
+    pub fn drop_target(self, x: f32, scale: f32, scroll: usize, pins: usize) -> Option<DropTarget> {
+        let local = x - self.section_left(Section::Apps, scale)? + left_scaled(1, scale);
+        self.apps.drop_target(local, scale, scroll, pins)
     }
 }
 
@@ -308,48 +459,6 @@ pub fn flyout_hit(x: f32, y: f32, count: usize) -> Option<usize> {
     (column < FLYOUT_COLUMNS && index < count).then_some(index)
 }
 
-/// The status parts follow the apps, after a separator.
-pub fn status_width(parts: &[Part]) -> f32 {
-    SEPARATOR + parts.iter().map(|part| part.width()).sum::<f32>()
-}
-
-pub fn status_width_scaled(parts: &[Part], scale: f32) -> f32 {
-    status_width(parts) * scale
-}
-
-pub fn total_width(running: usize, parts: &[Part]) -> f32 {
-    width(running) + status_width(parts)
-}
-
-pub fn total_width_scaled(running: usize, parts: &[Part], scale: f32) -> f32 {
-    total_width(running, parts) * scale
-}
-
-/// Left edge of `part`, or `None` for a part the PC lacks.
-pub fn part_left(part: Part, running: usize, parts: &[Part]) -> Option<f32> {
-    let index = parts.iter().position(|&p| p == part)?;
-    let start = width(running) - PAD + SEPARATOR;
-    Some(start + parts[..index].iter().map(|part| part.width()).sum::<f32>())
-}
-
-pub fn part_left_scaled(part: Part, running: usize, parts: &[Part], scale: f32) -> Option<f32> {
-    part_left(part, running, parts).map(|left| left * scale)
-}
-
-pub fn part_hit(x: f32, y: f32, running: usize, parts: &[Part]) -> Option<Part> {
-    if !(0.0..HEIGHT).contains(&y) {
-        return None;
-    }
-    parts
-        .iter()
-        .copied()
-        .find(|&part| part_left(part, running, parts).is_some_and(|left| (left..left + part.width()).contains(&x)))
-}
-
-pub fn part_hit_scaled(x: f32, y: f32, running: usize, parts: &[Part], scale: f32) -> Option<Part> {
-    part_hit(x / scale, y / scale, running, parts)
-}
-
 /// Wheel delta per volume percent, for 2% per 120-delta notch.
 pub const WHEEL_PER_PERCENT: i32 = 60;
 
@@ -427,11 +536,120 @@ mod tests {
     use super::*;
 
     #[test]
+    fn section_names_and_moves_keep_every_block_once() {
+        assert_eq!(section_order([]), DEFAULT_ORDER);
+        assert_eq!(
+            section_order(["clock", "bad", "clock", "apps"]),
+            [
+                Section::Clock,
+                Section::Apps,
+                Section::Launcher,
+                Section::Tray,
+                Section::Status
+            ]
+        );
+        for source in DEFAULT_ORDER {
+            for target in DEFAULT_ORDER {
+                let mut order = DEFAULT_ORDER;
+                move_section(&mut order, source, target);
+                assert_eq!(order.iter().filter(|&&item| item == source).count(), 1);
+                assert_eq!(
+                    order.iter().position(|&item| item == source),
+                    DEFAULT_ORDER.iter().position(|&item| item == target)
+                );
+                assert_eq!(section_order(order.map(Section::name)), order);
+            }
+        }
+    }
+
+    #[test]
+    fn row_geometry_hits_and_gaps_follow_every_order() {
+        fn permutations(order: &mut [Section; 5], at: usize, check: &impl Fn([Section; 5])) {
+            if at == 5 {
+                check(*order);
+                return;
+            }
+            for index in at..5 {
+                order.swap(at, index);
+                permutations(order, at + 1, check);
+                order.swap(at, index);
+            }
+        }
+        let mut order = DEFAULT_ORDER;
+        permutations(&mut order, 0, &|order| {
+            for scale in [0.75, 1.0, 1.25, 2.0] {
+                for tray in [None, Some(0), Some(3)] {
+                    for (count, pinned) in [(0, 0), (4, 0), (4, 2), (4, 4)] {
+                        let row = RowLayout {
+                            apps: AppLayout { count, pinned },
+                            order,
+                            tray,
+                        };
+                        let parts = parts(tray);
+                        let mut end = pad(scale);
+                        for (index, (section, left, width)) in row.sections(scale).enumerate() {
+                            assert_eq!(left, end + if index == 0 { 0.0 } else { separator_width(scale) });
+                            assert_eq!(row.section_at(left + width / 2.0, scale), section);
+                            if index > 0 {
+                                let gap = left - separator_width(scale) / 2.0;
+                                assert_eq!(row.hit(gap, 10.0, scale), None);
+                                assert_eq!(row.part_hit(gap, 10.0, &parts, scale), None);
+                            }
+                            end = left + width;
+                        }
+                        assert_eq!(row.width(scale), end + pad(scale));
+                        for index in 0..=count {
+                            let x = row.left(index, scale) + slot(scale) / 2.0;
+                            assert_eq!(row.hit(x, 10.0, scale), Some(index));
+                            assert_eq!(row.part_hit(x, 10.0, &parts, scale), None);
+                        }
+                        for part in &parts {
+                            let x = row.part_left(*part, scale).unwrap() + part.width_scaled(scale) / 2.0;
+                            assert_eq!(row.part_hit(x, 10.0, &parts, scale), Some(*part));
+                            assert_eq!(row.hit(x, 10.0, scale), None);
+                        }
+                        if count > 0 {
+                            let x = row.left(1, scale) + slot(scale) / 2.0;
+                            assert_eq!(row.drop_target(x, scale, 7, 7 + pinned).unwrap().index, 7);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn section_drag_crosses_centers_without_bouncing_back() {
+        for source in DEFAULT_ORDER {
+            for target in DEFAULT_ORDER {
+                let mut row = RowLayout {
+                    apps: AppLayout { count: 8, pinned: 2 },
+                    order: DEFAULT_ORDER,
+                    tray: Some(2),
+                };
+                let (_, left, width) = row.sections(1.0).find(|&(item, _, _)| item == target).unwrap();
+                let from = row.order.iter().position(|&item| item == source).unwrap();
+                let to = row.order.iter().position(|&item| item == target).unwrap();
+                let x = left + width / 2.0 + if from > to { -0.1 } else { 0.1 };
+                let selected = row.section_target(source, x, 1.0);
+                assert_eq!(selected, target);
+                move_section(&mut row.order, source, selected);
+                assert_eq!(row.section_target(source, x, 1.0), source);
+            }
+        }
+    }
+
+    #[test]
     fn matrix_cells_fit_and_hit_one_slot() {
         assert_eq!(STATUS_W, SLOT);
         let parts = parts(None);
         for scale in [0.75, 1.0, 1.25, 2.0] {
-            let left = part_left_scaled(Part::Status, 0, &parts, scale).unwrap();
+            let row = RowLayout {
+                apps: AppLayout { count: 0, pinned: 0 },
+                order: DEFAULT_ORDER,
+                tray: None,
+            };
+            let left = row.part_left(Part::Status, scale).unwrap();
             for (i, expected) in [(4.0, 8.0), (24.0, 8.0), (4.0, 28.0), (24.0, 28.0)]
                 .into_iter()
                 .enumerate()
@@ -440,7 +658,7 @@ mod tests {
                 assert_eq!((x, y), expected);
                 assert!(x + STATUS_CELL <= STATUS_W && y + STATUS_CELL <= HEIGHT);
                 assert_eq!(
-                    part_hit_scaled(left + (x + 10.0) * scale, (y + 10.0) * scale, 0, &parts, scale),
+                    row.part_hit(left + (x + 10.0) * scale, (y + 10.0) * scale, &parts, scale),
                     Some(Part::Status)
                 );
             }
@@ -554,12 +772,6 @@ mod tests {
             for (count, pinned) in [(0, 0), (3, 0), (3, 3), (3, 1), (3, 2)] {
                 let layout = AppLayout { count, pinned };
                 assert_eq!(layout.divider(), pinned > 0 && pinned < count);
-                let extra = if layout.divider() { SEPARATOR * scale } else { 0.0 };
-                let parts = parts(Some(2));
-                assert_eq!(
-                    layout.total_width(&parts, scale),
-                    total_width_scaled(count, &parts, scale) + extra
-                );
                 for i in 0..=count {
                     let x = layout.left(i, scale);
                     assert_eq!(layout.hit(x, 0.0, scale), Some(i));
@@ -569,14 +781,8 @@ mod tests {
                 if layout.divider() {
                     let gap = left_scaled(pinned + 1, scale);
                     assert_eq!(layout.hit(gap, 10.0, scale), None);
-                    assert_eq!(layout.hit(gap + extra - 0.1, 10.0, scale), None);
+                    assert_eq!(layout.hit(gap + separator_width(scale) - 0.1, 10.0, scale), None);
                 }
-                for part in &parts {
-                    let x = layout.part_left(*part, &parts, scale).unwrap();
-                    assert_eq!(layout.part_hit(x + 1.0, 10.0, &parts, scale), Some(*part));
-                }
-                let clock = layout.part_left(Part::Clock, &parts, scale).unwrap();
-                assert_eq!(clock + (CLOCK_W + PAD) * scale, layout.total_width(&parts, scale));
             }
         }
     }
@@ -628,8 +834,12 @@ mod tests {
         assert_eq!(slot(large), 60.0);
 
         for scale in [small, normal, large] {
-            let parts = parts(None);
-            assert_eq!(total_width_scaled(2, &parts, scale), total_width(2, &parts) * scale);
+            let row = RowLayout {
+                apps: AppLayout { count: 2, pinned: 1 },
+                order: DEFAULT_ORDER,
+                tray: None,
+            };
+            assert_eq!(row.width(scale), row.width(1.0) * scale);
             let x = left_scaled(1, scale) + slot(scale) / 2.0;
             assert_eq!(hit_scaled(x, height(scale) / 2.0, 2, scale), Some(1));
         }
@@ -723,22 +933,12 @@ mod tests {
     #[test]
     fn floating_layout_and_hit_targets() {
         assert_eq!((HEIGHT, MARGIN, SLOT), (56.0, 9.0, 48.0));
-        assert_eq!(width(2), 160.0);
         for count in [0, 1, 8, 30] {
             for index in 0..=count {
                 assert_eq!(hit(left(index) + SLOT / 2.0, HEIGHT / 2.0, count), Some(index));
             }
             assert_eq!(hit(-1.0, 20.0, count), None);
             assert_eq!(hit(PAD, HEIGHT, count), None);
-            let all = parts(None);
-            let clock = part_left(Part::Clock, count, &all).unwrap();
-            assert_eq!(clock + CLOCK_W + PAD, total_width(count, &all));
-            let volume = part_left(Part::Status, count, &all).unwrap();
-            assert_eq!(part_hit(volume - 1.0, 20.0, count, &all), None);
-            assert_eq!(part_hit(clock + 1.0, 20.0, count, &all), Some(Part::Clock));
-            assert_eq!(part_hit(clock - 1.0, 20.0, count, &all), Some(Part::Status));
-            assert_eq!(part_hit(clock, HEIGHT, count, &all), None);
-            assert_eq!(all, [Part::Status, Part::Clock]);
         }
         for dpi in [96, 120, 144] {
             assert_eq!(
@@ -755,18 +955,17 @@ mod tests {
             tray,
             [Part::Chevron, Part::Tray(0), Part::Tray(1), Part::Status, Part::Clock]
         );
-        // The chevron starts right after the apps' separator.
-        let chevron = part_left(Part::Chevron, 2, &tray).unwrap();
-        assert_eq!(chevron, width(2) - PAD + SEPARATOR);
-        assert_eq!(part_left(Part::Tray(0), 2, &tray), Some(chevron + CHEVRON_W));
-        let volume = part_left(Part::Status, 2, &tray).unwrap();
-        assert_eq!(volume, chevron + CHEVRON_W + 2.0 * TRAY_W);
-        assert_eq!(part_hit(chevron + 1.0, 20.0, 2, &tray), Some(Part::Chevron));
-        assert_eq!(part_hit(volume - 1.0, 20.0, 2, &tray), Some(Part::Tray(1)));
-        assert_eq!(
-            total_width(2, &tray),
-            total_width(2, &parts(None)) + CHEVRON_W + 2.0 * TRAY_W
-        );
+        let row = RowLayout {
+            apps: AppLayout { count: 2, pinned: 0 },
+            order: DEFAULT_ORDER,
+            tray: Some(2),
+        };
+        let chevron = row.part_left(Part::Chevron, 1.0).unwrap();
+        assert_eq!(row.part_left(Part::Tray(0), 1.0), Some(chevron + CHEVRON_W));
+        assert_eq!(row.part_hit(chevron + 1.0, 20.0, &tray, 1.0), Some(Part::Chevron));
+        let status = row.part_left(Part::Status, 1.0).unwrap();
+        assert_eq!(status, chevron + CHEVRON_W + 2.0 * TRAY_W + SEPARATOR);
+        assert_eq!(row.part_hit(status - 1.0, 20.0, &tray, 1.0), None);
         // Inline icons are capped; with none, only the chevron shows.
         assert_eq!(parts(Some(9)).len(), 1 + MAX_INLINE + 2);
         assert_eq!(parts(Some(0)), [Part::Chevron, Part::Status, Part::Clock]);

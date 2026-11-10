@@ -2,7 +2,10 @@
 
 use std::{io::Write, path::PathBuf};
 
-use toml_edit::{DocumentMut, Item, Value};
+use toml_edit::{DocumentMut, Value};
+
+#[path = "../../src/config_write.rs"]
+mod write;
 
 /// The launcher creates its config from the same file.
 pub const DEFAULT_CONFIG: &str = include_str!("../../src/default-config.toml");
@@ -161,35 +164,14 @@ impl Store {
         }
     }
 
-    pub fn set(&self, key: &str, mut value: Value) -> Result<Config, String> {
+    pub fn set(&self, key: &str, value: Value) -> Result<Config, String> {
         validate_edit(key, &value)?;
         let mut doc = self.document()?;
         // Refuse to replace a config whose existing fields have invalid types.
         Config::from_document(&doc)?;
-        if let Some(old) = doc.get(key).and_then(Item::as_value) {
-            if let (Some(previous), Some(next)) = (old.as_array(), value.as_array_mut()) {
-                // Keep comments and quoting on folder names that remain in the list.
-                for entry in next.iter_mut() {
-                    if let Some(existing) = previous.iter().find(|existing| existing.as_str() == entry.as_str()) {
-                        *entry = existing.clone();
-                    }
-                }
-                next.set_trailing(previous.trailing().clone());
-                next.set_trailing_comma(previous.trailing_comma());
-            }
-            *value.decor_mut() = old.decor().clone();
-        }
-        doc[key] = Item::Value(value);
+        write::replace(&mut doc, key, value);
         let config = Config::from_document(&doc)?;
-        let parent = self.path.parent().ok_or("The config path has no folder.")?;
-        std::fs::create_dir_all(parent).map_err(|error| format!("Cannot create the config folder: {error}"))?;
-        let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
-        file.write_all(doc.to_string().as_bytes())
-            .and_then(|()| file.as_file().sync_all())
-            .map_err(|error| format!("Cannot write config.toml: {error}"))?;
-        // persist replaces the destination on Windows without a delete-then-rename gap.
-        file.persist(&self.path)
-            .map_err(|error| format!("Cannot replace config.toml: {}", error.error))?;
+        write::save(&self.path, &doc)?;
         Ok(config)
     }
 }

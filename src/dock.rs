@@ -3,7 +3,7 @@
 #[path = "dock/desktops.rs"]
 mod desktops;
 #[path = "dock/logic.rs"]
-mod logic;
+pub(crate) mod logic;
 #[path = "dock/pins.rs"]
 mod pins;
 #[path = "dock/render.rs"]
@@ -101,8 +101,14 @@ struct Item {
     windows: Vec<Window>,
 }
 
+enum PressTarget {
+    App(String),
+    Section(logic::Section),
+}
+
 struct Press {
-    id: String,
+    target: PressTarget,
+    sections: [logic::Section; 5],
     x: i32,
     dragging: bool,
     order: Vec<String>,
@@ -116,6 +122,7 @@ struct State {
     icons: HashMap<String, Arc<IconPixels>>,
     items: Vec<Item>,
     pinned: Vec<AppEntry>,
+    order: [logic::Section; 5],
     press: Option<Press>,
     suppress_click: bool,
     palette: Palette,
@@ -230,6 +237,7 @@ impl Dock {
             icons: HashMap::new(),
             items: Vec::new(),
             pinned: load_pins(),
+            order: logic::DEFAULT_ORDER,
             press: None,
             suppress_click: false,
             palette: Palette::new(true, true),
@@ -534,6 +542,20 @@ impl Dock {
         s.refresh();
     }
 
+    pub fn set_order(&mut self, names: &[String]) {
+        let mut s = self.state.borrow_mut();
+        s.finish_press(false);
+        s.order = logic::section_order(names.iter().map(String::as_str));
+        s.hide_tip();
+        s.hide_windows();
+        s.hover = None;
+        s.hover_part = None;
+        s.place();
+        unsafe {
+            let _ = InvalidateRect(Some(s.hwnd), None, false);
+        }
+    }
+
     pub fn reload_pins(&mut self) {
         let mut s = self.state.borrow_mut();
         s.finish_press(false);
@@ -741,7 +763,7 @@ impl State {
     fn paint(&mut self, rt: Option<&windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget>) -> Result<()> {
         let hwnd = self.hwnd;
         let parts = self.parts();
-        let layout = self.app_layout();
+        let layout = self.row_layout();
         let State {
             renderer,
             items,
@@ -929,10 +951,14 @@ impl State {
         }
     }
 
-    fn app_layout(&self) -> logic::AppLayout {
-        logic::AppLayout {
-            count: self.count(),
-            pinned: self.pinned.len().saturating_sub(self.scroll).min(self.count()),
+    fn row_layout(&self) -> logic::RowLayout {
+        logic::RowLayout {
+            apps: logic::AppLayout {
+                count: self.count(),
+                pinned: self.pinned.len().saturating_sub(self.scroll).min(self.count()),
+            },
+            order: self.order,
+            tray: self.tray_host.as_ref().map(|_| self.inline.len()),
         }
     }
 
@@ -949,9 +975,6 @@ impl State {
             return;
         }
         let hidden = !self.revealed && self.slide.is_none();
-        if self.press.is_some() && unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } >= 0 {
-            self.finish_press(true);
-        }
         if !hidden && fullscreen_foreground(self.hwnd) {
             self.finish_press(false);
             self.stop_slide();
@@ -964,6 +987,9 @@ impl State {
                 let _ = ShowWindow(self.hwnd, SW_HIDE);
             }
             return;
+        }
+        if self.press.is_some() && unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } >= 0 {
+            self.finish_press(true);
         }
         if !self.revealed {
             if !self.autohide {
@@ -1297,21 +1323,21 @@ impl State {
                     }
                 }
             }
-            let parts = self.parts();
             let layout_scale = logic::layout_scale(self.app_icon_size);
+            let mut fixed = self.row_layout();
+            fixed.apps = logic::AppLayout { count: 1, pinned: 0 };
             let available = (info.rcMonitor.right - info.rcMonitor.left) as f32 / scale
                 - 8.0 * layout_scale
-                - logic::status_width_scaled(&parts, layout_scale)
+                - fixed.width(layout_scale)
+                + logic::slot(layout_scale)
                 - if !self.pinned.is_empty() && self.items.len() > self.pinned.len() {
                     logic::separator_width(layout_scale)
                 } else {
                     0.0
                 };
-            self.capacity = (((available - 2.0 * logic::pad(layout_scale) - logic::separator_width(layout_scale))
-                / logic::slot(layout_scale)) as usize)
-                .saturating_sub(1);
+            self.capacity = ((available / logic::slot(layout_scale)) as usize).max(1);
             self.scroll = self.scroll.min(self.items.len().saturating_sub(self.capacity));
-            let width = (self.app_layout().total_width(&parts, layout_scale) * scale).ceil() as i32;
+            let width = (self.row_layout().width(layout_scale) * scale).ceil() as i32;
             let height = (logic::height(layout_scale) * scale).round() as i32;
             let x = info.rcMonitor.left + (info.rcMonitor.right - info.rcMonitor.left - width) / 2;
             self.top = info.rcMonitor.bottom - height - (logic::margin(layout_scale) * scale).round() as i32;
@@ -1343,8 +1369,8 @@ impl State {
     fn part_rect(&self, part: logic::Part) -> Option<RECT> {
         let scale = self.dpi as f32 / 96.0;
         let left = self
-            .app_layout()
-            .part_left(part, &self.parts(), logic::layout_scale(self.app_icon_size))?;
+            .row_layout()
+            .part_left(part, logic::layout_scale(self.app_icon_size))?;
         let px = |dip: f32| (dip * scale).round() as i32;
         let rect = self.surface_rect;
         let x = |dip| match rect {
@@ -1377,7 +1403,7 @@ impl State {
         };
         let layout_scale = logic::layout_scale(self.app_icon_size);
         let height = logic::height(layout_scale);
-        let left = self.app_layout().left(slot, layout_scale);
+        let left = self.row_layout().left(slot, layout_scale);
         let top = rect.map_or(self.top + self.slide_offset(px(height)), |r| r.bottom - px(height));
         RECT {
             left: x(left),
@@ -1903,7 +1929,7 @@ impl State {
 
     fn hit(&self, lp: LPARAM) -> Option<usize> {
         let scale = self.dpi as f32 / 96.0;
-        self.app_layout().hit(
+        self.row_layout().hit(
             (lp.0 as i16) as f32 / scale,
             ((lp.0 >> 16) as i16) as f32 / scale,
             logic::layout_scale(self.app_icon_size),
@@ -1912,7 +1938,7 @@ impl State {
 
     fn hit_part(&self, lp: LPARAM) -> Option<logic::Part> {
         let scale = self.dpi as f32 / 96.0;
-        self.app_layout().part_hit(
+        self.row_layout().part_hit(
             (lp.0 as i16) as f32 / scale,
             ((lp.0 >> 16) as i16) as f32 / scale,
             &self.parts(),
@@ -2133,15 +2159,24 @@ impl State {
         self.press.as_ref().is_some_and(|press| press.dragging)
     }
 
-    /// Captures an app press until it becomes a click or a drag.
+    /// Captures an app or section press until it becomes a click or a drag.
     fn press(&mut self, lp: LPARAM) {
         self.finish_press(false);
         self.suppress_click = false;
-        let Some(item) = self.hit(lp).and_then(|slot| self.item_at(slot)) else {
-            return;
+        let scale = logic::layout_scale(self.app_icon_size);
+        let x = (lp.0 as i16) as f32 * 96.0 / self.dpi as f32;
+        let target = if let Some(item) = self.hit(lp).and_then(|slot| self.item_at(slot)) {
+            PressTarget::App(item.app.id.clone())
+        } else {
+            // Notification icons keep their app-owned click behavior.
+            if matches!(self.hit_part(lp), Some(logic::Part::Tray(_))) {
+                return;
+            }
+            PressTarget::Section(self.row_layout().section_at(x, scale))
         };
         self.press = Some(Press {
-            id: item.app.id.clone(),
+            target,
+            sections: self.order,
             x: (lp.0 as i16).into(),
             dragging: false,
             order: self.items.iter().map(|item| item.app.id.clone()).collect(),
@@ -2177,14 +2212,28 @@ impl State {
             self.revealed = true;
             self.start_slide(0.0);
         }
-        let id = &self.press.as_ref().unwrap().id;
+        let scale = logic::layout_scale(self.app_icon_size);
+        let x = x as f32 * 96.0 / self.dpi as f32;
+        let id = match &self.press.as_ref().unwrap().target {
+            PressTarget::Section(section) => {
+                let section = *section;
+                let target = self.row_layout().section_target(section, x, scale);
+                if target != section {
+                    logic::move_section(&mut self.order, section, target);
+                    self.place();
+                    unsafe {
+                        let _ = InvalidateRect(Some(self.hwnd), None, false);
+                    }
+                }
+                return true;
+            }
+            PressTarget::App(id) => id,
+        };
         let Some(from) = self.items.iter().position(|item| item.app.id.eq_ignore_ascii_case(id)) else {
             self.finish_press(false);
             return true;
         };
-        let scale = logic::layout_scale(self.app_icon_size);
-        let x = x as f32 * 96.0 / self.dpi as f32;
-        if let Some(target) = self.app_layout().drop_target(x, scale, self.scroll, self.pinned.len()) {
+        if let Some(target) = self.row_layout().drop_target(x, scale, self.scroll, self.pinned.len()) {
             let old_pins = self.pinned.len();
             if target.index == from && target.pinned == (from < old_pins) {
                 return true;
@@ -2219,7 +2268,23 @@ impl State {
         if !press.dragging {
             return false;
         }
-        if !drop {
+        if matches!(press.target, PressTarget::Section(_)) {
+            if !drop {
+                self.order = press.sections;
+            } else if self.order != press.sections {
+                let names: Vec<_> = self.order.iter().map(|section| section.name()).collect();
+                match crate::config::Config::save_order(&names) {
+                    Ok(()) => unsafe {
+                        let _ = PostMessageW(Some(self.owner), WM_APP + 6, WPARAM(0), LPARAM(0));
+                    },
+                    Err(error) => {
+                        eprintln!("Dock order: {error}");
+                        self.order = press.sections;
+                    }
+                }
+            }
+            self.update_pins();
+        } else if !drop {
             self.pinned = press.pins;
             self.items
                 .sort_by_key(|item| press.order.iter().position(|id| id.eq_ignore_ascii_case(&item.app.id)));
@@ -2567,6 +2632,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     return LRESULT(0);
                 }
                 WM_RBUTTONUP => {
+                    s.finish_press(false);
                     s.close_flyout();
                     s.hide_windows();
                     if let Some(index) = s.hit(lp) {
@@ -2609,6 +2675,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     } else {
                         s.scroll.saturating_sub(1)
                     };
+                    if s.dragging() {
+                        s.drag_to(client, false);
+                    } else {
+                        s.hover = s.hit(client);
+                        s.animate_hover();
+                    }
+                    s.publish_rects();
                     let _ = InvalidateRect(Some(hwnd), None, false);
                     return LRESULT(0);
                 }
