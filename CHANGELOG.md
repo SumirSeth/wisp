@@ -6,6 +6,8 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ### New
 
+- The dock shows sound, battery, Wi-Fi and Bluetooth together in one 2x2 group. Hover for details, scroll to change the volume, click to open Now. (#PR)
+
 - Pin apps to the dock: right-click an app and choose Pin to dock. Pinned apps stay in the dock, before running apps, and start with a click. (#54, by @SorbetMango, fixes #31)
 - Apps with more than one window open show a second dot under their dock icon. (#55)
 - The autohide dock starts to slide in sooner when you move the pointer to the bottom edge. (#25, by @RayTrunk, fixes #20)

@@ -2547,6 +2547,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 }
             });
         }
+        dock::WM_SHOW_NOW => {
+            with_launcher(|l| {
+                l.load_surfaces();
+                if l.surfaces.specs.iter().any(|s| s.title == "Now") {
+                    l.show();
+                    if let Some(index) = l.surfaces.specs.iter().position(|s| s.title == "Now") {
+                        l.open_surface(index);
+                    }
+                } else if let Err(error) = crate::launch::open("ms-actioncenter:") {
+                    eprintln!("Dock Now: {error}");
+                }
+            });
+        }
         dock::WM_SHOW_LAUNCHER => {
             with_launcher(Launcher::show);
         }

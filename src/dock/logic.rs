@@ -141,8 +141,16 @@ pub fn pinned_first<T>(
 
 pub const CHEVRON_W: f32 = 28.0;
 pub const TRAY_W: f32 = 32.0;
-pub const VOLUME_W: f32 = 46.0;
-pub const BATTERY_W: f32 = 50.0;
+pub const STATUS_W: f32 = SLOT;
+pub const STATUS_CELL: f32 = 20.0;
+
+/// Top-left of a matrix cell, relative to its slot, in DIPs.
+pub fn status_cell(index: usize) -> (f32, f32) {
+    (
+        4.0 + (index % 2) as f32 * STATUS_CELL,
+        8.0 + (index / 2) as f32 * STATUS_CELL,
+    )
+}
 pub const CLOCK_W: f32 = 88.0;
 /// The window list above an app icon: its padding, one row per window, and
 /// the widest a row may be before it is clipped, in DIPs.
@@ -177,8 +185,7 @@ pub enum Part {
     Chevron,
     /// The nth notification-area icon shown in the dock.
     Tray(usize),
-    Volume,
-    Battery,
+    Status,
     Clock,
 }
 
@@ -187,8 +194,7 @@ impl Part {
         match self {
             Part::Chevron => CHEVRON_W,
             Part::Tray(_) => TRAY_W,
-            Part::Volume => VOLUME_W,
-            Part::Battery => BATTERY_W,
+            Part::Status => STATUS_W,
             Part::Clock => CLOCK_W,
         }
     }
@@ -198,19 +204,10 @@ impl Part {
     }
 }
 
-/// The parts this PC has: `tray` is the number of inline notification icons
-/// while the dock hosts the notification area, volume needs an output
-/// device, battery a battery.
-pub fn parts(tray: Option<usize>, volume: bool, battery: bool) -> Vec<Part> {
+/// The tray, fixed status matrix and clock, in order.
+pub fn parts(tray: Option<usize>) -> Vec<Part> {
     let tray = tray.map(|count| std::iter::once(Part::Chevron).chain((0..count.min(MAX_INLINE)).map(Part::Tray)));
-    tray.into_iter()
-        .flatten()
-        .chain(
-            [(Part::Volume, volume), (Part::Battery, battery), (Part::Clock, true)]
-                .into_iter()
-                .filter_map(|(part, shown)| shown.then_some(part)),
-        )
-        .collect()
+    tray.into_iter().flatten().chain([Part::Status, Part::Clock]).collect()
 }
 
 /// The notification-area flyout: a grid of cells, as in Windows 11.
@@ -366,6 +363,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn matrix_cells_fit_and_hit_one_slot() {
+        assert_eq!(STATUS_W, SLOT);
+        let parts = parts(None);
+        for scale in [0.75, 1.0, 1.25, 2.0] {
+            let left = part_left_scaled(Part::Status, 0, &parts, scale).unwrap();
+            for (i, expected) in [(4.0, 8.0), (24.0, 8.0), (4.0, 28.0), (24.0, 28.0)]
+                .into_iter()
+                .enumerate()
+            {
+                let (x, y) = status_cell(i);
+                assert_eq!((x, y), expected);
+                assert!(x + STATUS_CELL <= STATUS_W && y + STATUS_CELL <= HEIGHT);
+                assert_eq!(
+                    part_hit_scaled(left + (x + 10.0) * scale, (y + 10.0) * scale, 0, &parts, scale),
+                    Some(Part::Status)
+                );
+            }
+        }
+    }
+
+    #[test]
     fn pins_precede_running_apps_without_duplicates() {
         assert_eq!(
             pinned_first(["c", "a", "closed"], vec!["b", "a", "c", "d"], |a, b| a == b),
@@ -381,7 +399,7 @@ mod tests {
                 let layout = AppLayout { count, pinned };
                 assert_eq!(layout.divider(), pinned > 0 && pinned < count);
                 let extra = if layout.divider() { SEPARATOR * scale } else { 0.0 };
-                let parts = parts(Some(2), true, true);
+                let parts = parts(Some(2));
                 assert_eq!(
                     layout.total_width(&parts, scale),
                     total_width_scaled(count, &parts, scale) + extra
@@ -454,7 +472,7 @@ mod tests {
         assert_eq!(slot(large), 60.0);
 
         for scale in [small, normal, large] {
-            let parts = parts(None, true, true);
+            let parts = parts(None);
             assert_eq!(total_width_scaled(2, &parts, scale), total_width(2, &parts) * scale);
             let x = left_scaled(1, scale) + slot(scale) / 2.0;
             assert_eq!(hit_scaled(x, height(scale) / 2.0, 2, scale), Some(1));
@@ -556,15 +574,15 @@ mod tests {
             }
             assert_eq!(hit(-1.0, 20.0, count), None);
             assert_eq!(hit(PAD, HEIGHT, count), None);
-            let all = parts(None, true, true);
+            let all = parts(None);
             let clock = part_left(Part::Clock, count, &all).unwrap();
             assert_eq!(clock + CLOCK_W + PAD, total_width(count, &all));
-            let volume = part_left(Part::Volume, count, &all).unwrap();
+            let volume = part_left(Part::Status, count, &all).unwrap();
             assert_eq!(part_hit(volume - 1.0, 20.0, count, &all), None);
             assert_eq!(part_hit(clock + 1.0, 20.0, count, &all), Some(Part::Clock));
-            assert_eq!(part_hit(clock - 1.0, 20.0, count, &all), Some(Part::Battery));
+            assert_eq!(part_hit(clock - 1.0, 20.0, count, &all), Some(Part::Status));
             assert_eq!(part_hit(clock, HEIGHT, count, &all), None);
-            assert_eq!(part_left(Part::Volume, count, &parts(None, false, false)), None);
+            assert_eq!(all, [Part::Status, Part::Clock]);
         }
         for dpi in [96, 120, 144] {
             assert_eq!(
@@ -576,33 +594,26 @@ mod tests {
     }
     #[test]
     fn tray_sits_between_apps_and_status() {
-        let tray = parts(Some(2), true, true);
+        let tray = parts(Some(2));
         assert_eq!(
             tray,
-            [
-                Part::Chevron,
-                Part::Tray(0),
-                Part::Tray(1),
-                Part::Volume,
-                Part::Battery,
-                Part::Clock
-            ]
+            [Part::Chevron, Part::Tray(0), Part::Tray(1), Part::Status, Part::Clock]
         );
         // The chevron starts right after the apps' separator.
         let chevron = part_left(Part::Chevron, 2, &tray).unwrap();
         assert_eq!(chevron, width(2) - PAD + SEPARATOR);
         assert_eq!(part_left(Part::Tray(0), 2, &tray), Some(chevron + CHEVRON_W));
-        let volume = part_left(Part::Volume, 2, &tray).unwrap();
+        let volume = part_left(Part::Status, 2, &tray).unwrap();
         assert_eq!(volume, chevron + CHEVRON_W + 2.0 * TRAY_W);
         assert_eq!(part_hit(chevron + 1.0, 20.0, 2, &tray), Some(Part::Chevron));
         assert_eq!(part_hit(volume - 1.0, 20.0, 2, &tray), Some(Part::Tray(1)));
         assert_eq!(
             total_width(2, &tray),
-            total_width(2, &parts(None, true, true)) + CHEVRON_W + 2.0 * TRAY_W
+            total_width(2, &parts(None)) + CHEVRON_W + 2.0 * TRAY_W
         );
         // Inline icons are capped; with none, only the chevron shows.
-        assert_eq!(parts(Some(9), false, false).len(), 1 + MAX_INLINE + 1);
-        assert_eq!(parts(Some(0), false, false), [Part::Chevron, Part::Clock]);
+        assert_eq!(parts(Some(9)).len(), 1 + MAX_INLINE + 2);
+        assert_eq!(parts(Some(0)), [Part::Chevron, Part::Status, Part::Clock]);
         // Tray icons fit the dock's height budget.
         const { assert!(TRAY_ICON < HEIGHT && TRAY_ICON < TRAY_W) };
     }

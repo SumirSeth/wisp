@@ -20,6 +20,7 @@ pub struct Shown {
 /// What a tooltip belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tip {
+    Status,
     Chevron,
     /// An icon in the dock, by its inline position.
     Inline(usize),

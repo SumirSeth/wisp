@@ -38,8 +38,9 @@ struct Formats {
     small: IDWriteTextFormat,
     /// Segoe Fluent Icons, for the search button and the status glyphs.
     search: IDWriteTextFormat,
-    glyph: IDWriteTextFormat,
     chevron: IDWriteTextFormat,
+    matrix: IDWriteTextFormat,
+    badge: IDWriteTextFormat,
     /// Tooltips: left-aligned and wrapping.
     tip: IDWriteTextFormat,
     /// One line of the window list, clipped at the card's edge.
@@ -71,6 +72,7 @@ pub struct Frame<'a> {
     pub capacity: usize,
     pub scroll: usize,
     pub status: &'a Status,
+    pub radios: &'a super::status::Radios,
     pub hover_part: Option<Part>,
     pub parts: &'a [Part],
     /// Every shown notification icon, and which of them sit in the dock.
@@ -131,8 +133,9 @@ fn create_formats(dw: &IDWriteFactory, text: PCWSTR, display: PCWSTR, icons: PCW
             time: format(text, DWRITE_FONT_WEIGHT_SEMI_BOLD, 14.0)?,
             small: format(text, DWRITE_FONT_WEIGHT_NORMAL, 12.5)?,
             search: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 21.0)?,
-            glyph: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 17.0)?,
             chevron: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 12.0)?,
+            matrix: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 14.0)?,
+            badge: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 8.0)?,
             tip,
             row,
         })
@@ -741,7 +744,7 @@ fn battery_glyph(percent: u32, charging: bool) -> String {
     char::from_u32(first + (percent.min(100) + 5) / 10).map_or_else(String::new, String::from)
 }
 
-/// A separator, then the volume, battery and clock, each with a second line.
+/// A separator, the status matrix and the two-line clock.
 fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<()> {
     let Frame {
         palette: p,
@@ -807,32 +810,84 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
         let lower = rect(left, LOWER.0 * frame.layout_scale, right, LOWER.1 * frame.layout_scale);
         unsafe {
             match part {
-                Part::Volume => {
-                    let Some(volume) = status.volume else { continue };
-                    brush.SetColor(&p.text);
-                    text(
-                        rt,
-                        brush,
-                        &formats.glyph,
-                        volume_glyph(volume.percent, volume.muted),
-                        upper,
-                    );
-                    brush.SetColor(&p.subtext);
-                    text(rt, brush, &formats.small, &format!("{}%", volume.percent), lower);
-                }
-                Part::Battery => {
-                    let Some(level) = status.battery else { continue };
-                    let low = level.percent <= 20 && !level.charging;
-                    brush.SetColor(if low { &RED } else { &p.text });
-                    text(
-                        rt,
-                        brush,
-                        &formats.glyph,
-                        &battery_glyph(level.percent, level.charging),
-                        upper,
-                    );
-                    brush.SetColor(&p.subtext);
-                    text(rt, brush, &formats.small, &format!("{}%", level.percent), lower);
+                Part::Status => {
+                    let radios = frame.radios;
+                    let volume = status.volume.map_or("\u{E767}", |v| volume_glyph(v.percent, v.muted));
+                    let battery = status
+                        .battery
+                        .map_or_else(|| battery_glyph(0, false), |b| battery_glyph(b.percent, b.charging));
+                    let wifi = match &radios.wifi {
+                        Some(w) if w.on && w.network.is_some() => "\u{E701}",
+                        Some(w) if w.on => "\u{EB5E}",
+                        _ => "\u{E701}",
+                    };
+                    let bluetooth = "\u{E702}";
+                    let cells = [
+                        (volume, status.volume.is_some(), false),
+                        (
+                            battery.as_str(),
+                            status.battery.is_some(),
+                            status.battery.is_some_and(|b| b.percent <= 20 && !b.charging),
+                        ),
+                        (wifi, radios.wifi.is_some(), false),
+                        (bluetooth, radios.bluetooth.is_some(), false),
+                    ];
+                    for (i, (glyph, present, low)) in cells.into_iter().enumerate() {
+                        let (x, y) = logic::status_cell(i);
+                        let scale = frame.layout_scale;
+                        let mut color = if low { RED } else { p.text };
+                        let off = i == 2 && radios.wifi.as_ref().is_some_and(|w| !w.on)
+                            || i == 3 && radios.bluetooth.as_ref().is_some_and(|b| !b.on);
+                        if !present {
+                            color.a *= 0.3;
+                        } else if off {
+                            color.a *= 0.5;
+                        }
+                        brush.SetColor(&color);
+                        text(
+                            rt,
+                            brush,
+                            &formats.matrix,
+                            glyph,
+                            rect(
+                                left + x * scale,
+                                y * scale,
+                                left + (x + logic::STATUS_CELL) * scale,
+                                (y + logic::STATUS_CELL) * scale,
+                            ),
+                        );
+                        {
+                            if off {
+                                use windows_numerics::Vector2;
+                                rt.DrawLine(
+                                    Vector2 {
+                                        X: left + (x + 4.0) * scale,
+                                        Y: (y + 16.0) * scale,
+                                    },
+                                    Vector2 {
+                                        X: left + (x + 16.0) * scale,
+                                        Y: (y + 4.0) * scale,
+                                    },
+                                    brush,
+                                    scale,
+                                    None,
+                                );
+                            } else if i == 3 && radios.bluetooth.as_ref().is_some_and(|b| !b.connected.is_empty()) {
+                                text(
+                                    rt,
+                                    brush,
+                                    &formats.badge,
+                                    "\u{E73E}",
+                                    rect(
+                                        left + (x + 12.0) * scale,
+                                        (y + 12.0) * scale,
+                                        left + (x + 20.0) * scale,
+                                        (y + 20.0) * scale,
+                                    ),
+                                );
+                            }
+                        }
+                    }
                 }
                 Part::Clock => {
                     brush.SetColor(&p.text);

@@ -60,11 +60,11 @@ The dock appears when the pointer touches the bottom edge of a screen, and hides
 | Click a tray icon | Use it as you would on the taskbar |
 | Click **⌄** | Show the hidden tray icons |
 | Right-click **⌄** | Show the taskbar, or open taskbar settings |
-| Click the volume | Mute or unmute |
-| Scroll over the volume | Change the volume |
-| Right-click the volume | Open sound settings |
+| Click the status matrix | Open Now |
+| Hover the status matrix | See sound, battery, Wi-Fi and Bluetooth details |
+| Scroll over the status matrix | Change the volume by 2% a notch |
+| Right-click the status matrix | Open sound settings |
 | Click the clock | Open notifications and the calendar |
-| Click the battery | Open battery settings |
 | Scroll anywhere else | Switch virtual desktops |
 | <kbd>Shift</kbd>+scroll | Scroll through the apps |
 

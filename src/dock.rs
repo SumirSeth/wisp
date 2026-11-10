@@ -56,6 +56,8 @@ const WM_TRAY_CHANGED: u32 = WM_APP + 22;
 /// Asks the owner to show the Windows taskbar for a moment, for icons the
 /// dock lacks.
 pub const WM_DOCK_SHOW_TASKBAR: u32 = WM_APP + 23;
+pub const WM_SHOW_NOW: u32 = WM_APP + 25;
+const WM_RADIOS: u32 = WM_APP + 26;
 const WM_CLOSE_FLYOUT: u32 = WM_APP + 24;
 /// Shows a notification icon's tooltip after a short hover.
 const TIP_TIMER: usize = 104;
@@ -119,6 +121,8 @@ struct State {
     scroll: usize,
     capacity: usize,
     status: status::Status,
+    radios: status::Radios,
+    radio_worker: status::RadioWorker,
     hover_part: Option<logic::Part>,
     /// The pointer touched the bottom edge, so the dock slid in.
     revealed: bool,
@@ -229,6 +233,8 @@ impl Dock {
             scroll: 0,
             capacity: usize::MAX,
             status: status::read(),
+            radios: status::Radios::default(),
+            radio_worker: status::RadioWorker::default(),
             hover_part: None,
             revealed: false,
             away: 0,
@@ -410,7 +416,7 @@ impl Dock {
 
     pub fn owns_message(msg: u32, wp: WPARAM) -> bool {
         msg == WM_TIMER && (REFRESH_TIMER..=WINDOWS_HIDE_TIMER).contains(&wp.0)
-            || matches!(msg, WM_REFRESH | WM_TRAY_CHANGED | WM_INPUT)
+            || matches!(msg, WM_REFRESH | WM_TRAY_CHANGED | WM_RADIOS | WM_INPUT)
     }
 
     pub fn mostly_visible(&self) -> bool {
@@ -433,6 +439,9 @@ impl Dock {
         let mut s = self.state.borrow_mut();
         let to = if s.slide_to > 0.5 { 0.0 } else { 1.0 };
         s.revealed = to < 0.5;
+        if !s.revealed {
+            s.radio_worker.hide();
+        }
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
         }
@@ -470,6 +479,7 @@ impl Dock {
         s.listen(false);
         s.stop_slide();
         s.suspended = true;
+        s.radio_worker.hide();
         rect
     }
 
@@ -582,6 +592,9 @@ impl Dock {
         s.visible = true;
         // A dock that stays visible comes back in place, without sliding.
         s.revealed = !s.autohide;
+        if !s.revealed {
+            s.radio_worker.hide();
+        }
         s.surface_rect = None;
         s.stop_slide();
         s.start_poll(POLL_MS);
@@ -597,8 +610,7 @@ impl Dock {
         s.hover = hover;
         s.animate_hover();
         s.hover_part = match hover_part {
-            Some("volume") => Some(logic::Part::Volume),
-            Some("battery") => Some(logic::Part::Battery),
+            Some("volume" | "battery" | "status") => Some(logic::Part::Status),
             Some("clock") => Some(logic::Part::Clock),
             Some("chevron") => Some(logic::Part::Chevron),
             Some(part) => part
@@ -657,6 +669,7 @@ impl Dock {
         s.visible = false;
         s.stop_slide();
         s.revealed = false;
+        s.radio_worker.hide();
         s.listen(false);
         unsafe {
             let _ = KillTimer(Some(self.hwnd), POLL_TIMER);
@@ -720,6 +733,7 @@ impl State {
             capacity,
             scroll,
             status,
+            radios,
             hover_part,
             tray,
             inline,
@@ -739,6 +753,7 @@ impl State {
             capacity: *capacity,
             scroll: *scroll,
             status,
+            radios,
             hover_part: *hover_part,
             parts: &parts,
             tray,
@@ -840,6 +855,7 @@ impl State {
             self.hide_windows();
             self.stop_slide();
             self.revealed = false;
+            self.radio_worker.hide();
         }
         unsafe {
             let _ = ShowWindow(
@@ -911,6 +927,7 @@ impl State {
         if !hidden && fullscreen_foreground(self.hwnd) {
             self.stop_slide();
             self.revealed = false;
+            self.radio_worker.hide();
             self.close_flyout();
             self.hide_tip();
             self.hide_windows();
@@ -1011,6 +1028,7 @@ impl State {
                 self.hide_tip();
                 self.hide_windows();
                 self.revealed = false;
+                self.radio_worker.hide();
                 self.start_slide(1.0);
                 return;
             }
@@ -1068,6 +1086,7 @@ impl State {
     fn reveal(&mut self) {
         let hidden = !self.revealed && self.slide.is_none();
         self.revealed = true;
+        self.update_status();
         self.away = 0;
         if hidden {
             self.slide_to = 1.0;
@@ -1382,6 +1401,7 @@ impl State {
             Some(tray::Tip::Inline(i)) => i >= self.inline.len(),
             Some(tray::Tip::Flyout(i)) => i >= self.tray.len(),
             Some(tray::Tip::Chevron) => self.tray_host.is_none(),
+            Some(tray::Tip::Status) => false,
             // The desktop pill has nothing to do with the tray.
             None => false,
         };
@@ -1402,7 +1422,7 @@ impl State {
 
     /// Shows the demo's held flyout or tooltip once the icons are known.
     fn apply_hold(&mut self) {
-        if self.tray_host.is_none() {
+        if self.tray_host.is_none() && self.hover_part != Some(logic::Part::Status) {
             return;
         }
         if let Some(hover) = self.held_flyout {
@@ -1413,6 +1433,7 @@ impl State {
             self.tip_target = self.flyout_hover.map(tray::Tip::Flyout);
         } else {
             self.tip_target = match self.hover_part {
+                Some(logic::Part::Status) => Some(tray::Tip::Status),
                 Some(logic::Part::Chevron) => Some(tray::Tip::Chevron),
                 Some(logic::Part::Tray(i)) if i < self.inline.len() => Some(tray::Tip::Inline(i)),
                 _ => None,
@@ -1743,10 +1764,19 @@ impl State {
 
     /// Shows the tooltip above what the pointer rests on.
     fn show_tip(&mut self) {
+        if self.tip_target == Some(tray::Tip::Status)
+            && self.visible
+            && self.revealed
+            && !self.suspended
+            && !self.fullscreen
+        {
+            self.radio_worker.refresh(self.hwnd, WM_RADIOS);
+        }
         unsafe {
             let _ = KillTimer(Some(self.hwnd), TIP_TIMER);
         }
         let (text, anchor) = match self.tip_target {
+            Some(tray::Tip::Status) => (self.status.tooltip(&self.radios), self.part_rect(logic::Part::Status)),
             Some(tray::Tip::Chevron) => ("Show hidden icons".to_string(), self.part_rect(logic::Part::Chevron)),
             Some(tray::Tip::Inline(i)) => (
                 self.inline
@@ -1855,9 +1885,7 @@ impl State {
         )
     }
 
-    /// The speaker toggles mute; the clock opens the calendar and notifications;
-    /// the battery opens its settings. The chevron toggles the flyout, and
-    /// notification icons get the click.
+    /// Opens Now, the calendar, or the tray target.
     fn click_part(&mut self, part: logic::Part) {
         let target = match part {
             logic::Part::Chevron => {
@@ -1868,17 +1896,13 @@ impl State {
                 self.click_inline(position, Action::Click);
                 return;
             }
-            logic::Part::Volume => {
-                if let Some(volume) = self.status.volume
-                    && let Err(error) = crate::commands::audio::set_mute(!volume.muted)
-                {
-                    eprintln!("Dock mute: {error}");
+            logic::Part::Status => {
+                unsafe {
+                    let _ = PostMessageW(Some(self.owner), WM_SHOW_NOW, WPARAM(0), LPARAM(0));
                 }
-                self.update_status();
                 return;
             }
             logic::Part::Clock => "ms-actioncenter:",
-            logic::Part::Battery => "ms-settings:batterysaver",
         };
         if let Err(error) = crate::launch::open(target) {
             eprintln!("Dock status: {error}");
@@ -1943,7 +1967,7 @@ impl State {
         }
     }
 
-    /// Wheel `delta` over the speaker changes the volume by 2% a notch.
+    /// Wheel `delta` over the matrix changes the volume by 2% a notch.
     fn wheel_volume(&mut self, delta: i32) {
         let Some(volume) = self.status.volume else { return };
         let (percent, rest) = logic::wheel_volume(volume.percent, self.wheel + delta);
@@ -1956,12 +1980,22 @@ impl State {
         self.update_status();
     }
 
+    fn refresh_status_tip(&mut self) {
+        if self.tip_target == Some(tray::Tip::Status) && unsafe { IsWindowVisible(self.tip) }.as_bool() {
+            self.show_tip();
+        }
+    }
+
     /// Rereads the status, redrawing if it changed.
     fn update_status(&mut self) {
         let _span = crate::util::perf::Span::new("status");
+        if self.visible && self.revealed && !self.suspended && !self.fullscreen {
+            self.radio_worker.refresh(self.hwnd, WM_RADIOS);
+        }
         let status = status::read();
         if status != self.status {
             self.status = status;
+            self.refresh_status_tip();
             unsafe {
                 let _ = InvalidateRect(Some(self.hwnd), None, false);
             }
@@ -2289,6 +2323,20 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     }
                     return LRESULT(0);
                 }
+                WM_RADIOS => {
+                    if let Some(radios) = s.radio_worker.take()
+                        && s.visible
+                        && s.revealed
+                        && !s.suspended
+                        && !s.fullscreen
+                        && radios != s.radios
+                    {
+                        s.radios = radios;
+                        s.refresh_status_tip();
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
+                    return LRESULT(0);
+                }
                 WM_TRAY_CHANGED => {
                     s.sync_tray();
                     return LRESULT(0);
@@ -2313,6 +2361,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         let _ = InvalidateRect(Some(hwnd), None, false);
                     }
                     s.hover_tip(match hover_part {
+                        Some(logic::Part::Status) => Some(tray::Tip::Status),
                         Some(logic::Part::Chevron) => Some(tray::Tip::Chevron),
                         Some(logic::Part::Tray(i)) => Some(tray::Tip::Inline(i)),
                         _ => None,
@@ -2357,7 +2406,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         s.menu(index);
                     } else {
                         match s.hit_part(lp) {
-                            Some(logic::Part::Volume) => {
+                            Some(logic::Part::Status) => {
                                 if let Err(error) = crate::launch::open("ms-settings:sound") {
                                     eprintln!("Dock sound settings: {error}");
                                 }
@@ -2379,7 +2428,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     };
                     let _ = ScreenToClient(hwnd, &mut point);
                     let client = LPARAM(((point.y as u16 as isize) << 16) | point.x as u16 as isize);
-                    if s.hit_part(client) == Some(logic::Part::Volume) {
+                    if s.hit_part(client) == Some(logic::Part::Status) {
                         s.wheel_volume(delta.into());
                         return LRESULT(0);
                     }
@@ -2415,6 +2464,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     s.hide_windows();
                     s.stop_slide();
                     s.visible = false;
+                    s.radio_worker.hide();
                     let _ = ShowWindow(hwnd, SW_HIDE);
                     return LRESULT(0);
                 }
@@ -2646,5 +2696,16 @@ unsafe extern "system" fn popup_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LP
         }
         drop(s);
         DefWindowProcW(hwnd, msg, wp, lp)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_surface_routes_radio_results_to_the_dock() {
+        assert!(Dock::owns_message(WM_RADIOS, WPARAM(0)));
+        assert!(!Dock::owns_message(WM_SHOW_NOW, WPARAM(0)));
     }
 }
