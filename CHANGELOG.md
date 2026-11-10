@@ -42,6 +42,7 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 - **Wi-Fi and Bluetooth in Now.** Pick a network to connect, entering its password right there, or a Bluetooth audio device to connect or disconnect it. Turn Wi-Fi and Bluetooth on or off. Type "wifi" or "bluetooth" in the launcher to go straight there. (#68)
 - Apps with more than one window open show a second dot under their dock icon. (#55)
 - The autohide dock starts to slide in sooner when you move the pointer to the bottom edge. (#25, by @RayTrunk, fixes #20)
+- File search also finds words inside file names, such as `report` in `bug-reporting.txt`. (by @RayTrunk, part of #56)
 
 ### Thanks
 

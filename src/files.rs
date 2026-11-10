@@ -1,8 +1,8 @@
 //! File search through the Windows Search index (`SystemIndex`), on a worker thread.
 //!
-//! A new query takes about 100–160 ms, so it runs off the UI thread.
-//! When the user types faster than queries finish, the worker skips to the
-//! latest query.
+//! A new query takes about 80–120 ms, most of it for matches inside names,
+//! so it runs off the UI thread. When the user types faster than queries
+//! finish, the worker skips to the latest query.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -120,16 +120,27 @@ fn worker(requests: Receiver<Request>, results: Sender<FileResults>, icon_size: 
             }
         }
 
-        let rows = match &index {
-            Some(ix) => unsafe { ix.query(&request.query) }.unwrap_or_else(|e| {
-                eprintln!("file search query failed: {e}");
-                // Reopen on the next query; the index service may have restarted.
-                index = None;
-                Vec::new()
-            }),
-            None => Vec::new(),
-        };
-        let hits = rank(rows, &request, &profile, &mut matcher);
+        let mut passes = Vec::new();
+        let mut newer = None;
+        for (pass, sql) in sql(&request.query).iter().enumerate() {
+            // The second pass is the slow one; skip it if a newer query is waiting.
+            if pass > 0 {
+                match requests.try_recv() {
+                    Ok(request) => {
+                        newer = Some(request);
+                        break;
+                    }
+                    Err(TryRecvError::Disconnected) => return,
+                    Err(TryRecvError::Empty) => {}
+                }
+            }
+            passes.push(fetch(&mut index, sql));
+        }
+        if newer.is_some() {
+            next = newer;
+            continue;
+        }
+        let hits = rank(passes, &request, &profile, &mut matcher);
 
         // Skip icon loading and sending if a newer query is already waiting.
         match requests.try_recv() {
@@ -187,16 +198,30 @@ struct Row {
     is_folder: bool,
 }
 
+/// Runs one query. On failure, drops the index so the next query reopens it;
+/// the index service may have restarted.
+fn fetch(index: &mut Option<Index>, sql: &str) -> Vec<Row> {
+    match index.as_ref().map(|ix| unsafe { ix.query(sql) }) {
+        Some(Ok(rows)) => rows,
+        Some(Err(e)) => {
+            eprintln!("file search query failed: {e}");
+            *index = None;
+            Vec::new()
+        }
+        None => Vec::new(),
+    }
+}
+
 /// Drops noise, then orders by name match, user folders, path depth and recency.
-fn rank(rows: Vec<Row>, request: &Request, profile: &str, matcher: &mut NameMatcher) -> Vec<FileHit> {
+/// `passes` holds the rows of each query in `sql`, each newest first.
+fn rank(passes: Vec<Vec<Row>>, request: &Request, profile: &str, matcher: &mut NameMatcher) -> Vec<FileHit> {
     let pattern = Pattern::parse(&request.query, CaseMatching::Ignore, Normalization::Smart);
-    let mut scored: Vec<(i64, FileHit)> = rows
+    let mut scored: Vec<(i64, FileHit)> = passes
         .into_iter()
-        .enumerate()
+        .flat_map(|rows| rows.into_iter().enumerate())
         .filter(|(_, row)| !is_excluded(&row.path, &request.exclude))
         .filter_map(|(position, row)| {
             let (name_score, highlights) = matcher.score(&pattern, &row.name)?;
-            // Rows arrive newest first.
             let recency = (CANDIDATES - position.min(CANDIDATES)) as i64 / 4;
             let (in_user_folder, depth) = location(&row.path, profile);
             let score = name_score as i64 + recency + if in_user_folder { 40 } else { 0 } - 4 * depth.min(10) as i64;
@@ -324,10 +349,7 @@ impl Index {
         }
     }
 
-    unsafe fn query(&self, query: &str) -> Result<Vec<Row>> {
-        let Some(sql) = sql(query) else {
-            return Ok(Vec::new());
-        };
+    unsafe fn query(&self, sql: &str) -> Result<Vec<Row>> {
         unsafe {
             self.command.SetCommandText(&DBGUID_DEFAULT, &HSTRING::from(sql))?;
             let mut unknown: Option<IUnknown> = None;
@@ -402,24 +424,40 @@ impl Index {
     }
 }
 
-/// Builds a prefix search on file names, newest first. Returns `None` if the
-/// query has no searchable words.
-fn sql(query: &str) -> Option<String> {
-    let terms: Vec<String> = query
+/// Builds the queries for file names, each newest first: words that start a
+/// word in the name, then words inside the name that the first query misses,
+/// such as `report` in `bug-reporting.txt`. A second query rather than an `OR`,
+/// so newer matches inside names can't push the first ones out of the
+/// `TOP` rows. Returns no queries if the query has no searchable words.
+fn sql(query: &str) -> Vec<String> {
+    let words: Vec<String> = query
         .split_whitespace()
         // Quotes and wildcards would break out of the CONTAINS literal.
         .map(|word| word.replace(['\'', '"', '*'], ""))
         .filter(|word| !word.is_empty())
-        .map(|word| format!("CONTAINS(System.FileName, '\"{word}*\"')"))
         .collect();
-    if terms.is_empty() {
-        return None;
+    if words.is_empty() {
+        return Vec::new();
     }
-    Some(format!(
-        "SELECT TOP {CANDIDATES} System.ItemPathDisplay, System.FileName, System.ItemType \
-         FROM SystemIndex WHERE SCOPE='file:' AND {} ORDER BY System.DateModified DESC",
-        terms.join(" AND ")
-    ))
+    let prefix = words
+        .iter()
+        .map(|word| format!("CONTAINS(System.FileName, '\"{word}*\"')"))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let inside = words
+        .iter()
+        // LIKE treats % _ [ as wildcards; brackets make them literal.
+        .map(|word| word.replace('[', "[[]").replace('%', "[%]").replace('_', "[_]"))
+        .map(|word| format!("System.FileName LIKE '%{word}%'"))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let select = |filter: String| {
+        format!(
+            "SELECT TOP {CANDIDATES} System.ItemPathDisplay, System.FileName, System.ItemType \
+             FROM SystemIndex WHERE SCOPE='file:' AND {filter} ORDER BY System.DateModified DESC"
+        )
+    };
+    vec![select(prefix.clone()), select(format!("{inside} AND NOT ({prefix})"))]
 }
 
 #[cfg(test)]
@@ -435,7 +473,7 @@ mod tests {
         let (tx, rx) = channel();
         let search = FileSearch::spawn(HWND::default(), 0, tx, 32);
         let exclude: Arc<[String]> = Arc::from(crate::config::Config::default().file_search_exclude);
-        for query in ["readme", "zzqx-no-such-file-qxzz"] {
+        for query in ["readme", "setup", "read me", "zzqx-no-such-file-qxzz"] {
             let started = Instant::now();
             search.search(query, 5, exclude.clone());
             // Skip icon-only messages left over from the previous query.
@@ -462,10 +500,36 @@ mod tests {
 
     #[test]
     fn sql_escapes_query_text() {
-        assert_eq!(sql("  "), None);
-        assert_eq!(sql("'\"*"), None);
-        let q = sql("it's \"x\" a*b").unwrap();
-        assert!(q.contains("CONTAINS(System.FileName, '\"its*\"') AND CONTAINS(System.FileName, '\"x*\"') AND CONTAINS(System.FileName, '\"ab*\"')"));
+        assert!(sql("  ").is_empty());
+        assert!(sql("'\"*").is_empty());
+        let q = sql("it's \"x\" a*b");
+        let prefix = "CONTAINS(System.FileName, '\"its*\"') AND CONTAINS(System.FileName, '\"x*\"') AND CONTAINS(System.FileName, '\"ab*\"')";
+        assert!(q[0].contains(&format!("AND {prefix} ORDER BY")));
+        assert!(q[1].contains(&format!(
+            "System.FileName LIKE '%its%' AND System.FileName LIKE '%x%' AND System.FileName LIKE '%ab%' AND NOT ({prefix})"
+        )));
+        let q = sql("50%_[a]");
+        assert!(q[1].contains("System.FileName LIKE '%50[%][_][[]a]%'"));
+    }
+
+    #[test]
+    fn ranks_word_starts_above_matches_inside_names() {
+        let row = |name: &str| Row {
+            name: name.into(),
+            path: format!(r"C:\Users\me\Downloads\{name}"),
+            is_folder: false,
+        };
+        let request = Request {
+            query: "setup".into(),
+            limit: 5,
+            exclude: Arc::from(Vec::new()),
+        };
+        // Both are the newest row of their query; the word start wins.
+        let passes = vec![vec![row("setup.exe")], vec![row("rsetup.exe")]];
+        let hits = rank(passes, &request, r"c:\users\me", &mut NameMatcher::new());
+        let names: Vec<&str> = hits.iter().map(|hit| hit.name.as_str()).collect();
+        assert_eq!(names, ["setup.exe", "rsetup.exe"]);
+        assert_eq!(hits[1].highlights, vec![(1, 5)]);
     }
 
     #[test]
@@ -505,7 +569,7 @@ mod tests {
             limit: 5,
             exclude: Arc::from(Vec::new()),
         };
-        let hits = rank(rows, &request, r"c:\users\me", &mut NameMatcher::new());
+        let hits = rank(vec![rows], &request, r"c:\users\me", &mut NameMatcher::new());
         assert_eq!(hits[0].path, r"C:\Users\me\Downloads\Resume.pdf");
         assert_eq!(hits[0].highlights, vec![(0, 6)]);
         assert_eq!(hits[0].icon_key, "file:.pdf");
