@@ -54,6 +54,7 @@ The dock appears when the pointer touches the bottom edge of a screen, and hides
 | --- | --- |
 | Click an app | Switch to it |
 | Click the app in front | Minimize it |
+| Drag an app sideways | Rearrange it; drop among pins to pin it, or among running apps to unpin it |
 | Middle-click an app | Open a new window of it |
 | Right-click an app | Pin or unpin it, or close its windows |
 | Hover an app with several windows | See its windows. Click one to switch to it, middle-click to close it. |

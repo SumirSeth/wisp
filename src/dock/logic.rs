@@ -113,11 +113,75 @@ impl AppLayout {
         }
         (0..=self.count).find(|&i| (self.left(i, scale)..self.left(i, scale) + slot(scale)).contains(&x))
     }
+    /// Clamps a drag to an app slot, including the divider and outside edges.
+    pub fn slot_at(self, x: f32, scale: f32) -> Option<usize> {
+        if self.count == 0 {
+            return None;
+        }
+        let x = x.clamp(self.left(1, scale), self.left(self.count, scale) + slot(scale) - 0.01);
+        self.hit(x, 0.0, scale).or(Some(
+            if x < self.left(self.pinned + 1, scale) - separator_width(scale) / 2.0 {
+                self.pinned
+            } else {
+                self.pinned + 1
+            },
+        ))
+    }
+
+    /// The divider's midpoint separates groups. Empty groups have an edge target.
+    pub fn drop_target(self, x: f32, scale: f32, scroll: usize, pins: usize) -> Option<DropTarget> {
+        let mut index = self.slot_at(x, scale)? - 1 + scroll;
+        let boundary = if pins == 0 {
+            self.left(1, scale) + slot(scale) / 2.0
+        } else if pins < scroll {
+            f32::NEG_INFINITY
+        } else if pins >= scroll + self.count {
+            self.left(pins - scroll, scale) + slot(scale)
+        } else {
+            self.left(pins - scroll + 1, scale) - self.gap() * scale / 2.0
+        };
+        let pinned = x < boundary;
+        // The pin side of the gap appends to the pins instead of replacing the last pin's slot.
+        if pinned && self.divider() && x >= self.left(self.pinned, scale) + slot(scale) {
+            index = pins;
+        }
+        Some(DropTarget { index, pinned })
+    }
+
     pub fn part_left(self, part: Part, parts: &[Part], scale: f32) -> Option<f32> {
         part_left_scaled(part, self.count, parts, scale).map(|x| x + self.gap() * scale)
     }
     pub fn part_hit(self, x: f32, y: f32, parts: &[Part], scale: f32) -> Option<Part> {
         part_hit_scaled(x - self.gap() * scale, y, self.count, parts, scale)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct DropTarget {
+    pub index: usize,
+    pub pinned: bool,
+}
+
+/// Moves an app and returns the new pin count, keeping both groups contiguous.
+pub fn move_app<T>(items: &mut Vec<T>, from: usize, target: DropTarget, pins: usize) -> usize {
+    if from >= items.len() || target.index >= items.len() {
+        return pins;
+    }
+    let remaining_pins = pins - usize::from(from < pins);
+    let to = if target.pinned {
+        target.index.min(remaining_pins)
+    } else {
+        target.index.max(remaining_pins)
+    };
+    move_item(items, from, to);
+    remaining_pins + usize::from(target.pinned)
+}
+
+/// Moves an item, shifting the ones between.
+pub fn move_item<T>(items: &mut Vec<T>, from: usize, to: usize) {
+    if from != to && from < items.len() && to < items.len() {
+        let item = items.remove(from);
+        items.insert(to, item);
     }
 }
 
@@ -381,6 +445,98 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn drag_slots_and_group_edges_scale_and_scroll() {
+        for size in [24.0, 32.0, 40.0] {
+            for dpi in [96.0, 144.0, 192.0] {
+                let scale = layout_scale(size);
+                let layout = AppLayout { count: 4, pinned: 2 };
+                let target = |x: f32| layout.drop_target(x * dpi / 96.0 / (dpi / 96.0), scale, 3, 5).unwrap();
+                assert_eq!(target(-100.0), DropTarget { index: 3, pinned: true });
+                for index in 1..=4 {
+                    let x = layout.left(index, scale) + slot(scale) / 2.0;
+                    assert_eq!(
+                        target(x),
+                        DropTarget {
+                            index: index - 1 + 3,
+                            pinned: index <= 2
+                        }
+                    );
+                }
+                let boundary = layout.left(3, scale) - separator_width(scale) / 2.0;
+                assert_eq!(target(boundary - 0.1), DropTarget { index: 5, pinned: true });
+                assert!(!target(boundary).pinned);
+                assert_eq!(
+                    target(10000.0),
+                    DropTarget {
+                        index: 6,
+                        pinned: false
+                    }
+                );
+                let empty = AppLayout { count: 0, pinned: 0 };
+                assert_eq!(empty.slot_at(10.0, scale), None);
+                let all = AppLayout { count: 2, pinned: 2 };
+                let end = all.left(2, scale) + slot(scale);
+                assert!(all.drop_target(end - 0.1, scale, 0, 2).unwrap().pinned);
+                assert!(!all.drop_target(end, scale, 0, 2).unwrap().pinned);
+                let none = AppLayout { count: 2, pinned: 0 };
+                let start = none.left(1, scale) + slot(scale) / 2.0;
+                assert!(none.drop_target(start - 0.1, scale, 0, 0).unwrap().pinned);
+                assert!(!none.drop_target(start, scale, 0, 0).unwrap().pinned);
+                assert!(!none.drop_target(100.0, scale, 4, 2).unwrap().pinned);
+            }
+        }
+    }
+
+    #[test]
+    fn drops_pin_unpin_and_keep_group_order() {
+        let mut apps = vec!["a", "b", "c", "d"];
+        let pins = move_app(&mut apps, 3, DropTarget { index: 2, pinned: true }, 2);
+        assert_eq!((apps.clone(), pins), (vec!["a", "b", "d", "c"], 3));
+        let pins = move_app(
+            &mut apps,
+            0,
+            DropTarget {
+                index: 3,
+                pinned: false,
+            },
+            pins,
+        );
+        assert_eq!((apps.clone(), pins), (vec!["b", "d", "c", "a"], 2));
+        let pins = move_app(&mut apps, 1, DropTarget { index: 0, pinned: true }, pins);
+        assert_eq!((apps.clone(), pins), (vec!["d", "b", "c", "a"], 2));
+        let pins = move_app(
+            &mut apps,
+            3,
+            DropTarget {
+                index: 2,
+                pinned: false,
+            },
+            pins,
+        );
+        assert_eq!((apps.clone(), pins), (vec!["d", "b", "a", "c"], 2));
+        // A z-order refresh retains the dragged running order and saved pins.
+        let refreshed = stable_order(apps, vec!["c", "b", "a"], |a, b| a == b);
+        assert_eq!(pinned_first(["d", "b"], refreshed, |a, b| a == b), ["d", "b", "a", "c"]);
+        let mut closed = vec!["closed", "running"];
+        let pins = move_app(
+            &mut closed,
+            0,
+            DropTarget {
+                index: 1,
+                pinned: false,
+            },
+            1,
+        );
+        closed.retain(|app| *app != "closed");
+        assert_eq!(pinned_first([], closed, |a, b| a == b), ["running"]);
+        assert_eq!(pins, 0);
+        let mut apps = vec![1, 2];
+        move_item(&mut apps, 5, 0);
+        move_item(&mut apps, 0, 5);
+        assert_eq!(apps, [1, 2]);
     }
 
     #[test]

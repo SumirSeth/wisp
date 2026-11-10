@@ -33,10 +33,10 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Accessibility::*;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
-use windows::Win32::UI::HiDpi::GetDpiForWindow;
+use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, GetDoubleClickTime, GetKeyState, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE,
-    VK_LBUTTON, VK_RBUTTON, VK_SHIFT,
+    GetAsyncKeyState, GetCapture, GetDoubleClickTime, GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE,
+    TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE, VK_LBUTTON, VK_RBUTTON, VK_SHIFT,
 };
 use windows::Win32::UI::Input::{RAWINPUTDEVICE, RIDEV_INPUTSINK, RIDEV_REMOVE, RegisterRawInputDevices};
 use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow};
@@ -101,6 +101,14 @@ struct Item {
     windows: Vec<Window>,
 }
 
+struct Press {
+    id: String,
+    x: i32,
+    dragging: bool,
+    order: Vec<String>,
+    pins: Vec<AppEntry>,
+}
+
 struct State {
     hwnd: HWND,
     owner: HWND,
@@ -108,6 +116,8 @@ struct State {
     icons: HashMap<String, Arc<IconPixels>>,
     items: Vec<Item>,
     pinned: Vec<AppEntry>,
+    press: Option<Press>,
+    suppress_click: bool,
     palette: Palette,
     backdrop: Backdrop,
     window_list_mode: WindowListMode,
@@ -220,6 +230,8 @@ impl Dock {
             icons: HashMap::new(),
             items: Vec::new(),
             pinned: load_pins(),
+            press: None,
+            suppress_click: false,
             palette: Palette::new(true, true),
             backdrop: Backdrop::Acrylic,
             window_list_mode: WindowListMode::default(),
@@ -462,6 +474,7 @@ impl Dock {
     /// Pauses placement without hiding the shared surface.
     pub fn suspend(&mut self) -> RECT {
         let mut s = self.state.borrow_mut();
+        s.finish_press(false);
         s.close_flyout();
         s.hide_tip();
         s.hide_windows();
@@ -523,12 +536,14 @@ impl Dock {
 
     pub fn reload_pins(&mut self) {
         let mut s = self.state.borrow_mut();
+        s.finish_press(false);
         s.pinned = load_pins();
         s.update_pins();
     }
 
     pub fn set_window_list_mode(&mut self, mode: WindowListMode) {
         let mut s = self.state.borrow_mut();
+        s.finish_press(false);
         s.window_list_mode = mode;
         s.hide_windows();
     }
@@ -536,6 +551,7 @@ impl Dock {
     pub fn set_app_icon_size(&mut self, size: u32) {
         let size = (size as f32).clamp(logic::MIN_APP_ICON_SIZE, logic::MAX_APP_ICON_SIZE);
         let mut s = self.state.borrow_mut();
+        s.finish_press(false);
         if s.app_icon_size == size {
             return;
         }
@@ -551,13 +567,16 @@ impl Dock {
     }
 
     pub fn apply_theme(&mut self, palette: Palette, backdrop: Backdrop) {
-        self.state.borrow_mut().apply_material(palette.text.r > 0.5, backdrop);
+        let mut s = self.state.borrow_mut();
+        s.finish_press(false);
+        s.apply_material(palette.text.r > 0.5, backdrop);
     }
 
     /// Hosts the notification area in the dock while `enabled`, which
     /// should follow the hidden taskbar. Failure leaves icons to Explorer.
     pub fn set_tray(&mut self, enabled: bool) {
         let mut s = self.state.borrow_mut();
+        s.finish_press(false);
         if enabled == s.tray_host.is_some() {
             return;
         }
@@ -663,6 +682,7 @@ impl Dock {
     /// Hides the dock until `show`, such as while the launcher is open.
     pub fn hide(&mut self) {
         let mut s = self.state.borrow_mut();
+        s.finish_press(false);
         s.close_flyout();
         s.hide_tip();
         s.hide_windows();
@@ -682,6 +702,7 @@ impl Drop for Dock {
     fn drop(&mut self) {
         EVENT_TARGET.with(|target| target.set(HWND::default()));
         if let Ok(mut s) = self.state.try_borrow_mut() {
+            s.finish_press(false);
             s.listen(false);
         }
         unsafe {
@@ -778,6 +799,9 @@ impl State {
     }
 
     fn refresh(&mut self) {
+        if self.dragging() {
+            return;
+        }
         if self.suspended {
             return;
         }
@@ -852,6 +876,7 @@ impl State {
             self.refresh_window_titles();
         }
         if self.fullscreen {
+            self.finish_press(false);
             self.hide_windows();
             self.stop_slide();
             self.revealed = false;
@@ -924,7 +949,11 @@ impl State {
             return;
         }
         let hidden = !self.revealed && self.slide.is_none();
+        if self.press.is_some() && unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } >= 0 {
+            self.finish_press(true);
+        }
         if !hidden && fullscreen_foreground(self.hwnd) {
+            self.finish_press(false);
             self.stop_slide();
             self.revealed = false;
             self.radio_worker.hide();
@@ -1017,6 +1046,7 @@ impl State {
             && cursor.y < windows_rect.bottom;
         let near = !self.autohide
             || self.held
+            || self.press.is_some()
             || self.flyout_open
             || over_windows
             || cursor.x >= rect.left - slack && cursor.x < rect.right + slack && cursor.y >= rect.top - slack;
@@ -1214,7 +1244,11 @@ impl State {
             if self.autohide {
                 let _ = GetCursorPos(&mut cursor);
             }
-            let monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTOPRIMARY);
+            let monitor = if self.dragging() {
+                MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTOPRIMARY)
+            } else {
+                MonitorFromPoint(cursor, MONITOR_DEFAULTTOPRIMARY)
+            };
             let mut info = MONITORINFO {
                 cbSize: size_of::<MONITORINFO>() as u32,
                 ..Default::default()
@@ -2095,6 +2129,117 @@ impl State {
         self.refresh();
     }
 
+    fn dragging(&self) -> bool {
+        self.press.as_ref().is_some_and(|press| press.dragging)
+    }
+
+    /// Captures an app press until it becomes a click or a drag.
+    fn press(&mut self, lp: LPARAM) {
+        self.finish_press(false);
+        self.suppress_click = false;
+        let Some(item) = self.hit(lp).and_then(|slot| self.item_at(slot)) else {
+            return;
+        };
+        self.press = Some(Press {
+            id: item.app.id.clone(),
+            x: (lp.0 as i16).into(),
+            dragging: false,
+            order: self.items.iter().map(|item| item.app.id.clone()).collect(),
+            pins: self.pinned.clone(),
+        });
+        unsafe {
+            SetCapture(self.hwnd);
+        }
+    }
+
+    /// Follows the pointer after the system's horizontal drag distance.
+    fn drag_to(&mut self, lp: LPARAM, released: bool) -> bool {
+        if self.press.is_none() {
+            return false;
+        }
+        if !released && unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } >= 0 {
+            return self.finish_press(true);
+        }
+        let press = self.press.as_mut().unwrap();
+        let x = i32::from(lp.0 as i16);
+        if !press.dragging {
+            let threshold = unsafe { GetSystemMetricsForDpi(SM_CXDRAG, self.dpi) }.max(1);
+            if (x - press.x).abs() < threshold {
+                return false;
+            }
+            press.dragging = true;
+            self.hide_tip();
+            self.hide_windows();
+            self.close_flyout();
+            self.hover = None;
+            self.hover_part = None;
+            self.animate_hover();
+            self.revealed = true;
+            self.start_slide(0.0);
+        }
+        let id = &self.press.as_ref().unwrap().id;
+        let Some(from) = self.items.iter().position(|item| item.app.id.eq_ignore_ascii_case(id)) else {
+            self.finish_press(false);
+            return true;
+        };
+        let scale = logic::layout_scale(self.app_icon_size);
+        let x = x as f32 * 96.0 / self.dpi as f32;
+        if let Some(target) = self.app_layout().drop_target(x, scale, self.scroll, self.pinned.len()) {
+            let old_pins = self.pinned.len();
+            if target.index == from && target.pinned == (from < old_pins) {
+                return true;
+            }
+            let pins = logic::move_app(&mut self.items, from, target, old_pins);
+            if from < old_pins || pins != old_pins {
+                self.pinned = self.items[..pins].iter().map(|item| item.app.clone()).collect();
+            }
+            if pins != old_pins {
+                self.place();
+            } else {
+                self.publish_rects();
+            }
+            unsafe {
+                let _ = InvalidateRect(Some(self.hwnd), None, false);
+            }
+        }
+        true
+    }
+
+    /// Drops or cancels a drag. A drag never also activates the app.
+    fn finish_press(&mut self, drop: bool) -> bool {
+        let Some(press) = self.press.take() else {
+            return false;
+        };
+        unsafe {
+            if GetCapture() == self.hwnd {
+                let _ = ReleaseCapture();
+            }
+        }
+        self.suppress_click |= press.dragging || !drop;
+        if !press.dragging {
+            return false;
+        }
+        if !drop {
+            self.pinned = press.pins;
+            self.items
+                .sort_by_key(|item| press.order.iter().position(|id| id.eq_ignore_ascii_case(&item.app.id)));
+            self.update_pins();
+        } else if self
+            .pinned
+            .iter()
+            .map(|app| &app.id)
+            .ne(press.pins.iter().map(|app| &app.id))
+        {
+            self.save_pins();
+        } else {
+            self.update_pins();
+        }
+        self.hover_part = None;
+        self.animate_hover();
+        self.refresh();
+        true
+    }
+
     fn toggle_pin(&mut self, id: &str) {
         if let Some(at) = self.pinned.iter().position(|pin| pin.id.eq_ignore_ascii_case(id)) {
             self.pinned.remove(at);
@@ -2349,10 +2494,22 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     return LRESULT(0);
                 }
                 WM_DPICHANGED | WM_DISPLAYCHANGE => {
+                    s.finish_press(false);
                     let _ = PostMessageW(Some(hwnd), WM_REFRESH, WPARAM(0), LPARAM(0));
                     return LRESULT(0);
                 }
+                WM_CAPTURECHANGED => {
+                    s.finish_press(false);
+                    return LRESULT(0);
+                }
+                WM_LBUTTONDOWN => {
+                    s.press(lp);
+                    return LRESULT(0);
+                }
                 WM_MOUSEMOVE => {
+                    if s.drag_to(lp, false) {
+                        return LRESULT(0);
+                    }
                     let hover = s.hit(lp);
                     let hover_part = s.hit_part(lp);
                     if s.hover != hover || s.hover_part != hover_part {
@@ -2386,6 +2543,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     return LRESULT(0);
                 }
                 WM_LBUTTONUP | WM_MBUTTONUP => {
+                    if msg == WM_LBUTTONUP {
+                        if s.dragging() {
+                            s.drag_to(lp, true);
+                        }
+                        s.finish_press(true);
+                        if std::mem::take(&mut s.suppress_click) {
+                            return LRESULT(0);
+                        }
+                    }
                     // The dock never takes the focus, so the flyout can't see this click.
                     if s.hit_part(lp) != Some(logic::Part::Chevron) {
                         s.close_flyout();
@@ -2462,6 +2628,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     return LRESULT(0);
                 }
                 WM_CLOSE => {
+                    s.finish_press(false);
                     s.hide_windows();
                     s.stop_slide();
                     s.visible = false;

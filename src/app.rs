@@ -2253,6 +2253,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                             | WM_MOUSEMOVE
                             | WM_MOUSELEAVE
                             | WM_MOUSEACTIVATE
+                            | WM_CAPTURECHANGED
                             | WM_LBUTTONDOWN
                             | WM_LBUTTONUP
                             | WM_MBUTTONUP
@@ -2412,7 +2413,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_APP_COMMANDS => with_launcher_or_defer(DEFER_COMMANDS, Launcher::drain_command_events),
         WM_ACTIVATE if loword(wparam.0) == WA_INACTIVE => with_launcher_or_defer(DEFER_HIDE, Launcher::hide),
         WM_DPICHANGED => {
-            with_launcher(|l| l.on_dpi_changed(loword(wparam.0)));
+            with_launcher(|l| {
+                if let Some(dock) = &l.dock {
+                    dock.dispatch(msg, wparam, lparam);
+                }
+                l.on_dpi_changed(loword(wparam.0));
+            });
             return LRESULT(0);
         }
         WM_KEYDOWN | WM_SYSKEYDOWN => {
@@ -2534,6 +2540,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             });
         }
         WM_DISPLAYCHANGE | taskbar::WM_TASKBAR_SHOW | taskbar::WM_RECOVERY_DONE => {
+            if msg == WM_DISPLAYCHANGE {
+                with_launcher(|l| {
+                    if let Some(dock) = &l.dock {
+                        dock.dispatch(msg, wparam, lparam);
+                    }
+                });
+            }
             unsafe {
                 let _ = ReplyMessage(LRESULT(0));
             }
