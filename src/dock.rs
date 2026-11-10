@@ -1770,7 +1770,8 @@ impl State {
             && !self.suspended
             && !self.fullscreen
         {
-            self.radio_worker.refresh(self.hwnd, WM_RADIOS);
+            // Hovering wants fresh details, but not a read on every redraw.
+            self.radio_worker.refresh(self.hwnd, WM_RADIOS, status::RADIO_HOVER);
         }
         unsafe {
             let _ = KillTimer(Some(self.hwnd), TIP_TIMER);
@@ -1990,7 +1991,7 @@ impl State {
     fn update_status(&mut self) {
         let _span = crate::util::perf::Span::new("status");
         if self.visible && self.revealed && !self.suspended && !self.fullscreen {
-            self.radio_worker.refresh(self.hwnd, WM_RADIOS);
+            self.radio_worker.refresh(self.hwnd, WM_RADIOS, status::RADIO_POLL);
         }
         let status = status::read();
         if status != self.status {

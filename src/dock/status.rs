@@ -137,24 +137,26 @@ pub struct RadioWorker {
     last: Option<std::time::Instant>,
 }
 
+/// How often a revealed dock rereads the radios: they are slow to read and rarely change.
+pub const RADIO_POLL: std::time::Duration = std::time::Duration::from_secs(30);
+/// The oldest reading a tooltip shows without starting a new one.
+pub const RADIO_HOVER: std::time::Duration = std::time::Duration::from_secs(2);
+
 impl RadioWorker {
     pub fn hide(&mut self) {
         self.active.store(false, std::sync::atomic::Ordering::Release);
         self.last = None;
     }
 
-    pub fn refresh(&mut self, hwnd: windows::Win32::Foundation::HWND, message: u32) {
+    /// Starts a read unless one is running or the last is younger than `max_age`.
+    pub fn refresh(&mut self, hwnd: windows::Win32::Foundation::HWND, message: u32, max_age: std::time::Duration) {
         use std::sync::{atomic::Ordering, mpsc};
         use windows::Win32::{
             Foundation::{HWND, LPARAM, WPARAM},
             System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize},
             UI::WindowsAndMessaging::PostMessageW,
         };
-        if self.pending.is_some()
-            || self
-                .last
-                .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(5))
-        {
+        if self.pending.is_some() || self.last.is_some_and(|t| t.elapsed() < max_age) {
             return;
         }
         self.last = Some(std::time::Instant::now());
@@ -197,6 +199,10 @@ impl RadioWorker {
         match self.pending.as_ref()?.try_recv() {
             Ok(radios) => {
                 self.pending = None;
+                // Count age from the reading, so a slow read can't start the next at once.
+                if radios.is_some() {
+                    self.last = Some(std::time::Instant::now());
+                }
                 radios
             }
             Err(TryRecvError::Disconnected) => {
@@ -273,7 +279,7 @@ mod tests {
             pending: None,
             last: Some(std::time::Instant::now()),
         };
-        worker.refresh(HWND::default(), 0);
+        worker.refresh(HWND::default(), 0, RADIO_POLL);
         assert!(worker.pending.is_none());
         let (tx, rx) = mpsc::channel();
         worker.pending = Some(rx);
@@ -282,7 +288,7 @@ mod tests {
         assert!(!worker.active.load(Ordering::Acquire));
         assert!(worker.last.is_none());
         // A pending request prevents another worker even after a reveal.
-        worker.refresh(HWND::default(), 0);
+        worker.refresh(HWND::default(), 0, RADIO_HOVER);
         assert!(!worker.active.load(Ordering::Acquire));
         assert!(worker.take().is_none());
         tx.send(None).unwrap();
