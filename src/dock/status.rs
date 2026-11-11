@@ -1,5 +1,7 @@
 //! The status matrix and clock at the right end of the dock.
 
+use super::logic::{STATUS_ITEMS, StatusItem, StatusPlacement};
+
 use windows::Win32::Globalization::{GetDateFormatEx, GetTimeFormatEx, TIME_NOSECONDS};
 use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use windows::Win32::System::SystemInformation::GetLocalTime;
@@ -32,7 +34,7 @@ pub struct Battery {
     pub charging: bool,
 }
 
-pub fn read() -> Status {
+pub fn read(placement: StatusPlacement) -> Status {
     let now = unsafe { GetLocalTime() };
     let mut buffer = [0u16; 64];
     let text = |len: i32, buffer: &[u16]| String::from_utf16_lossy(&buffer[..(len.max(1) - 1) as usize]);
@@ -60,16 +62,28 @@ pub fn read() -> Status {
     Status {
         time,
         date,
-        battery: battery(),
-        volume: crate::commands::audio::level().map(|(percent, muted)| Volume { percent, muted }),
+        battery: placement.visible(StatusItem::Battery).then(battery).flatten(),
+        volume: placement
+            .visible(StatusItem::Sound)
+            .then(crate::commands::audio::level)
+            .flatten()
+            .map(|(percent, muted)| Volume { percent, muted }),
         minute: now.wMinute,
     }
 }
 
 impl Status {
     /// `tray` is the number of inline notification icons, if the dock hosts them.
-    pub fn parts(&self, tray: Option<usize>) -> Vec<super::logic::Part> {
-        super::logic::parts(tray)
+    pub fn parts(&self, tray: Option<usize>, placement: StatusPlacement) -> Vec<super::logic::Part> {
+        let mut parts = super::logic::parts(tray);
+        parts.retain(|part| *part != super::logic::Part::Status || placement.group.contains(&true));
+        parts.extend(
+            STATUS_ITEMS
+                .into_iter()
+                .filter(|item| placement.icons[*item as usize])
+                .map(super::logic::Part::Icon),
+        );
+        parts
     }
 }
 
@@ -96,7 +110,12 @@ pub struct Radios {
 }
 
 impl Status {
+    #[cfg(test)]
     pub fn tooltip(&self, radios: &Radios) -> String {
+        self.tooltip_for(radios, &STATUS_ITEMS)
+    }
+
+    pub fn tooltip_for(&self, radios: &Radios, items: &[StatusItem]) -> String {
         let volume = match self.volume {
             Some(v) if v.muted => "Muted".into(),
             Some(v) => format!("Volume {}%", v.percent),
@@ -125,7 +144,12 @@ impl Status {
             None if !radios.read => "Bluetooth: checking".into(),
             None => "No Bluetooth".into(),
         };
-        format!("{volume}\n{battery}\n{wifi}\n{bluetooth}")
+        let lines = [volume, battery, wifi, bluetooth];
+        items
+            .iter()
+            .map(|item| lines[*item as usize].as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -149,14 +173,21 @@ impl RadioWorker {
     }
 
     /// Starts a read unless one is running or the last is younger than `max_age`.
-    pub fn refresh(&mut self, hwnd: windows::Win32::Foundation::HWND, message: u32, max_age: std::time::Duration) {
+    pub fn refresh(
+        &mut self,
+        hwnd: windows::Win32::Foundation::HWND,
+        message: u32,
+        max_age: std::time::Duration,
+        wifi: bool,
+        bluetooth: bool,
+    ) {
         use std::sync::{atomic::Ordering, mpsc};
         use windows::Win32::{
             Foundation::{HWND, LPARAM, WPARAM},
             System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize},
             UI::WindowsAndMessaging::PostMessageW,
         };
-        if self.pending.is_some() || self.last.is_some_and(|t| t.elapsed() < max_age) {
+        if (!wifi && !bluetooth) || self.pending.is_some() || self.last.is_some_and(|t| t.elapsed() < max_age) {
             return;
         }
         self.last = Some(std::time::Instant::now());
@@ -174,10 +205,10 @@ impl RadioWorker {
                     ..Radios::default()
                 };
                 if initialized {
-                    if active.load(Ordering::Acquire) {
+                    if wifi && active.load(Ordering::Acquire) {
                         radios.wifi = crate::commands::wifi::state();
                     }
-                    if active.load(Ordering::Acquire) {
+                    if bluetooth && active.load(Ordering::Acquire) {
                         radios.bluetooth = crate::commands::bluetooth::state();
                     }
                     unsafe { RoUninitialize() };
@@ -268,6 +299,12 @@ mod tests {
         radios.wifi.as_mut().unwrap().on = false;
         radios.bluetooth.as_mut().unwrap().on = false;
         assert!(status.tooltip(&radios).ends_with("Wi-Fi off\nBluetooth off"));
+        assert_eq!(status.tooltip_for(&radios, &[StatusItem::Bluetooth]), "Bluetooth off");
+        assert_eq!(
+            status.tooltip_for(&radios, &[StatusItem::Battery, StatusItem::Wifi]),
+            "Battery 80%, charging\nWi-Fi off"
+        );
+        assert!(status.tooltip_for(&radios, &[]).is_empty());
     }
 
     #[test]
@@ -279,7 +316,7 @@ mod tests {
             pending: None,
             last: Some(std::time::Instant::now()),
         };
-        worker.refresh(HWND::default(), 0, RADIO_POLL);
+        worker.refresh(HWND::default(), 0, RADIO_POLL, true, true);
         assert!(worker.pending.is_none());
         let (tx, rx) = mpsc::channel();
         worker.pending = Some(rx);
@@ -288,11 +325,15 @@ mod tests {
         assert!(!worker.active.load(Ordering::Acquire));
         assert!(worker.last.is_none());
         // A pending request prevents another worker even after a reveal.
-        worker.refresh(HWND::default(), 0, RADIO_HOVER);
+        worker.refresh(HWND::default(), 0, RADIO_HOVER, true, true);
         assert!(!worker.active.load(Ordering::Acquire));
         assert!(worker.take().is_none());
         tx.send(None).unwrap();
         assert!(worker.take().is_none());
         assert!(worker.pending.is_none());
+        worker.refresh(HWND::default(), 0, RADIO_POLL, false, false);
+        assert!(worker.pending.is_none());
+        assert!(worker.last.is_none());
+        assert!(!worker.active.load(Ordering::Acquire));
     }
 }

@@ -20,7 +20,7 @@ pub struct Shown {
 /// What a tooltip belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tip {
-    Status,
+    Status(super::logic::Part),
     Chevron,
     /// An icon in the dock, by its inline position.
     Inline(usize),

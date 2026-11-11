@@ -611,6 +611,7 @@ impl Launcher {
         }
         if let Some(dock) = &mut self.dock {
             dock.pace_frames();
+            dock.set_status_placement(&self.config.dock_status_group, &self.config.dock_status_icons);
             dock.set_apps(&self.apps, &self.icons);
             dock.set_window_list_mode(self.config.window_list);
             dock.set_app_icon_size(self.config.dock_icon_size as u32);

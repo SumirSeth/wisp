@@ -60,6 +60,8 @@ pub struct Config {
     pub dock_autohide: bool,
     pub dock_icon_size: usize,
     pub dock_order: Vec<String>,
+    pub dock_status_group: Vec<String>,
+    pub dock_status_icons: Vec<String>,
     pub hotkey: String,
     pub max_results: usize,
     pub theme: Theme,
@@ -131,7 +133,11 @@ impl Config {
                     .collect(),
             ),
         );
-        table.try_into()
+        let mut config: Config = table.try_into()?;
+        let placement = crate::dock::logic::StatusPlacement::new(&config.dock_status_group, &config.dock_status_icons);
+        config.dock_status_group = placement.names(true);
+        config.dock_status_icons = placement.names(false);
+        Ok(config)
     }
 
     /// Rereads the user's file and edits only the row order, preserving comments.
@@ -166,7 +172,17 @@ mod tests {
             Config::parse("dock_order = ['clock', 'unknown', 'clock', 'apps']")
                 .unwrap()
                 .dock_order,
-            ["clock", "apps", "launcher", "tray", "status"]
+            [
+                "clock",
+                "apps",
+                "launcher",
+                "tray",
+                "status",
+                "sound",
+                "battery",
+                "wifi",
+                "bluetooth"
+            ]
         );
         assert_eq!(Config::parse("dock_order = 3").unwrap().dock_order, default);
         let dir = tempfile::tempdir().unwrap();
@@ -180,7 +196,17 @@ mod tests {
         assert!(saved.contains("[extra]\nvalue = 42"));
         assert_eq!(
             Config::parse(&saved).unwrap().dock_order,
-            ["status", "clock", "launcher", "apps", "tray"]
+            [
+                "status",
+                "clock",
+                "launcher",
+                "apps",
+                "tray",
+                "sound",
+                "battery",
+                "wifi",
+                "bluetooth"
+            ]
         );
         std::fs::write(&path, "hotkey = [").unwrap();
         assert!(Config::write_order(&path, &["apps"]).is_err());

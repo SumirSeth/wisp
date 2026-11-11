@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use gpui_kit::component::{
-    button::{Button, ButtonVariants},
+    button::{Button, ButtonGroup, ButtonVariants},
     input::{Input, InputEvent, InputState},
     select::{SearchableVec, Select, SelectEvent, SelectState},
     slider::{Slider, SliderEvent, SliderState},
@@ -687,6 +687,80 @@ impl Settings {
         })
     }
 
+    fn status_controls(&self, p: Palette, cx: &mut Context<Self>) -> Div {
+        let mut block = group(p).child(row(
+            "Group status icons",
+            "Keep visible status icons together. Hidden icons stay hidden.",
+            Switch::new("group-status")
+                .checked(!self.config.dock_status_group.is_empty())
+                .disabled(self.config.dock_status_group.is_empty() && self.config.dock_status_icons.is_empty())
+                .accessibility_label("Group status icons")
+                .on_change(cx.listener(|this, enabled: &bool, window, cx| {
+                    let mut names = this.config.dock_status_group.clone();
+                    names.extend(this.config.dock_status_icons.clone());
+                    let array: Array = names.iter().map(String::as_str).collect();
+                    this.save(
+                        if *enabled {
+                            "dock_status_group"
+                        } else {
+                            "dock_status_icons"
+                        },
+                        array.into(),
+                        window,
+                        cx,
+                    );
+                })),
+            p,
+        ));
+        for (name, title) in [
+            ("sound", "Sound"),
+            ("battery", "Battery"),
+            ("wifi", "Wi-Fi"),
+            ("bluetooth", "Bluetooth"),
+        ] {
+            let selected = if self.config.dock_status_group.iter().any(|n| n == name) {
+                0
+            } else if self.config.dock_status_icons.iter().any(|n| n == name) {
+                1
+            } else {
+                2
+            };
+            let mut segments = ButtonGroup::new(name).small();
+            for (index, text) in ["In group", "Own icon", "Hidden"].into_iter().enumerate() {
+                segments = segments.child(
+                    Button::new((name, index))
+                        .label(text)
+                        .small()
+                        .selected(index == selected)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            let key = if index == 0 {
+                                "dock_status_group"
+                            } else if index == 1 {
+                                "dock_status_icons"
+                            } else if this.config.dock_status_group.iter().any(|n| n == name) {
+                                "dock_status_group"
+                            } else {
+                                "dock_status_icons"
+                            };
+                            let mut names = if key == "dock_status_group" {
+                                this.config.dock_status_group.clone()
+                            } else {
+                                this.config.dock_status_icons.clone()
+                            };
+                            names.retain(|n| n != name);
+                            if index != 2 {
+                                names.push(name.into());
+                            }
+                            let array: Array = names.iter().map(String::as_str).collect();
+                            this.save(key, array.into(), window, cx);
+                        })),
+                );
+            }
+            block = block.child(divider(p)).child(row(title, "", segments, p));
+        }
+        block
+    }
+
     fn autostart_switch(&self, cx: &mut Context<Self>) -> Switch {
         Switch::new("autostart")
             .checked(self.autostart)
@@ -790,6 +864,9 @@ impl Settings {
                         p,
                     )),
             )
+            .child(div().h_3())
+            .child(label("Status", p))
+            .child(self.status_controls(p, cx))
             .child(div().h_3())
             .child(label("Startup", p))
             .child(group(p).child(row(

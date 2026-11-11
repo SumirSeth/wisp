@@ -1,5 +1,9 @@
 //! Matching and DIP geometry.
 
+#[path = "status_options.rs"]
+mod status_options;
+pub use status_options::{STATUS_ITEMS, StatusItem, StatusPlacement};
+
 use crate::config::WindowListMode;
 use crate::indexer::AppEntry;
 
@@ -171,14 +175,19 @@ pub enum Section {
     Apps,
     Tray,
     Status,
+    Icon(StatusItem),
     Clock,
 }
 
-pub const DEFAULT_ORDER: [Section; 5] = [
+pub const DEFAULT_ORDER: [Section; 9] = [
     Section::Launcher,
     Section::Apps,
     Section::Tray,
     Section::Status,
+    Section::Icon(StatusItem::Sound),
+    Section::Icon(StatusItem::Battery),
+    Section::Icon(StatusItem::Wifi),
+    Section::Icon(StatusItem::Bluetooth),
     Section::Clock,
 ];
 
@@ -189,14 +198,15 @@ impl Section {
             Self::Apps => "apps",
             Self::Tray => "tray",
             Self::Status => "status",
+            Self::Icon(item) => item.name(),
             Self::Clock => "clock",
         }
     }
 }
 
 /// Unknown and duplicate names disappear; omitted blocks follow in default order.
-pub fn section_order<'a>(names: impl IntoIterator<Item = &'a str>) -> [Section; 5] {
-    let mut order = Vec::with_capacity(5);
+pub fn section_order<'a>(names: impl IntoIterator<Item = &'a str>) -> [Section; 9] {
+    let mut order = Vec::with_capacity(9);
     for section in names
         .into_iter()
         .filter_map(|name| DEFAULT_ORDER.into_iter().find(|section| section.name() == name))
@@ -209,7 +219,7 @@ pub fn section_order<'a>(names: impl IntoIterator<Item = &'a str>) -> [Section; 
     order.try_into().unwrap()
 }
 
-pub fn move_section(order: &mut [Section; 5], section: Section, target: Section) {
+pub fn move_section(order: &mut [Section; 9], section: Section, target: Section) {
     let from = order.iter().position(|&item| item == section).unwrap();
     let to = order.iter().position(|&item| item == target).unwrap();
     if from < to {
@@ -223,8 +233,9 @@ pub fn move_section(order: &mut [Section; 5], section: Section, target: Section)
 #[derive(Clone, Copy)]
 pub struct RowLayout {
     pub apps: AppLayout,
-    pub order: [Section; 5],
+    pub order: [Section; 9],
     pub tray: Option<usize>,
+    pub status: StatusPlacement,
 }
 
 impl RowLayout {
@@ -238,7 +249,20 @@ impl RowLayout {
                 Section::Tray => self
                     .tray
                     .map_or(0.0, |count| CHEVRON_W + count.min(MAX_INLINE) as f32 * TRAY_W),
-                Section::Status => STATUS_W,
+                Section::Status => {
+                    if self.status.group.contains(&true) {
+                        STATUS_W
+                    } else {
+                        0.0
+                    }
+                }
+                Section::Icon(item) => {
+                    if self.status.icons[item as usize] {
+                        SLOT
+                    } else {
+                        0.0
+                    }
+                }
                 Section::Clock => CLOCK_W,
             } * scale;
             if width == 0.0 {
@@ -290,6 +314,7 @@ impl RowLayout {
             }
             Part::Tray(_) => return None,
             Part::Status => (Section::Status, 0.0),
+            Part::Icon(item) => (Section::Icon(item), 0.0),
             Part::Clock => (Section::Clock, 0.0),
         };
         self.section_left(section, scale).map(|left| left + offset * scale)
@@ -366,6 +391,26 @@ pub fn status_cell(index: usize) -> (f32, f32) {
         8.0 + (index / 2) as f32 * STATUS_CELL,
     )
 }
+/// Visible cells in home order. One cell uses the same full-size geometry as an own icon.
+pub fn status_cells(group: [bool; 4]) -> Vec<(StatusItem, f32, f32, f32)> {
+    let count = group.iter().filter(|&&shown| shown).count();
+    let mut cells = Vec::new();
+    for (i, item) in STATUS_ITEMS.into_iter().enumerate() {
+        if !group[i] {
+            continue;
+        }
+        let (x, y, size) = match count {
+            1 => (10.0, 14.0, 28.0),
+            2 => (4.0 + cells.len() as f32 * STATUS_CELL, 18.0, STATUS_CELL),
+            _ => {
+                let (x, y) = status_cell(i);
+                (x, y, STATUS_CELL)
+            }
+        };
+        cells.push((item, x, y, size));
+    }
+    cells
+}
 pub const CLOCK_W: f32 = 88.0;
 /// The window list above an app icon: its padding, one row per window, and
 /// the widest a row may be before it is clipped, in DIPs.
@@ -401,6 +446,7 @@ pub enum Part {
     /// The nth notification-area icon shown in the dock.
     Tray(usize),
     Status,
+    Icon(StatusItem),
     Clock,
 }
 
@@ -410,6 +456,7 @@ impl Part {
             Part::Chevron => CHEVRON_W,
             Part::Tray(_) => TRAY_W,
             Part::Status => STATUS_W,
+            Part::Icon(_) => SLOT,
             Part::Clock => CLOCK_W,
         }
     }
@@ -536,6 +583,73 @@ mod tests {
     use super::*;
 
     #[test]
+    fn placements_and_cells_keep_home_order() {
+        let names = |values: &[&str]| values.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let placement = StatusPlacement::new(
+            &names(&["wifi", "bad", "wifi", "sound"]),
+            &names(&["wifi", "battery", "battery"]),
+        );
+        assert_eq!(placement.names(true), ["sound", "wifi"]);
+        assert_eq!(placement.names(false), ["battery"]);
+        assert!(!placement.visible(StatusItem::Bluetooth));
+        for mask in 0u8..16 {
+            let group = std::array::from_fn(|i| mask & (1 << i) != 0);
+            let cells = status_cells(group);
+            assert_eq!(cells.len(), mask.count_ones() as usize);
+            for (at, &(item, x, y, size)) in cells.iter().enumerate() {
+                assert!(group[item as usize]);
+                assert!(x + size <= STATUS_W && y + size <= HEIGHT);
+                match cells.len() {
+                    1 => assert_eq!((x, y, size), (10.0, 14.0, 28.0)),
+                    2 => assert_eq!((x, y, size), (4.0 + at as f32 * STATUS_CELL, 18.0, STATUS_CELL)),
+                    _ => assert_eq!((x, y), status_cell(item as usize)),
+                }
+            }
+            for icons_mask in 0u8..16 {
+                let icons = std::array::from_fn(|i| !group[i] && icons_mask & (1 << i) != 0);
+                let row = RowLayout {
+                    apps: AppLayout { count: 0, pinned: 0 },
+                    order: DEFAULT_ORDER,
+                    tray: None,
+                    status: StatusPlacement { group, icons },
+                };
+                let shown = usize::from(mask != 0) + icons.iter().filter(|&&v| v).count();
+                for scale in [0.75, 1.0, 1.25, 2.0] {
+                    assert_eq!(
+                        row.width(scale),
+                        (2.0 * PAD + SLOT + CLOCK_W + shown as f32 * SLOT + (shown + 1) as f32 * SEPARATOR) * scale
+                    );
+                    assert_eq!(row.part_left(Part::Status, scale).is_some(), mask != 0);
+                    for item in STATUS_ITEMS {
+                        let part = Part::Icon(item);
+                        assert_eq!(row.part_left(part, scale).is_some(), icons[item as usize]);
+                        if let Some(left) = row.part_left(part, scale) {
+                            assert_eq!(
+                                row.part_hit(left + SLOT * scale / 2.0, HEIGHT * scale / 2.0, &[part], scale),
+                                Some(part)
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            section_order(["wifi", "wifi", "bad", "sound"]).map(Section::name),
+            [
+                "wifi",
+                "sound",
+                "launcher",
+                "apps",
+                "tray",
+                "status",
+                "battery",
+                "bluetooth",
+                "clock"
+            ]
+        );
+    }
+
+    #[test]
     fn section_names_and_moves_keep_every_block_once() {
         assert_eq!(section_order([]), DEFAULT_ORDER);
         assert_eq!(
@@ -545,7 +659,11 @@ mod tests {
                 Section::Apps,
                 Section::Launcher,
                 Section::Tray,
-                Section::Status
+                Section::Status,
+                Section::Icon(StatusItem::Sound),
+                Section::Icon(StatusItem::Battery),
+                Section::Icon(StatusItem::Wifi),
+                Section::Icon(StatusItem::Bluetooth),
             ]
         );
         for source in DEFAULT_ORDER {
@@ -564,7 +682,7 @@ mod tests {
 
     #[test]
     fn row_geometry_hits_and_gaps_follow_every_order() {
-        fn permutations(order: &mut [Section; 5], at: usize, check: &impl Fn([Section; 5])) {
+        fn permutations(order: &mut [Section; 9], at: usize, check: &impl Fn([Section; 9])) {
             if at == 5 {
                 check(*order);
                 return;
@@ -576,11 +694,13 @@ mod tests {
             }
         }
         let mut order = DEFAULT_ORDER;
+        order.swap(4, 8);
         permutations(&mut order, 0, &|order| {
             for scale in [0.75, 1.0, 1.25, 2.0] {
                 for tray in [None, Some(0), Some(3)] {
                     for (count, pinned) in [(0, 0), (4, 0), (4, 2), (4, 4)] {
                         let row = RowLayout {
+                            status: StatusPlacement::default(),
                             apps: AppLayout { count, pinned },
                             order,
                             tray,
@@ -623,6 +743,10 @@ mod tests {
         for source in DEFAULT_ORDER {
             for target in DEFAULT_ORDER {
                 let mut row = RowLayout {
+                    status: StatusPlacement {
+                        group: [true; 4],
+                        icons: [true; 4],
+                    },
                     apps: AppLayout { count: 8, pinned: 2 },
                     order: DEFAULT_ORDER,
                     tray: Some(2),
@@ -645,6 +769,7 @@ mod tests {
         let parts = parts(None);
         for scale in [0.75, 1.0, 1.25, 2.0] {
             let row = RowLayout {
+                status: StatusPlacement::default(),
                 apps: AppLayout { count: 0, pinned: 0 },
                 order: DEFAULT_ORDER,
                 tray: None,
@@ -835,6 +960,7 @@ mod tests {
 
         for scale in [small, normal, large] {
             let row = RowLayout {
+                status: StatusPlacement::default(),
                 apps: AppLayout { count: 2, pinned: 1 },
                 order: DEFAULT_ORDER,
                 tray: None,
@@ -956,6 +1082,7 @@ mod tests {
             [Part::Chevron, Part::Tray(0), Part::Tray(1), Part::Status, Part::Clock]
         );
         let row = RowLayout {
+            status: StatusPlacement::default(),
             apps: AppLayout { count: 2, pinned: 0 },
             order: DEFAULT_ORDER,
             tray: Some(2),

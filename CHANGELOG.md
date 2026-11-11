@@ -9,6 +9,7 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 - The dock shows sound, battery, Wi-Fi and Bluetooth together in one 2x2 group. Hover for details, scroll to change the volume, click to open Now. (#64)
 - Drag dock apps to rearrange them, pinning or unpinning them by where you drop. (#65, by @SorbetMango, fixes #32)
 - Drag the launcher, notification icons, status and clock to any place in the dock. The order is saved. (#65)
+- Choose which status icons the dock shows, and whether each sits in the status group or on its own. In Settings, under Status. (#PR)
 
 - Pin apps to the dock: right-click an app and choose Pin to dock. Pinned apps stay in the dock, before running apps, and start with a click. (#54, by @SorbetMango, fixes #31)
 - Apps with more than one window open show a second dot under their dock icon. (#55)

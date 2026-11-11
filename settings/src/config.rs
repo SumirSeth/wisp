@@ -4,8 +4,12 @@ use std::{io::Write, path::PathBuf};
 
 use toml_edit::{DocumentMut, Value};
 
+#[allow(dead_code)]
+#[path = "../../src/dock/status_options.rs"]
+pub mod status_options;
 #[path = "../../src/config_write.rs"]
 mod write;
+use status_options::StatusPlacement;
 
 /// The launcher creates its config from the same file.
 pub const DEFAULT_CONFIG: &str = include_str!("../../src/default-config.toml");
@@ -29,6 +33,8 @@ pub struct Config {
     pub dock_icon_size: i64,
     pub hide_taskbar: bool,
     pub window_list: String,
+    pub dock_status_group: Vec<String>,
+    pub dock_status_icons: Vec<String>,
 }
 
 impl Default for Config {
@@ -82,6 +88,19 @@ impl Config {
                     .ok_or_else(|| "Each excluded folder name must be a string.".into())
             })
             .collect::<Result<Vec<_>, String>>()?;
+        let list = |key: &str| -> Result<Vec<String>, String> {
+            get(key)
+                .as_array()
+                .ok_or_else(|| format!("{key} must be a list of status names."))?
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .map(str::to_owned)
+                        .ok_or_else(|| format!("{key} entries must be strings."))
+                })
+                .collect()
+        };
+        let placement = StatusPlacement::new(&list("dock_status_group")?, &list("dock_status_icons")?);
         Ok(Self {
             hotkey: string("hotkey")?,
             max_results,
@@ -97,6 +116,8 @@ impl Config {
             dock_icon_size,
             hide_taskbar: boolean("hide_taskbar")?,
             window_list,
+            dock_status_group: placement.names(true),
+            dock_status_icons: placement.names(false),
         })
     }
 }
@@ -169,6 +190,26 @@ impl Store {
         let mut doc = self.document()?;
         // Refuse to replace a config whose existing fields have invalid types.
         Config::from_document(&doc)?;
+        if matches!(key, "dock_status_group" | "dock_status_icons") {
+            let current = Config::from_document(&doc)?;
+            let other_key = if key == "dock_status_group" {
+                "dock_status_icons"
+            } else {
+                "dock_status_group"
+            };
+            let other = if key == "dock_status_group" {
+                current.dock_status_icons
+            } else {
+                current.dock_status_group
+            };
+            let next = value.as_array().expect("validated list");
+            let remaining: toml_edit::Array = other
+                .iter()
+                .filter(|name| !next.iter().any(|v| v.as_str() == Some(name.as_str())))
+                .map(String::as_str)
+                .collect();
+            write::replace(&mut doc, other_key, remaining.into());
+        }
         write::replace(&mut doc, key, value);
         let config = Config::from_document(&doc)?;
         write::save(&self.path, &doc)?;
@@ -178,6 +219,18 @@ impl Store {
 
 fn validate_edit(key: &str, value: &Value) -> Result<(), String> {
     match key {
+        "dock_status_group" | "dock_status_icons" => {
+            let values = value.as_array().ok_or("Choose a list of status names.")?;
+            let mut seen = Vec::new();
+            for value in values {
+                let name = value.as_str().ok_or("Status names must be text.")?;
+                choice(name, &["sound", "battery", "wifi", "bluetooth"], key)?;
+                if seen.contains(&name) {
+                    return Err("Each status name must appear only once.".into());
+                }
+                seen.push(name);
+            }
+        }
         "hotkey" => {
             crate::hotkey::parse(value.as_str().ok_or("Shortcut must be text.")?)?;
         }
@@ -214,6 +267,44 @@ fn validate_edit(key: &str, value: &Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_lists_validate_normalize_and_move_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("config.toml"));
+        std::fs::write(&store.path, "# keep me\ndock_status_group = ['wifi', 'sound', 'sound', 'bad']\ndock_status_icons = ['wifi', 'battery']\n").unwrap();
+        let config = store.load().unwrap();
+        assert_eq!(config.dock_status_group, ["sound", "wifi"]);
+        assert_eq!(config.dock_status_icons, ["battery"]);
+        for invalid in [
+            Value::from(3),
+            Value::Array(["bad"].into_iter().collect()),
+            Value::Array(["sound", "sound"].into_iter().collect()),
+            Value::Array([Value::from(3)].into_iter().collect()),
+        ] {
+            assert!(store.set("dock_status_icons", invalid).is_err());
+        }
+        let config = store
+            .set(
+                "dock_status_icons",
+                Value::Array(["sound", "battery"].into_iter().collect()),
+            )
+            .unwrap();
+        assert_eq!(config.dock_status_group, ["wifi"]);
+        assert_eq!(config.dock_status_icons, ["sound", "battery"]);
+        let config = store
+            .set(
+                "dock_status_group",
+                Value::Array(["sound", "battery", "wifi"].into_iter().collect()),
+            )
+            .unwrap();
+        assert!(config.dock_status_icons.is_empty());
+        assert_eq!(config.dock_status_group, ["sound", "battery", "wifi"]);
+        assert!(std::fs::read_to_string(&store.path).unwrap().contains("# keep me"));
+        let old = Config::from_document(&"".parse().unwrap()).unwrap();
+        assert_eq!(old.dock_status_group, ["sound", "battery", "wifi", "bluetooth"]);
+        assert!(old.dock_status_icons.is_empty());
+    }
 
     #[test]
     fn defaults_match_launcher() {

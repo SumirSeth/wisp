@@ -52,4 +52,8 @@ window_list = "multiple"
 dock_icon_size = 32
 
 # Sections from left to right. Drag a section in the dock to change this order.
-dock_order = ["launcher", "apps", "tray", "status", "clock"]
+dock_order = ["launcher", "apps", "tray", "status", "sound", "battery", "wifi", "bluetooth", "clock"]
+
+# Status items in the group or in their own draggable slots; omitted items are hidden.
+dock_status_group = ["sound", "battery", "wifi", "bluetooth"]
+dock_status_icons = []

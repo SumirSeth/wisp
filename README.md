@@ -54,7 +54,7 @@ The dock appears when the pointer touches the bottom edge of a screen, and hides
 | --- | --- |
 | Click an app | Switch to it |
 | Click the app in front | Minimize it |
-| Drag the launcher, a gap beside the apps, the tray chevron, status or clock | Move that whole section; the order is saved |
+| Drag the launcher, a gap beside the apps, the tray chevron, status, an own status icon or clock | Move that whole section; the order is saved |
 | Drag an app sideways | Rearrange it; drop among pins to pin it, or among running apps to unpin it |
 | Middle-click an app | Open a new window of it |
 | Right-click an app | Pin or unpin it, or close its windows |
@@ -62,13 +62,16 @@ The dock appears when the pointer touches the bottom edge of a screen, and hides
 | Click a tray icon | Use it as you would on the taskbar |
 | Click **⌄** | Show the hidden tray icons |
 | Right-click **⌄** | Show the taskbar, or open taskbar settings |
-| Click the status matrix | Open Now |
-| Hover the status matrix | See sound, battery, Wi-Fi and Bluetooth details |
-| Scroll over the status matrix | Change the volume by 2% a notch |
-| Right-click the status matrix | Open sound settings |
+| Click the status group or an own status icon | Open Now |
+| Hover the status group or an own status icon | See details for its items |
+| Scroll over the status group or sound icon | Change the volume by 2% a notch |
+| Right-click the status group | Open sound settings if grouped, otherwise the first grouped item's settings |
+| Right-click an own status icon | Open its Windows settings page |
 | Click the clock | Open notifications and the calendar |
 | Scroll anywhere else | Switch virtual desktops |
 | <kbd>Shift</kbd>+scroll | Scroll through the apps |
+
+Choose **In group**, **Own icon** or **Hidden** for each status item in Settings, under Dock, in Status. Three grouped items keep their home cells; two sit side by side; one uses a full-size glyph. Own icons open Now, show their own tooltip and open their Windows settings page on right-click. Scroll sound to change volume. Drag own icons like the clock.
 
 Tray icons keep their usual clicks; drag their chevron or the gap beside them to move the tray block. All app icons stay together when sections move. The section order is saved in `dock_order` in config.toml.
 
@@ -136,7 +139,9 @@ Open **Settings** from Wisp's tray icon, or edit `%APPDATA%\wisp\config.toml`. T
 | `dock` | `true` | Shows the dock |
 | `dock_autohide` | `true` | Hides the dock until the pointer touches the bottom edge. `false` keeps it visible. |
 | `window_list` | `"multiple"` | `"multiple"` lists an app's windows when it has more than one; `"always"` or `"off"` |
-| `dock_order` | `["launcher", "apps", "tray", "status", "clock"]` | Sections from left to right; drag sections to change it. |
+| `dock_order` | `["launcher", "apps", "tray", "status", "sound", "battery", "wifi", "bluetooth", "clock"]` | Sections from left to right; drag sections to change it. |
+| `dock_status_group` | `["sound", "battery", "wifi", "bluetooth"]` | Items in the status group, in home-cell order. |
+| `dock_status_icons` | `[]` | Items with their own draggable slot; items in neither list are hidden. The group wins if an item is in both lists. |
 | `dock_icon_size` | `32` | App icon size in the dock, 24–40 DIP. The dock's height, spacing and status area scale with it. |
 | `hide_taskbar` | `true` | Hides the Windows taskbar while Wisp runs |
 | `position` | `"bottom"` | `"bottom"` grows the launcher from the dock; `"center"` opens it in the middle |

@@ -108,7 +108,7 @@ enum PressTarget {
 
 struct Press {
     target: PressTarget,
-    sections: [logic::Section; 5],
+    sections: [logic::Section; 9],
     x: i32,
     dragging: bool,
     order: Vec<String>,
@@ -122,7 +122,7 @@ struct State {
     icons: HashMap<String, Arc<IconPixels>>,
     items: Vec<Item>,
     pinned: Vec<AppEntry>,
-    order: [logic::Section; 5],
+    order: [logic::Section; 9],
     press: Option<Press>,
     suppress_click: bool,
     palette: Palette,
@@ -138,6 +138,7 @@ struct State {
     scroll: usize,
     capacity: usize,
     status: status::Status,
+    status_placement: logic::StatusPlacement,
     radios: status::Radios,
     radio_worker: status::RadioWorker,
     hover_part: Option<logic::Part>,
@@ -252,7 +253,14 @@ impl Dock {
             scheduled: false,
             scroll: 0,
             capacity: usize::MAX,
-            status: status::read(),
+            status: status::read(logic::StatusPlacement {
+                group: [false; 4],
+                icons: [false; 4],
+            }),
+            status_placement: logic::StatusPlacement {
+                group: [false; 4],
+                icons: [false; 4],
+            },
             radios: status::Radios::default(),
             radio_worker: status::RadioWorker::default(),
             hover_part: None,
@@ -540,6 +548,27 @@ impl Dock {
             s.icons.entry(id.clone()).or_insert_with(|| pixels.clone());
         }
         s.refresh();
+    }
+
+    pub fn set_status_placement(&mut self, group: &[String], icons: &[String]) {
+        let mut s = self.state.borrow_mut();
+        let placement = logic::StatusPlacement::new(group, icons);
+        if s.status_placement == placement {
+            return;
+        }
+        s.finish_press(false);
+        s.radio_worker.hide();
+        s.radios = status::Radios::default();
+        s.status_placement = placement;
+        s.hide_tip();
+        s.hide_windows();
+        s.hover = None;
+        s.hover_part = None;
+        s.update_status();
+        s.place();
+        unsafe {
+            let _ = InvalidateRect(Some(s.hwnd), None, false);
+        }
     }
 
     pub fn set_order(&mut self, names: &[String]) {
@@ -888,7 +917,7 @@ impl State {
         {
             self.hide_windows();
         }
-        self.status = status::read();
+        self.status = status::read(self.status_placement);
         self.place();
         if self.suspended {
             return;
@@ -958,6 +987,7 @@ impl State {
                 pinned: self.pinned.len().saturating_sub(self.scroll).min(self.count()),
             },
             order: self.order,
+            status: self.status_placement,
             tray: self.tray_host.as_ref().map(|_| self.inline.len()),
         }
     }
@@ -1362,7 +1392,10 @@ impl State {
 
     /// The status parts, with the notification area while the dock hosts it.
     fn parts(&self) -> Vec<logic::Part> {
-        self.status.parts(self.tray_host.as_ref().map(|_| self.inline.len()))
+        self.status.parts(
+            self.tray_host.as_ref().map(|_| self.inline.len()),
+            self.status_placement,
+        )
     }
 
     /// A part's rectangle on screen where the dock rests, in physical pixels.
@@ -1461,7 +1494,7 @@ impl State {
             Some(tray::Tip::Inline(i)) => i >= self.inline.len(),
             Some(tray::Tip::Flyout(i)) => i >= self.tray.len(),
             Some(tray::Tip::Chevron) => self.tray_host.is_none(),
-            Some(tray::Tip::Status) => false,
+            Some(tray::Tip::Status(_)) => false,
             // The desktop pill has nothing to do with the tray.
             None => false,
         };
@@ -1482,7 +1515,7 @@ impl State {
 
     /// Shows the demo's held flyout or tooltip once the icons are known.
     fn apply_hold(&mut self) {
-        if self.tray_host.is_none() && self.hover_part != Some(logic::Part::Status) {
+        if self.tray_host.is_none() && !matches!(self.hover_part, Some(logic::Part::Status | logic::Part::Icon(_))) {
             return;
         }
         if let Some(hover) = self.held_flyout {
@@ -1493,7 +1526,7 @@ impl State {
             self.tip_target = self.flyout_hover.map(tray::Tip::Flyout);
         } else {
             self.tip_target = match self.hover_part {
-                Some(logic::Part::Status) => Some(tray::Tip::Status),
+                Some(part @ (logic::Part::Status | logic::Part::Icon(_))) => Some(tray::Tip::Status(part)),
                 Some(logic::Part::Chevron) => Some(tray::Tip::Chevron),
                 Some(logic::Part::Tray(i)) if i < self.inline.len() => Some(tray::Tip::Inline(i)),
                 _ => None,
@@ -1824,20 +1857,23 @@ impl State {
 
     /// Shows the tooltip above what the pointer rests on.
     fn show_tip(&mut self) {
-        if self.tip_target == Some(tray::Tip::Status)
+        if matches!(self.tip_target, Some(tray::Tip::Status(_)))
             && self.visible
             && self.revealed
             && !self.suspended
             && !self.fullscreen
         {
             // Hovering wants fresh details, but not a read on every redraw.
-            self.radio_worker.refresh(self.hwnd, WM_RADIOS, status::RADIO_HOVER);
+            self.refresh_radios(status::RADIO_HOVER);
         }
         unsafe {
             let _ = KillTimer(Some(self.hwnd), TIP_TIMER);
         }
         let (text, anchor) = match self.tip_target {
-            Some(tray::Tip::Status) => (self.status.tooltip(&self.radios), self.part_rect(logic::Part::Status)),
+            Some(tray::Tip::Status(part)) => (
+                self.status.tooltip_for(&self.radios, &self.status_items(part)),
+                self.part_rect(part),
+            ),
             Some(tray::Tip::Chevron) => ("Show hidden icons".to_string(), self.part_rect(logic::Part::Chevron)),
             Some(tray::Tip::Inline(i)) => (
                 self.inline
@@ -1957,7 +1993,7 @@ impl State {
                 self.click_inline(position, Action::Click);
                 return;
             }
-            logic::Part::Status => {
+            logic::Part::Status | logic::Part::Icon(_) => {
                 unsafe {
                     let _ = PostMessageW(Some(self.owner), WM_SHOW_NOW, WPARAM(0), LPARAM(0));
                 }
@@ -2030,7 +2066,15 @@ impl State {
 
     /// Wheel `delta` over the matrix changes the volume by 2% a notch.
     fn wheel_volume(&mut self, delta: i32) {
-        let Some(volume) = self.status.volume else { return };
+        // A group without sound still keeps its volume-wheel action. Read only
+        // on that gesture when sound is hidden, never on the regular refresh.
+        let Some(volume) = self
+            .status
+            .volume
+            .or_else(|| crate::commands::audio::level().map(|(percent, muted)| status::Volume { percent, muted }))
+        else {
+            return;
+        };
         let (percent, rest) = logic::wheel_volume(volume.percent, self.wheel + delta);
         self.wheel = rest;
         if percent != volume.percent
@@ -2041,8 +2085,27 @@ impl State {
         self.update_status();
     }
 
+    fn status_items(&self, part: logic::Part) -> Vec<logic::StatusItem> {
+        match part {
+            logic::Part::Icon(item) => vec![item],
+            logic::Part::Status => logic::STATUS_ITEMS
+                .into_iter()
+                .filter(|item| self.status_placement.group[*item as usize])
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn refresh_radios(&mut self, age: std::time::Duration) {
+        let wifi = self.status_placement.visible(logic::StatusItem::Wifi);
+        let bluetooth = self.status_placement.visible(logic::StatusItem::Bluetooth);
+        if wifi || bluetooth {
+            self.radio_worker.refresh(self.hwnd, WM_RADIOS, age, wifi, bluetooth);
+        }
+    }
+
     fn refresh_status_tip(&mut self) {
-        if self.tip_target == Some(tray::Tip::Status) && unsafe { IsWindowVisible(self.tip) }.as_bool() {
+        if matches!(self.tip_target, Some(tray::Tip::Status(_))) && unsafe { IsWindowVisible(self.tip) }.as_bool() {
             self.show_tip();
         }
     }
@@ -2051,9 +2114,9 @@ impl State {
     fn update_status(&mut self) {
         let _span = crate::util::perf::Span::new("status");
         if self.visible && self.revealed && !self.suspended && !self.fullscreen {
-            self.radio_worker.refresh(self.hwnd, WM_RADIOS, status::RADIO_POLL);
+            self.refresh_radios(status::RADIO_POLL);
         }
-        let status = status::read();
+        let status = status::read(self.status_placement);
         if status != self.status {
             self.status = status;
             self.refresh_status_tip();
@@ -2584,7 +2647,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         let _ = InvalidateRect(Some(hwnd), None, false);
                     }
                     s.hover_tip(match hover_part {
-                        Some(logic::Part::Status) => Some(tray::Tip::Status),
+                        Some(part @ (logic::Part::Status | logic::Part::Icon(_))) => Some(tray::Tip::Status(part)),
                         Some(logic::Part::Chevron) => Some(tray::Tip::Chevron),
                         Some(logic::Part::Tray(i)) => Some(tray::Tip::Inline(i)),
                         _ => None,
@@ -2639,8 +2702,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         s.menu(index);
                     } else {
                         match s.hit_part(lp) {
-                            Some(logic::Part::Status) => {
-                                if let Err(error) = crate::launch::open("ms-settings:sound") {
+                            Some(part @ (logic::Part::Status | logic::Part::Icon(_))) => {
+                                if let Err(error) = crate::launch::open(s.status_items(part)[0].settings()) {
                                     eprintln!("Dock sound settings: {error}");
                                 }
                             }
@@ -2661,7 +2724,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     };
                     let _ = ScreenToClient(hwnd, &mut point);
                     let client = LPARAM(((point.y as u16 as isize) << 16) | point.x as u16 as isize);
-                    if s.hit_part(client) == Some(logic::Part::Status) {
+                    if matches!(
+                        s.hit_part(client),
+                        Some(logic::Part::Status | logic::Part::Icon(logic::StatusItem::Sound))
+                    ) {
                         s.wheel_volume(delta.into());
                         return LRESULT(0);
                     }

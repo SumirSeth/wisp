@@ -5,3 +5,7 @@
 position = "center"
 dock = false
 hide_taskbar = false
+
+# Status items in the group or in their own draggable slots; omitted items are hidden.
+dock_status_group = ["sound", "battery", "wifi", "bluetooth"]
+dock_status_icons = []

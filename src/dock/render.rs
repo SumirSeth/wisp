@@ -40,6 +40,7 @@ struct Formats {
     search: IDWriteTextFormat,
     chevron: IDWriteTextFormat,
     matrix: IDWriteTextFormat,
+    status_icon: IDWriteTextFormat,
     badge: IDWriteTextFormat,
     /// Tooltips: left-aligned and wrapping.
     tip: IDWriteTextFormat,
@@ -134,6 +135,7 @@ fn create_formats(dw: &IDWriteFactory, text: PCWSTR, display: PCWSTR, icons: PCW
             small: format(text, DWRITE_FONT_WEIGHT_NORMAL, 12.5)?,
             search: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 21.0)?,
             chevron: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 12.0)?,
+            status_icon: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 21.0)?,
             matrix: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 14.0)?,
             badge: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 8.0)?,
             tip,
@@ -807,7 +809,7 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
         let lower = rect(left, LOWER.0 * frame.layout_scale, right, LOWER.1 * frame.layout_scale);
         unsafe {
             match part {
-                Part::Status => {
+                Part::Status | Part::Icon(_) => {
                     let radios = frame.radios;
                     let volume = status.volume.map_or("\u{E767}", |v| volume_glyph(v.percent, v.muted));
                     let battery = status
@@ -830,8 +832,15 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
                         (wifi, !radios.read || radios.wifi.is_some(), false),
                         (bluetooth, !radios.read || radios.bluetooth.is_some(), false),
                     ];
-                    for (i, (glyph, present, low)) in cells.into_iter().enumerate() {
-                        let (x, y) = logic::status_cell(i);
+                    let group = match part {
+                        Part::Icon(item) => logic::STATUS_ITEMS.map(|candidate| candidate == item),
+                        _ => frame.layout.status.group,
+                    };
+                    for (item, x, y, size) in logic::status_cells(group) {
+                        let i = item as usize;
+                        let (glyph, present, low) = cells[i];
+                        let full = size > logic::STATUS_CELL;
+                        let detail = size / logic::STATUS_CELL;
                         let scale = frame.layout_scale;
                         let mut color = if low { RED } else { p.text };
                         let off = i == 2 && radios.wifi.as_ref().is_some_and(|w| !w.on)
@@ -845,13 +854,13 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
                         text(
                             rt,
                             brush,
-                            &formats.matrix,
+                            if full { &formats.status_icon } else { &formats.matrix },
                             glyph,
                             rect(
                                 left + x * scale,
                                 y * scale,
-                                left + (x + logic::STATUS_CELL) * scale,
-                                (y + logic::STATUS_CELL) * scale,
+                                left + (x + size) * scale,
+                                (y + size) * scale,
                             ),
                         );
                         {
@@ -859,12 +868,12 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
                                 use windows_numerics::Vector2;
                                 rt.DrawLine(
                                     Vector2 {
-                                        X: left + (x + 4.0) * scale,
-                                        Y: (y + 16.0) * scale,
+                                        X: left + (x + 4.0 * detail) * scale,
+                                        Y: (y + 16.0 * detail) * scale,
                                     },
                                     Vector2 {
-                                        X: left + (x + 16.0) * scale,
-                                        Y: (y + 4.0) * scale,
+                                        X: left + (x + 16.0 * detail) * scale,
+                                        Y: (y + 4.0 * detail) * scale,
                                     },
                                     brush,
                                     scale,
@@ -877,10 +886,10 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
                                     &formats.badge,
                                     "\u{E73E}",
                                     rect(
-                                        left + (x + 12.0) * scale,
-                                        (y + 12.0) * scale,
-                                        left + (x + 20.0) * scale,
-                                        (y + 20.0) * scale,
+                                        left + (x + 12.0 * detail) * scale,
+                                        (y + 12.0 * detail) * scale,
+                                        left + (x + 20.0 * detail) * scale,
+                                        (y + 20.0 * detail) * scale,
                                     ),
                                 );
                             }
