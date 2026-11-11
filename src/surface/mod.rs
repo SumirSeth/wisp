@@ -10,6 +10,7 @@
 //! in `%APPDATA%\wisp\surfaces`.
 
 pub mod nav;
+pub mod radios;
 
 use std::path::PathBuf;
 
@@ -19,7 +20,9 @@ use crate::commands::{Command, State, glyph, media, time};
 use crate::search::{Action, Kind, ResultItem};
 use crate::util;
 
-const BUILT_IN: [(&str, &str); 2] = [
+const BUILT_IN: [(&str, &str); 4] = [
+    ("wifi.toml", include_str!("wifi.toml")),
+    ("bluetooth.toml", include_str!("bluetooth.toml")),
     ("now.toml", include_str!("now.toml")),
     ("sound.toml", include_str!("sound.toml")),
 ];
@@ -50,6 +53,8 @@ pub enum Part {
         city: Option<String>,
     },
     Battery,
+    Networks,
+    Devices,
     Wifi,
     Bluetooth,
     /// The default output device's volume.
@@ -352,6 +357,7 @@ fn checking(label: &str, glyph: &'static str) -> Widget {
 
 fn widgets(part: &Part, state: &State) -> Vec<Widget> {
     match part {
+        Part::Networks | Part::Devices => Vec::new(),
         Part::Clock { city } => clock(city.as_deref()),
         Part::Battery => match state.battery {
             None => vec![checking("Battery", BATTERY)],
@@ -385,9 +391,8 @@ fn widgets(part: &Part, state: &State) -> Vec<Widget> {
                     "Wi-Fi",
                     detail,
                     glyph::WIFI,
-                    Input::Toggle {
-                        on: wifi.on,
-                        command: Command::WifiPower(!wifi.on),
+                    Input::Link {
+                        action: Action::Command(Command::RadioView(true)),
                     },
                 )]
             }
@@ -406,9 +411,8 @@ fn widgets(part: &Part, state: &State) -> Vec<Widget> {
                     "Bluetooth",
                     detail,
                     glyph::BLUETOOTH,
-                    Input::Toggle {
-                        on: bluetooth.on,
-                        command: Command::BluetoothPower(!bluetooth.on),
+                    Input::Link {
+                        action: Action::Command(Command::RadioView(false)),
                     },
                 )]
             }

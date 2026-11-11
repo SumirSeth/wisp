@@ -1,0 +1,6 @@
+title = "Wi-Fi"
+description = "Nearby networks and Wi-Fi power"
+keywords = ["wifi", "wi-fi", "network", "wireless", "wlan"]
+
+[[part]]
+kind = "networks"

@@ -8,6 +8,7 @@
 pub mod audio;
 pub mod battery;
 pub mod bluetooth;
+pub mod bluetooth_audio;
 pub mod media;
 pub mod open_windows;
 pub mod power;
@@ -70,6 +71,9 @@ pub mod glyph {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
+    /// Surface navigation and selection, handled by the launcher.
+    RadioView(bool),
+    RadioSelect(String),
     WifiPower(bool),
     WifiConnect(String),
     BluetoothPower(bool),
@@ -215,7 +219,7 @@ fn worker(requests: Receiver<Request>, events: Sender<Event>, icon_size: i32, no
                         Command::FocusWindow(hwnd) => open_windows::focus(*hwnd),
                         Command::CloseWindow(hwnd) => open_windows::close(*hwnd),
                         Command::Power(power) => power::run(*power),
-                        Command::Quit => Ok(()),
+                        Command::Quit | Command::RadioView(_) | Command::RadioSelect(_) => Ok(()),
                     };
                     if let Err(error) = result {
                         send(Event::Failed(error));
@@ -826,6 +830,10 @@ fn output_items(outputs: Result<Vec<audio::Output>, String>) -> Vec<ResultItem> 
             })
             .collect(),
     }
+}
+
+pub fn radio_on_bluetooth() -> bool {
+    radio::is_on(windows::Devices::Radios::RadioKind::Bluetooth).unwrap_or(false)
 }
 
 #[cfg(test)]

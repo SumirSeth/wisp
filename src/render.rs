@@ -1048,7 +1048,7 @@ unsafe fn draw_surface(
                         rt,
                         &widget.label,
                         &fm.title,
-                        rect(text_x, top + 13.0, right - 12.0, top + 33.0),
+                        rect(text_x, top + 13.0, right - 32.0, top + 33.0),
                         brush,
                     );
                     brush.SetColor(&p.subtext);
@@ -1056,7 +1056,15 @@ unsafe fn draw_surface(
                         rt,
                         &widget.detail,
                         &fm.subtitle,
-                        rect(text_x, top + 35.0, right - 12.0, top + 53.0),
+                        rect(text_x, top + 35.0, right - 32.0, top + 53.0),
+                        brush,
+                    );
+                    brush.SetColor(&p.subtext);
+                    draw_text(
+                        rt,
+                        "\u{E76C}",
+                        &fm.glyph,
+                        rect(right - 28.0, top + 22.0, right - 12.0, top + 42.0),
                         brush,
                     );
                 }

@@ -16,6 +16,14 @@ pub fn is_on(kind: RadioKind) -> Option<bool> {
 
 /// `name` is the radio's name in error messages, such as "Wi-Fi".
 pub fn set(kind: RadioKind, name: &str, on: bool) -> Result<(), String> {
+    let access = Radio::RequestAccessAsync()
+        .and_then(|op| op.join())
+        .map_err(|e| e.message())?;
+    if access != RadioAccessStatus::Allowed {
+        return Err(format!(
+            "Windows did not allow Wisp to change {name}. Check Settings > Privacy & security > Radios."
+        ));
+    }
     let radio = find(kind)
         .map_err(|error| error.message())?
         .ok_or_else(|| format!("This PC has no {name} adapter."))?;

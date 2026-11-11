@@ -1,0 +1,6 @@
+title = "Bluetooth"
+description = "Paired devices and Bluetooth power"
+keywords = ["bluetooth", "devices", "bt"]
+
+[[part]]
+kind = "devices"

@@ -118,6 +118,14 @@ Apps you opened recently rank higher. With the box empty, the launcher shows you
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> | Copy the path |
 | <kbd>Esc</kbd> | Close |
 
+### Now
+
+**Now** shows the time, battery, Wi-Fi, Bluetooth, volume and media. Click Wi-Fi or Bluetooth (or select a card with the arrow keys and press Enter) to open its list. Esc or Backspace on an empty filter returns to Now. Search `wifi`, `wi-fi`, `network` or `bluetooth` to open a panel directly.
+
+Wi-Fi lists nearby networks, connected first and then by signal, with a lock on secured networks. Select the current network to disconnect, or another to connect. New personal networks ask for a masked password in the row: Enter connects, Esc cancels. The switch controls Wi-Fi power. If nearby networks are unavailable, Wisp shows the current network and a link to Location settings. Enterprise and unsupported security types use Windows Wi-Fi settings.
+
+Bluetooth lists paired classic and LE devices, connected first, with battery levels where Windows provides them. Supported audio devices connect or disconnect through their audio driver. Other devices say that they open Bluetooth settings; **Add device** opens the same page. The switch controls Bluetooth power. Lists refresh on opening and at most every ten seconds while open, and stop refreshing when closed or hidden.
+
 ### Drag and drop
 
 Drag a result out of the launcher and drop it anywhere:

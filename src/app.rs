@@ -275,6 +275,7 @@ pub fn run() -> Result<()> {
             surfaces: Library::load(),
             surface_errors: Vec::new(),
             surface: None,
+            radios: surface::radios::Panel::default(),
             commands_sent: 0,
             taskbar: None,
             taskbar_failures: 0,
@@ -445,6 +446,7 @@ struct Launcher {
     /// Problems with the user's surface files that the user has been told about.
     surface_errors: Vec<String>,
     surface: Option<OpenSurface>,
+    radios: surface::radios::Panel,
     /// Commands sent to the worker. State read before the worker ran all of
     /// them would undo changes the launcher already shows.
     commands_sent: u64,
@@ -474,6 +476,7 @@ struct Morph {
 struct OpenSurface {
     /// Index into `Launcher::surfaces`.
     index: usize,
+    parent: Option<usize>,
     widgets: Vec<Widget>,
     rects: Vec<Rect>,
     focus: usize,
@@ -780,7 +783,14 @@ impl Launcher {
         self.commands.refresh();
         self.armed = None;
         self.leave_scope();
-        self.leave_surface();
+        self.radios.close();
+        if let Some(open) = self.surface.take() {
+            self.editor.select_all();
+            self.editor.insert(&open.query);
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), SURFACE_TIMER);
+            }
+        }
         self.load_surfaces();
         if self.last_scan.elapsed() > RESCAN_AFTER {
             self.indexer.rescan();
@@ -859,6 +869,7 @@ impl Launcher {
         }
         let opacity = self.morph_opacity();
         self.visible = false;
+        self.radios.close();
         if self.morphed && self.unified() && !self.taskbar.as_ref().is_some_and(TaskbarHider::is_peeking) {
             let to = self.dock.as_ref().unwrap().resting_rect();
             self.begin_morph(self.outline.unwrap_or_else(|| self.current_rect()), to, false, opacity);
@@ -1379,6 +1390,32 @@ impl Launcher {
     /// Toggles and adjustments stay open and show the new state. Other
     /// commands close the launcher. Commands that lose work need a second Enter.
     fn run_command(&mut self, command: Command) {
+        match &command {
+            Command::RadioView(wifi) => {
+                let title = if *wifi { "Wi-Fi" } else { "Bluetooth" };
+                if let Some(index) = self.surfaces.specs.iter().position(|s| s.title == title) {
+                    self.open_surface(index);
+                }
+                return;
+            }
+            Command::RadioSelect(id) => {
+                self.select_radio(id);
+                return;
+            }
+            Command::WifiPower(on) | Command::BluetoothPower(on) if self.radios.wifi.is_some() => {
+                if !self.radios.busy() {
+                    self.radios.password.fill(0);
+                    self.radios.password.clear();
+                    self.radios.phase = surface::radios::Phase::Pending("radio:power".into());
+                    self.radios
+                        .start(surface::radios::Job::Power(*on), self.hwnd, WM_APP_COMMANDS);
+                    self.update_surface();
+                }
+                return;
+            }
+            _ => {}
+        }
+
         if let Command::Power(power) = command
             && power.needs_confirmation()
             && self.armed.as_ref() != Some(&command)
@@ -1508,7 +1545,8 @@ impl Launcher {
     }
 
     fn drain_command_events(&mut self) {
-        let mut changed = false;
+        let mut changed = self.radios.wifi.is_some();
+        self.radios.take();
         while let Ok(event) = self.command_events.try_recv() {
             match event {
                 commands::Event::State(mut state, icons, ran) => {
@@ -1673,6 +1711,13 @@ impl Launcher {
     }
 
     fn on_char(&mut self, unit: u16) {
+        if matches!(self.radios.phase, surface::radios::Phase::Password(_)) {
+            if unit >= 32 && unit != 127 && self.radios.password.len() < 128 {
+                self.radios.password.push(unit);
+                self.update_surface();
+            }
+            return;
+        }
         // Space presses the focused widget, unless it is part of a filter.
         if unit == u16::from(b' ') && self.surface.is_some() && self.editor.text().is_empty() {
             self.activate_surface();
@@ -1887,15 +1932,33 @@ impl Launcher {
             return;
         }
         self.leave_scope();
+        let radio = self.surfaces.specs.get(index).and_then(|s| {
+            s.parts.iter().find_map(|p| match p {
+                surface::Part::Networks => Some(true),
+                surface::Part::Devices => Some(false),
+                _ => None,
+            })
+        });
+        let parent = radio.and_then(|_| self.surfaces.specs.iter().position(|s| s.title == "Now"));
+        let query = self
+            .surface
+            .as_ref()
+            .map(|s| s.query.clone())
+            .unwrap_or_else(|| self.editor.text().to_string());
+        self.radios.close();
+        if let Some(wifi) = radio {
+            self.radios.open(wifi, self.hwnd, WM_APP_COMMANDS);
+        }
         let rows_before = self.window_rows();
         self.surface = Some(OpenSurface {
             index,
+            parent,
             widgets: Vec::new(),
             rects: Vec::new(),
             focus: 0,
             stop: 0,
             scroll: 0.0,
-            query: self.editor.text().to_string(),
+            query,
         });
         self.editor.select_all();
         self.editor.insert("");
@@ -1904,7 +1967,9 @@ impl Launcher {
         if self.window_rows() != rows_before {
             self.apply_size();
         }
-        self.commands.refresh();
+        if radio.is_none() {
+            self.commands.refresh();
+        }
         unsafe {
             SetTimer(Some(self.hwnd), SURFACE_TIMER, SURFACE_REFRESH_MS, None);
         }
@@ -1916,6 +1981,13 @@ impl Launcher {
         let Some(open) = self.surface.take() else {
             return false;
         };
+        self.radios.close();
+        if let Some(parent) = open.parent {
+            self.editor.select_all();
+            self.editor.insert(&open.query);
+            self.open_surface(parent);
+            return true;
+        }
         unsafe {
             let _ = KillTimer(Some(self.hwnd), SURFACE_TIMER);
         }
@@ -1938,7 +2010,11 @@ impl Launcher {
             .widgets
             .get(open.focus)
             .map(|w| (w.id.clone(), w.command_at(open.stop).cloned()));
-        open.widgets = surface::resolve(spec, &self.command_state, self.editor.text());
+        open.widgets = if self.radios.wifi.is_some() {
+            self.radios.widgets(self.editor.text())
+        } else {
+            surface::resolve(spec, &self.command_state, self.editor.text())
+        };
         open.rects = nav::layout(&open.widgets, crate::render::surface_width());
         let same = focused
             .as_ref()
@@ -2008,6 +2084,57 @@ impl Launcher {
 
     /// Handles keys while a surface is open. Returns false for keys that edit the filter.
     fn on_surface_key(&mut self, vk: VIRTUAL_KEY, ctrl: bool, shift: bool) -> bool {
+        if let surface::radios::Phase::Password(name) = &self.radios.phase {
+            let name = name.clone();
+            match vk {
+                VK_ESCAPE => {
+                    self.radios.phase.cancel();
+                    self.radios.password.fill(0);
+                    self.radios.password.clear();
+                }
+                VK_BACK => {
+                    if let Some(last) = self.radios.password.pop()
+                        && (0xDC00..=0xDFFF).contains(&last)
+                    {
+                        self.radios.password.pop();
+                    }
+                }
+                VK_V if ctrl => {
+                    if let Some(text) = system::get_clipboard(self.hwnd) {
+                        self.radios.password.extend(
+                            text.chars()
+                                .filter(|c| !c.is_control())
+                                .collect::<String>()
+                                .encode_utf16()
+                                .take(128 - self.radios.password.len()),
+                        );
+                    }
+                }
+                VK_RETURN if !self.radios.password.is_empty() => {
+                    if let Some(mut network) = self
+                        .radios
+                        .networks
+                        .as_ref()
+                        .and_then(|n| n.list.iter().find(|n| n.name == name))
+                        .cloned()
+                    {
+                        network.profile = None;
+                        let password = String::from_utf16_lossy(&self.radios.password);
+                        self.radios.password.fill(0);
+                        self.radios.password.clear();
+                        self.radios.phase.submit(true);
+                        self.radios.start(
+                            surface::radios::Job::Network(network, Some(password)),
+                            self.hwnd,
+                            WM_APP_COMMANDS,
+                        );
+                    }
+                }
+                _ => {}
+            }
+            self.update_surface();
+            return true;
+        }
         let Some(open) = &self.surface else {
             return false;
         };
@@ -2086,6 +2213,38 @@ impl Launcher {
         }
     }
 
+    fn select_radio(&mut self, id: &str) {
+        use surface::radios::{Job, Phase};
+        if self.radios.busy() || matches!(self.radios.phase, Phase::Password(_)) {
+            return;
+        }
+        if self.radios.wifi == Some(true) {
+            let network = self
+                .radios
+                .networks
+                .as_ref()
+                .and_then(|n| n.list.iter().find(|n| n.name == id))
+                .cloned();
+            if let Some(network) = network
+                && self.radios.phase.select(&network)
+            {
+                self.radios
+                    .start(Job::Network(network, None), self.hwnd, WM_APP_COMMANDS);
+            }
+        } else if let Some(device) = self.radios.devices.iter().find(|d| d.id == id).cloned() {
+            if matches!(&self.radios.phase, Phase::Failed(failed, _) if failed == id) {
+                let _ = launch::open("ms-settings:bluetooth");
+            } else if let Some(endpoint) = device.audio_id {
+                self.radios.phase = Phase::Pending(device.id);
+                self.radios
+                    .start(Job::Audio(endpoint, !device.connected), self.hwnd, WM_APP_COMMANDS);
+            } else {
+                let _ = launch::open("ms-settings:bluetooth");
+            }
+        }
+        self.update_surface();
+    }
+
     /// Converts window pixels to DIPs relative to the surface's top-left corner.
     fn surface_point(&self, x: i32, y: i32) -> Option<(f32, f32)> {
         let open = self.surface.as_ref()?;
@@ -2146,7 +2305,14 @@ impl Launcher {
 
     fn surface_tick(&mut self) {
         if self.visible && self.surface.is_some() {
-            self.commands.refresh();
+            if self.radios.wifi.is_some() {
+                self.radios.take();
+                if !matches!(self.radios.phase, surface::radios::Phase::Password(_)) {
+                    self.radios.refresh(self.hwnd, WM_APP_COMMANDS);
+                }
+            } else {
+                self.commands.refresh();
+            }
             // The clock changes without new state.
             self.update_surface();
         }
