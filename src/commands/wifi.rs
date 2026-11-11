@@ -87,7 +87,7 @@ fn read_networks(scan: bool) -> Result<Networks, String> {
         return Err(windows::core::Error::from_hresult(windows::core::HRESULT::from_win32(code)).message());
     }
     match client.available(&interface) {
-        Ok(list) if code == 0 && !list.is_empty() => Ok(Networks {
+        Ok(list) if code == 0 => Ok(Networks {
             list,
             location_off: false,
         }),

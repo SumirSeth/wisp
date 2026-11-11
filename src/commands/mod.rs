@@ -12,7 +12,7 @@ pub mod bluetooth_audio;
 pub mod media;
 pub mod open_windows;
 pub mod power;
-mod radio;
+pub(crate) mod radio;
 pub mod settings;
 pub mod time;
 pub mod wifi;

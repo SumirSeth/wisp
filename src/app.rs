@@ -141,6 +141,7 @@ pub fn run() -> Result<()> {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let _ole = drag::Ole::new()?;
+        let _radio_runtime = commands::radio::UiRuntime::new()?;
 
         // The mutex limits Wisp to one running instance.
         let _mutex = CreateMutexW(None, true, crate::channel::INSTANCE_MUTEX)?;
@@ -1403,14 +1404,8 @@ impl Launcher {
                 return;
             }
             Command::WifiPower(on) | Command::BluetoothPower(on) if self.radios.wifi.is_some() => {
-                if !self.radios.busy() {
-                    self.radios.password.fill(0);
-                    self.radios.password.clear();
-                    self.radios.phase = surface::radios::Phase::Pending("radio:power".into());
-                    self.radios
-                        .start(surface::radios::Job::Power(*on), self.hwnd, WM_APP_COMMANDS);
-                    self.update_surface();
-                }
+                self.radios.request_power(*on, self.hwnd, WM_APP_COMMANDS);
+                self.update_surface();
                 return;
             }
             _ => {}
@@ -2307,9 +2302,7 @@ impl Launcher {
         if self.visible && self.surface.is_some() {
             if self.radios.wifi.is_some() {
                 self.radios.take();
-                if !matches!(self.radios.phase, surface::radios::Phase::Password(_)) {
-                    self.radios.refresh(self.hwnd, WM_APP_COMMANDS);
-                }
+                self.radios.refresh(self.hwnd, WM_APP_COMMANDS);
             } else {
                 self.commands.refresh();
             }
@@ -2590,6 +2583,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             return LRESULT(0);
         }
         WM_KEYDOWN | WM_SYSKEYDOWN => {
+            // Holding Enter must not toggle a radio again after its worker finishes.
+            if wparam.0 == VK_RETURN.0 as usize
+                && lparam.0 & (1 << 30) != 0
+                && with_launcher(|l| l.radios.wifi.is_some()) == Some(true)
+            {
+                return LRESULT(0);
+            }
             if with_launcher(|l| l.on_key(VIRTUAL_KEY(wparam.0 as u16))) == Some(true) {
                 return LRESULT(0);
             }

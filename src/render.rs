@@ -802,15 +802,134 @@ unsafe fn draw_surface(
             let focused = index == s.focus;
             let tile = d2d(r, ox, dy);
             let (left, top, right) = (tile.left, tile.top, tile.right);
-            brush.SetColor(if focused { &p.row_selected } else { &p.tile });
-            rt.FillRoundedRectangle(&rounded(tile, 8.0), brush);
-            if focused {
+            if focused || !widget.quiet {
+                brush.SetColor(if focused { &p.row_selected } else { &p.tile });
+                rt.FillRoundedRectangle(&rounded(tile, 8.0), brush);
+            }
+            if focused && !widget.quiet {
                 rt.DrawRoundedRectangle(
                     &rounded(rect(left + 0.75, top + 0.75, right - 0.75, tile.bottom - 0.75), 7.5),
                     accent,
                     1.5,
                     None,
                 );
+            }
+            if widget.quiet
+                && matches!(
+                    widget.input,
+                    Input::Info { .. } | Input::Link { .. } | Input::Toggle { .. }
+                )
+            {
+                let end = right - 12.0;
+                if widget.footer {
+                    brush.SetColor(&p.subtext);
+                    draw_text(
+                        rt,
+                        &widget.label,
+                        &fm.title,
+                        rect(left + 12.0, top + 11.0, end, top + 33.0),
+                        brush,
+                    );
+                    if !widget.detail.is_empty() {
+                        draw_text(
+                            rt,
+                            &widget.detail,
+                            &fm.subtitle,
+                            rect(left + 12.0, top + 35.0, end, top + 57.0),
+                            brush,
+                        );
+                    }
+                    continue;
+                }
+                let label_end = left + r.w * 0.48;
+                brush.SetColor(&p.text);
+                draw_text(
+                    rt,
+                    &widget.label,
+                    &fm.title,
+                    rect(left + 12.0, top + 11.0, label_end, top + 33.0),
+                    brush,
+                );
+                brush.SetColor(&p.subtext);
+                match &widget.input {
+                    Input::Toggle { on, .. } => {
+                        draw_text(
+                            rt,
+                            &widget.detail,
+                            &fm.hint,
+                            rect(label_end, top + 11.0, end - 48.0, top + 33.0),
+                            brush,
+                        );
+                        let pill = rect(end - 36.0, top + 13.0, end, top + 31.0);
+                        brush.SetColor(if *on { &p.text } else { &p.scrollbar });
+                        rt.FillRoundedRectangle(&rounded(pill, 9.0), brush);
+                        brush.SetColor(if *on { &p.background_solid } else { &p.text });
+                        rt.FillEllipse(
+                            &D2D1_ELLIPSE {
+                                point: Vector2 {
+                                    X: if *on { end - 9.0 } else { end - 27.0 },
+                                    Y: top + 22.0,
+                                },
+                                radiusX: 6.0,
+                                radiusY: 6.0,
+                            },
+                            brush,
+                        );
+                        brush.SetColor(&p.divider);
+                        rt.FillRectangle(&rect(left + 12.0, tile.bottom - 1.0, end, tile.bottom), brush);
+                    }
+                    Input::Info { value } => {
+                        let detail = if widget.detail.is_empty() {
+                            value.clone()
+                        } else {
+                            format!("{} \u{b7} {value}", widget.detail)
+                        };
+                        draw_text(
+                            rt,
+                            &detail,
+                            &fm.hint,
+                            rect(label_end, top + 11.0, end, top + 33.0),
+                            brush,
+                        );
+                    }
+                    Input::Link { action } => {
+                        let opens_view = matches!(
+                            action,
+                            crate::search::Action::Command(crate::commands::Command::RadioView(_))
+                        );
+                        let detail = if opens_view {
+                            format!("{}  \u{203a}", widget.detail)
+                        } else {
+                            widget.detail.clone()
+                        };
+                        draw_text(
+                            rt,
+                            &detail,
+                            &fm.hint,
+                            rect(label_end, top + 11.0, end, top + 33.0),
+                            brush,
+                        );
+                    }
+                    _ => {}
+                }
+                if let Some(password) = &widget.editor {
+                    brush.SetColor(&p.divider);
+                    rt.DrawRoundedRectangle(
+                        &rounded(rect(left + 12.0, top + 45.0, end, top + 81.0), 6.0),
+                        brush,
+                        1.0,
+                        None,
+                    );
+                    brush.SetColor(&p.subtext);
+                    draw_text(
+                        rt,
+                        password,
+                        &fm.subtitle,
+                        rect(left + 22.0, top + 51.0, end - 10.0, top + 75.0),
+                        brush,
+                    );
+                }
+                continue;
             }
 
             // The icon or glyph, then the label and detail.

@@ -132,6 +132,9 @@ pub struct Widget {
     /// Takes the surface's full width instead of half.
     pub wide: bool,
     pub input: Input,
+    pub quiet: bool,
+    pub footer: bool,
+    pub editor: Option<String>,
 }
 
 impl Widget {
@@ -148,6 +151,9 @@ impl Widget {
             icon: None,
             wide,
             input,
+            quiet: false,
+            footer: false,
+            editor: None,
         }
     }
 
@@ -302,6 +308,10 @@ pub fn resolve(spec: &Spec, state: &State, filter: &str) -> Vec<Widget> {
         .enumerate()
         .flat_map(|(index, part)| {
             widgets(part, state).into_iter().map(move |mut widget| {
+                if spec.title == "Now" {
+                    widget.quiet = true;
+                    widget.wide = true;
+                }
                 widget.id = match widget.input {
                     Input::Slider {
                         target: Target::App(pid),

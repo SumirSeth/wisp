@@ -120,11 +120,11 @@ Apps you opened recently rank higher. With the box empty, the launcher shows you
 
 ### Now
 
-**Now** shows the time, battery, Wi-Fi, Bluetooth, volume and media. Click Wi-Fi or Bluetooth (or select a card with the arrow keys and press Enter) to open its list. Esc or Backspace on an empty filter returns to Now. Search `wifi`, `wi-fi`, `network` or `bluetooth` to open a panel directly.
+**Now** shows the time, battery, Wi-Fi, Bluetooth, volume and media. Click Wi-Fi or Bluetooth (or select a row with the arrow keys and press Enter) to open its list. Esc or Backspace on an empty filter returns to Now. Search `wifi`, `wi-fi`, `network` or `bluetooth` to open a panel directly.
 
-Wi-Fi lists nearby networks, connected first and then by signal, with a lock on secured networks. Select the current network to disconnect, or another to connect. New personal networks ask for a masked password in the row: Enter connects, Esc cancels. The switch controls Wi-Fi power. If nearby networks are unavailable, Wisp shows the current network and a link to Location settings. Enterprise and unsupported security types use Windows Wi-Fi settings.
+Wi-Fi lists nearby networks, connected first and then by signal, with a lock on secured networks. Select the current network to disconnect, or another to connect. New personal networks ask for a masked password field below the row: Enter connects, Esc cancels. The header switch is the first keyboard focus target in both radio views: press Enter to toggle, Down to enter the list, and Up to return to the header (Tab also cycles controls). It shows the target immediately with "Changing..." until Windows confirms it; a failure restores the actual state and shows an error. If nearby networks are unavailable, Wisp shows the current network and a link to Location settings. Enterprise and unsupported security types use Windows Wi-Fi settings.
 
-Bluetooth lists paired classic and LE devices, connected first, with battery levels where Windows provides them. Supported audio devices connect or disconnect through their audio driver. Other devices say that they open Bluetooth settings; **Add device** opens the same page. The switch controls Bluetooth power. Lists refresh on opening and at most every ten seconds while open, and stop refreshing when closed or hidden.
+Bluetooth lists paired classic and LE devices, connected first, with battery levels where Windows provides them. Supported audio devices connect or disconnect through their audio driver. Other devices say that they open Bluetooth settings; **Add device** opens the same page. The switch controls Bluetooth power. Radio state refreshes about every two seconds while open, including changes made in Windows quick settings. Wi-Fi scans run on opening, after turning on, and at most every ten seconds while open and on. Refreshes stop when closed or hidden.
 
 ### Drag and drop
 

@@ -28,6 +28,17 @@ impl Rect {
 }
 
 pub fn height(widget: &Widget, width: f32) -> f32 {
+    if widget.quiet {
+        return if widget.footer && !widget.detail.is_empty() {
+            64.0
+        } else if widget.editor.is_some() {
+            88.0
+        } else if matches!(widget.input, Input::Slider { .. } | Input::Buttons { .. }) {
+            64.0
+        } else {
+            44.0
+        };
+    }
     match &widget.input {
         Input::Slider { .. } => 56.0,
         Input::Choice { options, .. } => {
@@ -170,6 +181,9 @@ mod tests {
     fn tile(label: &str) -> Widget {
         Widget {
             id: label.into(),
+            quiet: false,
+            footer: false,
+            editor: None,
             label: label.into(),
             detail: String::new(),
             glyph: "",

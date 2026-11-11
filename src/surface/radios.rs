@@ -79,6 +79,12 @@ pub struct Panel {
     active: Arc<AtomicBool>,
     last: Option<Instant>,
     pub error: Option<String>,
+    power: Option<bool>,
+    queued_power: Option<bool>,
+    last_scan: Option<Instant>,
+    confirmed_on: bool,
+    read: bool,
+    access: Option<crate::commands::radio::Access>,
 }
 struct Reading {
     on: bool,
@@ -88,7 +94,8 @@ struct Reading {
 }
 pub enum Job {
     Scan,
-    Power(bool),
+    Read,
+    Power(bool, crate::commands::radio::Access),
     Network(wifi::Network, Option<String>),
     Audio(String, bool),
 }
@@ -102,19 +109,60 @@ impl Panel {
         self.password.clear();
         self.phase = Phase::Idle;
         self.last = None;
+        self.power = None;
+        self.access = None;
+        self.queued_power = None;
+        self.last_scan = None;
     }
     pub fn open(&mut self, wifi: bool, hwnd: HWND, message: u32) {
         self.close();
         self.wifi = Some(wifi);
         self.on = false;
+        self.confirmed_on = false;
+        self.read = false;
         self.networks = None;
         self.devices.clear();
         self.error = None;
         self.start(Job::Scan, hwnd, message);
     }
+    pub fn request_power(&mut self, on: bool, hwnd: HWND, message: u32) {
+        // Queue behind an in-flight read; its stale snapshot must not undo the target.
+        if self.power.is_some() {
+            return;
+        }
+        // Initiate consent on the foreground UI thread; only the worker waits.
+        let access = match crate::commands::radio::request_access() {
+            Ok(access) => access,
+            Err(error) => {
+                self.error = Some(error);
+                return;
+            }
+        };
+        self.access = Some(access);
+        self.power = Some(on);
+        self.queued_power = Some(on);
+        self.on = on;
+        self.error = None;
+        self.password.fill(0);
+        self.password.clear();
+        self.phase = Phase::Idle;
+        if !on {
+            self.networks = None;
+            self.devices.clear();
+        }
+        self.refresh(hwnd, message);
+    }
     pub fn refresh(&mut self, hwnd: HWND, message: u32) {
-        if self.wifi.is_some() && self.last.is_none_or(|t| t.elapsed() >= Duration::from_secs(10)) {
-            self.start(Job::Scan, hwnd, message);
+        if self.pending.is_some() {
+            return;
+        }
+        if let Some(on) = self.queued_power.take() {
+            if let Some(access) = self.access.take() {
+                self.start(Job::Power(on, access), hwnd, message);
+            }
+        } else if self.wifi.is_some() && self.last.is_none_or(|t| t.elapsed() >= Duration::from_secs(2)) {
+            let scan = self.last_scan.is_none_or(|t| t.elapsed() >= Duration::from_secs(10));
+            self.start(if scan { Job::Scan } else { Job::Read }, hwnd, message);
         }
     }
     pub fn start(&mut self, job: Job, hwnd: HWND, message: u32) {
@@ -122,10 +170,14 @@ impl Panel {
             return;
         }
         let Some(wifi_view) = self.wifi else { return };
+        if matches!(job, Job::Scan | Job::Power(true, _)) {
+            self.last_scan = Some(Instant::now());
+        }
         let (tx, rx) = mpsc::channel();
         self.active = Arc::new(AtomicBool::new(true));
         let active = self.active.clone();
         let window = hwnd.0 as usize;
+        let was_on = self.confirmed_on;
         self.pending = Some(rx);
         self.last = Some(Instant::now());
         let spawn = std::thread::Builder::new().name("now-radios".into()).spawn(move || {
@@ -140,15 +192,21 @@ impl Panel {
                 result: Err("Windows could not read the radio.".into()),
             };
             if initialized {
-                let scan = matches!(&job, Job::Scan);
+                let scan = matches!(&job, Job::Scan | Job::Power(true, _)) || !was_on;
                 reading.result = match job {
-                    Job::Scan => Ok(()),
-                    Job::Power(on) => {
-                        if wifi_view {
-                            wifi::set_power(on)
-                        } else {
-                            bluetooth::set_power(on)
-                        }
+                    Job::Scan | Job::Read => Ok(()),
+                    Job::Power(on, access) => {
+                        use windows::Devices::Radios::RadioKind;
+                        crate::commands::radio::set_with_access(
+                            if wifi_view {
+                                RadioKind::WiFi
+                            } else {
+                                RadioKind::Bluetooth
+                            },
+                            if wifi_view { "Wi-Fi" } else { "Bluetooth" },
+                            on,
+                            access,
+                        )
                     }
                     Job::Network(network, mut password) => {
                         let result = if network.connected {
@@ -198,7 +256,14 @@ impl Panel {
             self.pending = None;
             self.error = Some("Could not start the radio worker.".into());
             self.phase = Phase::Idle;
+            self.fail_power();
         }
+    }
+    fn fail_power(&mut self) {
+        self.power = None;
+        self.access = None;
+        self.queued_power = None;
+        self.on = self.confirmed_on;
     }
     pub fn take(&mut self) {
         let Some(rx) = &self.pending else { return };
@@ -206,9 +271,11 @@ impl Panel {
             Ok(reading) => reading,
             Err(mpsc::TryRecvError::Empty) => {
                 if self.last.is_some_and(|t| t.elapsed() > Duration::from_secs(30)) {
-                    self.error =
-                        Some("Windows is taking longer than usual. Close and reopen this view to try again.".into());
+                    self.error = Some("Windows did not respond. Reopen this view to retry.".into());
                     self.phase.finish(Some("Windows did not respond in time."));
+                    if self.power.is_some() {
+                        self.on = self.confirmed_on;
+                    }
                 }
                 return;
             }
@@ -216,12 +283,24 @@ impl Panel {
                 self.pending = None;
                 self.phase = Phase::Idle;
                 self.error = Some("Radio worker stopped. Try again.".into());
+                self.fail_power();
                 return;
             }
         };
         self.pending = None;
         self.last = Some(Instant::now());
+        self.confirmed_on = reading.on;
+        self.read = true;
+        if self.queued_power.is_some() {
+            return;
+        }
+        self.power = None;
         self.on = reading.on;
+        if !self.on {
+            self.phase = Phase::Idle;
+            self.password.fill(0);
+            self.password.clear();
+        }
         self.networks = reading.networks;
         self.devices = reading.devices;
         match reading.result {
@@ -244,7 +323,9 @@ impl Panel {
         let glyph = if wifi_view { glyph::WIFI } else { glyph::BLUETOOTH };
         let mut widgets = vec![Widget::new(
             title,
-            if self.busy() {
+            if self.power.is_some() {
+                "Changing\u{2026}"
+            } else if !self.read {
                 "Checking…"
             } else if self.on {
                 "On"
@@ -272,10 +353,7 @@ impl Panel {
                         None => "",
                     };
                     let state = match &self.phase {
-                        Phase::Password(id) if id == &n.name => format!(
-                            "Password: {}  ·  Enter to connect · Esc to cancel",
-                            "•".repeat(self.password.len())
-                        ),
+                        Phase::Password(id) if id == &n.name => String::new(),
                         Phase::Pending(id) if id == &n.name => {
                             if n.connected {
                                 "Disconnecting…".into()
@@ -297,8 +375,8 @@ impl Panel {
                 }
                 if networks.location_off {
                     widgets.push(link(
-                        "Location settings",
-                        "Nearby networks unavailable. Location access may be off.",
+                        "Location is off \u{b7} Turn on",
+                        "",
                         "ms-settings:privacy-location",
                     ));
                 } else if networks.list.is_empty() {
@@ -364,10 +442,17 @@ impl Panel {
             ));
         }
         if !wifi_view {
-            widgets.push(link("Add device", "Open Bluetooth settings", "ms-settings:bluetooth"));
+            widgets.push(link("Add device", "", "ms-settings:bluetooth"));
         }
         for (i, widget) in widgets.iter_mut().enumerate() {
             widget.wide = true;
+            widget.quiet = true;
+            if matches!(&self.phase, Phase::Password(name) if name == &widget.label) {
+                widget.editor = Some(format!(
+                    "Password  {}  \u{b7}  Enter to connect \u{b7} Esc to cancel",
+                    "\u{2022}".repeat(self.password.len())
+                ));
+            }
             widget.id = if i == 0 {
                 "radio:power".into()
             } else {
@@ -395,18 +480,21 @@ fn row(label: &str, detail: String, glyph: &'static str, command: Command) -> Wi
     )
 }
 fn link(label: &str, detail: &str, target: &str) -> Widget {
-    Widget::new(
+    let mut widget = Widget::new(
         label,
         detail,
         glyph::OPEN,
         Input::Link {
             action: Action::Open(target.into()),
         },
-    )
+    );
+    widget.footer = true;
+    widget
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default)]
     use super::*;
     fn network() -> wifi::Network {
         wifi::Network {
@@ -416,6 +504,62 @@ mod tests {
             secured: true,
             signal: Some(80),
         }
+    }
+    fn deliver(panel: &mut Panel, on: bool, result: Result<(), String>) {
+        let (tx, rx) = mpsc::channel();
+        panel.pending = Some(rx);
+        tx.send(Reading {
+            on,
+            networks: None,
+            devices: Vec::new(),
+            result,
+        })
+        .unwrap();
+        panel.take();
+    }
+    #[test]
+    fn both_headers_are_first_focus_target_and_keep_target_while_pending() {
+        for wifi in [true, false] {
+            let mut panel = Panel::default();
+            panel.wifi = Some(wifi);
+            panel.on = true;
+            panel.power = Some(true);
+            let widgets = panel.widgets("unmatched filter");
+            assert_eq!(super::super::first_control(&widgets), 0);
+            assert_eq!(widgets[0].id, "radio:power");
+            assert!(widgets[0].quiet && widgets[0].wide);
+            assert_eq!(widgets[0].detail, "Changing\u{2026}");
+            assert!(matches!(widgets[0].input, Input::Toggle { on: true, .. }));
+            assert_eq!(super::super::nav::layout(&widgets, 664.0)[0].h, 44.0);
+        }
+    }
+    #[test]
+    fn stale_read_keeps_target_until_power_finishes() {
+        let mut panel = Panel::default();
+        panel.on = true;
+        panel.power = Some(true);
+        panel.queued_power = Some(true);
+        deliver(&mut panel, false, Ok(()));
+        assert!(panel.on);
+        assert_eq!(panel.power, Some(true));
+        panel.queued_power = None;
+        deliver(&mut panel, true, Ok(()));
+        assert!(panel.on);
+        assert_eq!(panel.power, None);
+    }
+    #[test]
+    fn failed_power_reconciles_and_external_off_clears_credentials() {
+        let mut panel = Panel::default();
+        panel.on = true;
+        panel.power = Some(true);
+        deliver(&mut panel, false, Err("Denied".into()));
+        assert!(!panel.on);
+        assert_eq!(panel.error.as_deref(), Some("Denied"));
+        panel.phase = Phase::Password("Home".into());
+        panel.password = vec![65];
+        deliver(&mut panel, false, Ok(()));
+        assert!(panel.password.is_empty());
+        assert_eq!(panel.phase, Phase::Idle);
     }
     #[test]
     fn new_secured_network_requires_password_and_pending_blocks_selection() {
@@ -473,10 +617,16 @@ mod tests {
             active: Arc::default(),
             last: None,
             error: None,
+            power: None,
+            queued_power: None,
+            last_scan: None,
+            confirmed_on: false,
+            read: false,
+            access: None,
         };
         let rows = panel.widgets("");
-        assert!(rows[1].detail.contains("••••••"));
-        assert!(!rows[1].detail.contains("secret"));
+        assert!(rows[1].editor.as_ref().unwrap().contains("••••••"));
+        assert!(!rows[1].editor.as_ref().unwrap().contains("secret"));
         panel.close();
         assert!(panel.password.is_empty());
         assert_eq!(panel.phase, Phase::Idle);
