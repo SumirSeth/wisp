@@ -398,6 +398,8 @@ fn profile_xml(name: &str, password: Option<&str>, auth: &str) -> String {
 }
 
 pub fn join(network: &Network, password: Option<&str>) -> Result<(), String> {
+    // A profile Wisp creates for this attempt, removed again if it doesn't connect.
+    let mut created = None;
     if let Some(profile) = &network.profile {
         connect(profile)?;
     } else {
@@ -441,7 +443,11 @@ pub fn join(network: &Network, password: Option<&str>) -> Result<(), String> {
                 &mut reason,
             )
         })?;
-        connect(&network.name)?;
+        created = Some((client, interface));
+        if let Err(error) = connect(&network.name) {
+            forget(created, &network.name);
+            return Err(error);
+        }
     }
     // WlanConnect accepts a request; confirm association rather than claiming success.
     for _ in 0..24 {
@@ -450,7 +456,17 @@ pub fn join(network: &Network, password: Option<&str>) -> Result<(), String> {
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
+    // A wrong password must not stay saved, or the next attempt would skip asking for it.
+    forget(created, &network.name);
     Err("Could not connect. Check the password and try again.".into())
+}
+
+fn forget(created: Option<(Client, GUID)>, name: &str) {
+    if let Some((client, interface)) = created {
+        unsafe {
+            WlanDeleteProfile(client.0, &interface, &HSTRING::from(name), None);
+        }
+    }
 }
 
 #[cfg(test)]
