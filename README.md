@@ -64,14 +64,14 @@ The dock appears when the pointer touches the bottom edge of a screen, and hides
 | Right-click **⌄** | Show the taskbar, or open taskbar settings |
 | Click the status group or an own status icon | Open Now |
 | Hover the status group or an own status icon | See details for its items |
-| Scroll over the status group or sound icon | Change the volume by 2% a notch |
+| Scroll over the status group containing sound, or the sound own icon | Change the volume by 2% a notch |
 | Right-click the status group | Open sound settings if grouped, otherwise the first grouped item's settings |
 | Right-click an own status icon | Open its Windows settings page |
 | Click the clock | Open notifications and the calendar |
 | Scroll anywhere else | Switch virtual desktops |
 | <kbd>Shift</kbd>+scroll | Scroll through the apps |
 
-Choose **In group**, **Own icon** or **Hidden** for each status item in Settings, under Dock, in Status. Three grouped items keep their home cells; two sit side by side; one uses a full-size glyph. Own icons open Now, show their own tooltip and open their Windows settings page on right-click. Scroll sound to change volume. Drag own icons like the clock.
+Choose **In group**, **Own icon** or **Hidden** for each status item in Settings, under Dock, in Status. Three grouped items keep their home cells; two sit side by side; one uses a full-size glyph. Own icons show volume and battery percentages beneath their glyphs. Wi-Fi shows signal strength and Bluetooth marks connected devices; their full details appear in tooltips. Own icons open Now, show their own tooltip and open their Windows settings page on right-click. Scroll sound to change volume. Drag own icons like the clock.
 
 Tray icons keep their usual clicks; drag their chevron or the gap beside them to move the tray block. All app icons stay together when sections move. The section order is saved in `dock_order` in config.toml.
 

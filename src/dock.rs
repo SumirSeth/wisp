@@ -140,6 +140,7 @@ struct State {
     status: status::Status,
     status_placement: logic::StatusPlacement,
     radios: status::Radios,
+    percent_width: f32,
     radio_worker: status::RadioWorker,
     hover_part: Option<logic::Part>,
     /// The pointer touched the bottom edge, so the dock slid in.
@@ -262,6 +263,7 @@ impl Dock {
                 icons: [false; 4],
             },
             radios: status::Radios::default(),
+            percent_width: 28.0,
             radio_worker: status::RadioWorker::default(),
             hover_part: None,
             revealed: false,
@@ -988,6 +990,7 @@ impl State {
             },
             order: self.order,
             status: self.status_placement,
+            percent_width: self.percent_width,
             tray: self.tray_host.as_ref().map(|_| self.inline.len()),
         }
     }
@@ -1293,6 +1296,10 @@ impl State {
         if self.suspended {
             return;
         }
+        match self.renderer.percent_width(logic::layout_scale(self.app_icon_size)) {
+            Ok(width) => self.percent_width = width,
+            Err(error) => eprintln!("Dock percentage width: {error}"),
+        }
         unsafe {
             // The dock appears on the screen whose bottom edge the pointer
             // touched, or stays on the primary screen.
@@ -1418,7 +1425,7 @@ impl State {
         Some(RECT {
             left: x(left),
             top,
-            right: x(left + part.width_scaled(layout_scale)),
+            right: x(left + self.row_layout().part_width(part, layout_scale)),
             bottom: top + px(height),
         })
     }
@@ -2064,15 +2071,9 @@ impl State {
         }
     }
 
-    /// Wheel `delta` over the matrix changes the volume by 2% a notch.
+    /// Wheel `delta` over sound's placement changes volume by 2% a notch.
     fn wheel_volume(&mut self, delta: i32) {
-        // A group without sound still keeps its volume-wheel action. Read only
-        // on that gesture when sound is hidden, never on the regular refresh.
-        let Some(volume) = self
-            .status
-            .volume
-            .or_else(|| crate::commands::audio::level().map(|(percent, muted)| status::Volume { percent, muted }))
-        else {
+        let Some(volume) = self.status.volume else {
             return;
         };
         let (percent, rest) = logic::wheel_volume(volume.percent, self.wheel + delta);
@@ -2724,10 +2725,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     };
                     let _ = ScreenToClient(hwnd, &mut point);
                     let client = LPARAM(((point.y as u16 as isize) << 16) | point.x as u16 as isize);
-                    if matches!(
-                        s.hit_part(client),
-                        Some(logic::Part::Status | logic::Part::Icon(logic::StatusItem::Sound))
-                    ) {
+                    if logic::wheel_changes_volume(s.hit_part(client), s.status_placement) {
                         s.wheel_volume(delta.into());
                         return LRESULT(0);
                     }

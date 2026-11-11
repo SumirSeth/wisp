@@ -29,6 +29,28 @@ pub fn icon_pixels(dpi: u32, size: f32) -> i32 {
 pub const HEIGHT: f32 = 56.0;
 pub const MARGIN: f32 = 9.0;
 pub const SLOT: f32 = 48.0;
+pub const OWN_ICON_W: f32 = 32.0;
+pub const OWN_INNER_GAP: f32 = 4.0;
+
+/// Reserve the widest percentage at every value, including missing hardware.
+/// Stable 0.6.1 used 46 DIPs for sound and 50 for battery.
+pub fn own_icon_width(item: StatusItem, percent_width: f32) -> f32 {
+    match item {
+        StatusItem::Sound => (17.0f32.max(percent_width) + 4.0).min(46.0),
+        StatusItem::Battery => (17.0f32.max(percent_width) + 4.0).min(50.0),
+        _ => OWN_ICON_W,
+    }
+}
+
+/// Only sound's current placement owns volume wheel input.
+pub fn wheel_changes_volume(part: Option<Part>, placement: StatusPlacement) -> bool {
+    match part {
+        Some(Part::Status) => placement.group[StatusItem::Sound as usize],
+        Some(Part::Icon(StatusItem::Sound)) => placement.icons[StatusItem::Sound as usize],
+        _ => false,
+    }
+}
+
 pub const PAD: f32 = 8.0;
 pub const SEPARATOR: f32 = 9.0;
 
@@ -238,19 +260,20 @@ pub fn move_section(order: &mut [Section; 9], section: Section, target: Section)
     }
 }
 
-/// One padded row, with one gap between each pair of nonempty blocks.
+/// One padded row, with section gaps only outside adjacent own-icon clusters.
 #[derive(Clone, Copy)]
 pub struct RowLayout {
     pub apps: AppLayout,
     pub order: [Section; 9],
     pub tray: Option<usize>,
     pub status: StatusPlacement,
+    pub percent_width: f32,
 }
 
 impl RowLayout {
     pub fn sections(self, scale: f32) -> impl Iterator<Item = (Section, f32, f32)> {
         let mut x = pad(scale);
-        let mut first = true;
+        let mut previous = None;
         self.order.into_iter().filter_map(move |section| {
             let width = match section {
                 Section::Launcher => SLOT,
@@ -267,7 +290,7 @@ impl RowLayout {
                 }
                 Section::Icon(item) => {
                     if self.status.icons[item as usize] {
-                        SLOT
+                        own_icon_width(item, self.percent_width)
                     } else {
                         0.0
                     }
@@ -277,10 +300,14 @@ impl RowLayout {
             if width == 0.0 {
                 return None;
             }
-            if !first {
-                x += separator_width(scale);
+            if previous.is_some() {
+                x += if matches!((previous, section), (Some(Section::Icon(_)), Section::Icon(_))) {
+                    OWN_INNER_GAP * scale
+                } else {
+                    separator_width(scale)
+                };
             }
-            first = false;
+            previous = Some(section);
             let left = x;
             x += width;
             Some((section, left, width))
@@ -329,18 +356,32 @@ impl RowLayout {
         self.section_left(section, scale).map(|left| left + offset * scale)
     }
 
+    pub fn part_width(self, part: Part, scale: f32) -> f32 {
+        match part {
+            Part::Icon(item) => own_icon_width(item, self.percent_width) * scale,
+            _ => part.width_scaled(scale),
+        }
+    }
+
     pub fn part_hit(self, x: f32, y: f32, parts: &[Part], scale: f32) -> Option<Part> {
         if !(0.0..height(scale)).contains(&y) {
             return None;
         }
         parts.iter().copied().find(|part| {
             self.part_left(*part, scale)
-                .is_some_and(|left| (left..left + part.width_scaled(scale)).contains(&x))
+                .is_some_and(|left| (left..left + self.part_width(*part, scale)).contains(&x))
         })
     }
 
     /// Gaps belong to their nearest block; no target splits the apps or tray.
     pub fn section_at(self, x: f32, scale: f32) -> Section {
+        // At a shared icon edge, agree with part_hit's half-open slots.
+        if let Some((section, _, _)) = self
+            .sections(scale)
+            .find(|&(_, left, width)| (left..left + width).contains(&x))
+        {
+            return section;
+        }
         self.sections(scale)
             .min_by(|(_, a, aw), (_, b, bw)| {
                 let distance = |left: f32, width: f32| (left - x).max(0.0).max(x - left - width);
@@ -400,7 +441,7 @@ pub fn status_cell(index: usize) -> (f32, f32) {
         8.0 + (index / 2) as f32 * STATUS_CELL,
     )
 }
-/// Visible cells in home order. One cell uses the same full-size geometry as an own icon.
+/// Visible matrix cells in home order.
 pub fn status_cells(group: [bool; 4]) -> Vec<(StatusItem, f32, f32, f32)> {
     let count = group.iter().filter(|&&shown| shown).count();
     let mut cells = Vec::new();
@@ -465,7 +506,7 @@ impl Part {
             Part::Chevron => CHEVRON_W,
             Part::Tray(_) => TRAY_W,
             Part::Status => STATUS_W,
-            Part::Icon(_) => SLOT,
+            Part::Icon(_) => OWN_ICON_W,
             Part::Clock => CLOCK_W,
         }
     }
@@ -592,6 +633,122 @@ mod tests {
     use super::*;
 
     #[test]
+    fn own_fixed_widths_drive_all_pointer_geometry() {
+        let row = RowLayout {
+            apps: AppLayout { count: 1, pinned: 0 },
+            order: DEFAULT_ORDER,
+            tray: None,
+            status: StatusPlacement {
+                group: [false; 4],
+                icons: [true; 4],
+            },
+            percent_width: 34.0,
+        };
+        for scale in [0.75, 1.0, 1.25, 2.0] {
+            let mut end = None;
+            for item in STATUS_ITEMS {
+                let part = Part::Icon(item);
+                let left = row.part_left(part, scale).unwrap();
+                let width = own_icon_width(item, row.percent_width) * scale;
+                assert_eq!(row.part_width(part, scale), width);
+                if let Some(previous) = end {
+                    assert_eq!(left, previous + OWN_INNER_GAP * scale);
+                    assert_eq!(row.part_hit(left - scale, 28.0 * scale, &[part], scale), None);
+                }
+                assert_eq!(
+                    row.part_hit(left + width - 0.1, 28.0 * scale, &[part], scale),
+                    Some(part)
+                );
+                assert_eq!(row.part_hit(left + width, 28.0 * scale, &[part], scale), None);
+                assert_eq!(row.section_at(left + width - 0.1, scale), Section::Icon(item));
+                assert_eq!(
+                    row.section_target(Section::Apps, left + width / 2.0, scale),
+                    Section::Icon(item)
+                );
+                end = Some(left + width);
+            }
+            let clock = row.part_left(Part::Clock, scale).unwrap();
+            assert_eq!(clock, end.unwrap() + SEPARATOR * scale);
+            assert_eq!(row.width(scale), clock + (CLOCK_W + PAD) * scale);
+        }
+        assert_eq!(own_icon_width(StatusItem::Sound, 0.0), 21.0);
+        assert_eq!(own_icon_width(StatusItem::Sound, 34.0), 38.0);
+        assert_eq!(own_icon_width(StatusItem::Battery, 34.0), 38.0);
+        assert_eq!(own_icon_width(StatusItem::Sound, 80.0), 46.0);
+        assert_eq!(own_icon_width(StatusItem::Battery, 80.0), 50.0);
+        for measured in [0.0, 28.0, 80.0] {
+            assert!(own_icon_width(StatusItem::Sound, measured) <= 46.0);
+            assert!(own_icon_width(StatusItem::Battery, measured) <= 50.0);
+            assert_eq!(own_icon_width(StatusItem::Wifi, measured), 32.0);
+        }
+    }
+
+    #[test]
+    fn wheel_volume_follows_sound_placement_only() {
+        for (group, own) in [(true, false), (false, true), (false, false)] {
+            let placement = StatusPlacement {
+                group: [group, true, true, true],
+                icons: [own, true, true, true],
+            };
+            assert_eq!(wheel_changes_volume(Some(Part::Status), placement), group);
+            for item in STATUS_ITEMS {
+                assert_eq!(
+                    wheel_changes_volume(Some(Part::Icon(item)), placement),
+                    item == StatusItem::Sound && own
+                );
+            }
+            for part in [None, Some(Part::Clock), Some(Part::Chevron), Some(Part::Tray(0))] {
+                assert!(!wheel_changes_volume(part, placement));
+            }
+        }
+    }
+
+    #[test]
+    fn own_icons_cluster_in_visible_order_and_keep_individual_targets() {
+        let row = RowLayout {
+            percent_width: 28.0,
+            apps: AppLayout { count: 0, pinned: 0 },
+            order: DEFAULT_ORDER,
+            tray: None,
+            status: StatusPlacement {
+                group: [true, false, false, false],
+                icons: [false, false, true, true],
+            },
+        };
+        for size in [24.0, 32.0, 40.0] {
+            let scale = layout_scale(size);
+            let sections: Vec<_> = row.sections(scale).collect();
+            for pair in sections.windows(2) {
+                let gap = if matches!((pair[0].0, pair[1].0), (Section::Icon(_), Section::Icon(_))) {
+                    OWN_INNER_GAP
+                } else {
+                    SEPARATOR
+                };
+                assert_eq!(pair[1].1 - pair[0].1 - pair[0].2, gap * scale);
+            }
+            for item in [StatusItem::Wifi, StatusItem::Bluetooth] {
+                let section = Section::Icon(item);
+                let part = Part::Icon(item);
+                let left = row.part_left(part, scale).unwrap();
+                assert_eq!(part.width_scaled(scale), 32.0 * scale);
+                assert_eq!(row.section_at(left, scale), section);
+                assert_eq!(row.section_at(left + 16.0 * scale, scale), section);
+                assert_eq!(
+                    row.part_hit(left + 31.0 * scale, 28.0 * scale, &[part], scale),
+                    Some(part)
+                );
+                // 20-DIP glyph in a centered 28-DIP cell stays within the slot.
+                assert!(2.0 * scale + 28.0 * scale <= part.width_scaled(scale));
+            }
+            let bt = row.section_left(Section::Icon(StatusItem::Bluetooth), scale).unwrap();
+            assert_eq!(
+                row.section_target(Section::Icon(StatusItem::Wifi), bt + 16.0 * scale, scale),
+                Section::Icon(StatusItem::Bluetooth)
+            );
+        }
+    }
+
+    #[test]
     fn placements_and_cells_keep_home_order() {
         let names = |values: &[&str]| values.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let placement = StatusPlacement::new(
@@ -617,16 +774,25 @@ mod tests {
             for icons_mask in 0u8..16 {
                 let icons = std::array::from_fn(|i| !group[i] && icons_mask & (1 << i) != 0);
                 let row = RowLayout {
+                    percent_width: 28.0,
                     apps: AppLayout { count: 0, pinned: 0 },
                     order: DEFAULT_ORDER,
                     tray: None,
                     status: StatusPlacement { group, icons },
                 };
-                let shown = usize::from(mask != 0) + icons.iter().filter(|&&v| v).count();
+                let own = icons.iter().filter(|&&v| v).count();
+                let groups = usize::from(mask != 0) + usize::from(own > 0);
                 for scale in [0.75, 1.0, 1.25, 2.0] {
                     assert_eq!(
                         row.width(scale),
-                        (2.0 * PAD + SLOT + CLOCK_W + shown as f32 * SLOT + (shown + 1) as f32 * SEPARATOR) * scale
+                        (2.0 * PAD
+                            + SLOT
+                            + CLOCK_W
+                            + usize::from(mask != 0) as f32 * STATUS_W
+                            + own as f32 * OWN_ICON_W
+                            + own.saturating_sub(1) as f32 * OWN_INNER_GAP
+                            + (groups + 1) as f32 * SEPARATOR)
+                            * scale
                     );
                     assert_eq!(row.part_left(Part::Status, scale).is_some(), mask != 0);
                     for item in STATUS_ITEMS {
@@ -634,7 +800,7 @@ mod tests {
                         assert_eq!(row.part_left(part, scale).is_some(), icons[item as usize]);
                         if let Some(left) = row.part_left(part, scale) {
                             assert_eq!(
-                                row.part_hit(left + SLOT * scale / 2.0, HEIGHT * scale / 2.0, &[part], scale),
+                                row.part_hit(left + OWN_ICON_W * scale / 2.0, HEIGHT * scale / 2.0, &[part], scale),
                                 Some(part)
                             );
                         }
@@ -709,6 +875,7 @@ mod tests {
                 for tray in [None, Some(0), Some(3)] {
                     for (count, pinned) in [(0, 0), (4, 0), (4, 2), (4, 4)] {
                         let row = RowLayout {
+                            percent_width: 28.0,
                             status: StatusPlacement::default(),
                             apps: AppLayout { count, pinned },
                             order,
@@ -752,6 +919,7 @@ mod tests {
         for source in DEFAULT_ORDER {
             for target in DEFAULT_ORDER {
                 let mut row = RowLayout {
+                    percent_width: 28.0,
                     status: StatusPlacement {
                         group: [true; 4],
                         icons: [true; 4],
@@ -778,6 +946,7 @@ mod tests {
         let parts = parts(None);
         for scale in [0.75, 1.0, 1.25, 2.0] {
             let row = RowLayout {
+                percent_width: 28.0,
                 status: StatusPlacement::default(),
                 apps: AppLayout { count: 0, pinned: 0 },
                 order: DEFAULT_ORDER,
@@ -969,6 +1138,7 @@ mod tests {
 
         for scale in [small, normal, large] {
             let row = RowLayout {
+                percent_width: 28.0,
                 status: StatusPlacement::default(),
                 apps: AppLayout { count: 2, pinned: 1 },
                 order: DEFAULT_ORDER,
@@ -1091,6 +1261,7 @@ mod tests {
             [Part::Chevron, Part::Tray(0), Part::Tray(1), Part::Status, Part::Clock]
         );
         let row = RowLayout {
+            percent_width: 28.0,
             status: StatusPlacement::default(),
             apps: AppLayout { count: 2, pinned: 0 },
             order: DEFAULT_ORDER,

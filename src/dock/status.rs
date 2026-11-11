@@ -72,6 +72,68 @@ pub fn read(placement: StatusPlacement) -> Status {
     }
 }
 
+/// Four connected levels; unknown quality uses the neutral full Wi-Fi glyph.
+pub fn signal_level(quality: u8) -> usize {
+    match quality {
+        0..=25 => 0,
+        26..=50 => 1,
+        51..=75 => 2,
+        _ => 3,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RadioIcon {
+    pub glyph: &'static str,
+    pub opacity: f32,
+    pub crossed: bool,
+    pub badge: bool,
+}
+
+pub fn wifi_icon(read: bool, state: Option<&crate::commands::wifi::State>) -> RadioIcon {
+    // Wifi1, Wifi2, Wifi3, Wifi (full), shared by Fluent Icons and MDL2 Assets.
+    const LEVELS: [&str; 4] = ["\u{E872}", "\u{E873}", "\u{E874}", "\u{E701}"];
+    let mut icon = RadioIcon {
+        glyph: "\u{E701}",
+        opacity: 1.0,
+        crossed: false,
+        badge: false,
+    };
+    match state {
+        Some(w) if !w.on => {
+            icon.opacity = 0.5;
+            icon.crossed = true;
+        }
+        Some(w) if w.network.is_some() => {
+            icon.glyph = w.signal.map_or("\u{E701}", |q| LEVELS[signal_level(q)]);
+        }
+        Some(_) => icon.glyph = "\u{EB5E}",
+        None if read => icon.opacity = 0.3,
+        None => {}
+    }
+    icon
+}
+
+pub fn bluetooth_icon(read: bool, state: Option<&crate::commands::bluetooth::State>) -> RadioIcon {
+    let mut icon = RadioIcon {
+        glyph: "\u{E702}",
+        opacity: 1.0,
+        crossed: false,
+        badge: false,
+    };
+    match state {
+        Some(b) if !b.on => {
+            icon.opacity = 0.5;
+            icon.crossed = true;
+        }
+        Some(b) if !b.connected.is_empty() => icon.badge = true,
+        Some(_) => icon.opacity = 0.7,
+        None if read => icon.opacity = 0.3,
+        None => {}
+    }
+    icon
+}
+
 impl Status {
     /// `tray` is the number of inline notification icons, if the dock hosts them.
     pub fn parts(&self, tray: Option<usize>, placement: StatusPlacement) -> Vec<super::logic::Part> {
@@ -256,6 +318,68 @@ mod tests {
     use super::*;
 
     #[test]
+    fn signal_levels_cover_every_quality_and_boundaries() {
+        for q in 0..=100 {
+            assert_eq!(
+                signal_level(q),
+                if q <= 25 {
+                    0
+                } else if q <= 50 {
+                    1
+                } else if q <= 75 {
+                    2
+                } else {
+                    3
+                }
+            );
+        }
+        assert_eq!(signal_level(255), 3);
+    }
+
+    #[test]
+    fn radio_glyphs_distinguish_all_states() {
+        let neutral = wifi_icon(false, None);
+        assert_eq!(neutral.glyph, "\u{E701}");
+        assert_eq!(neutral.opacity, 1.0);
+        assert_eq!(wifi_icon(true, None).opacity, 0.3);
+        let mut wifi = crate::commands::wifi::State {
+            on: false,
+            network: None,
+            signal: None,
+        };
+        assert!(wifi_icon(true, Some(&wifi)).crossed);
+        assert_eq!(wifi_icon(true, Some(&wifi)).opacity, 0.5);
+        wifi.on = true;
+        assert_eq!(wifi_icon(true, Some(&wifi)).glyph, "\u{EB5E}");
+        wifi.network = Some("Office".into());
+        assert_eq!(wifi_icon(true, Some(&wifi)), neutral);
+        for (q, glyph) in [(0, "\u{E872}"), (26, "\u{E873}"), (51, "\u{E874}"), (76, "\u{E701}")] {
+            wifi.signal = Some(q);
+            let icon = wifi_icon(true, Some(&wifi));
+            assert_eq!(icon.glyph, glyph);
+            assert_eq!(icon.opacity, 1.0);
+            assert!(!icon.crossed);
+        }
+        let neutral = bluetooth_icon(false, None);
+        assert_eq!(neutral.glyph, "\u{E702}");
+        assert_eq!(neutral.opacity, 1.0);
+        assert_eq!(bluetooth_icon(true, None).opacity, 0.3);
+        let mut bt = crate::commands::bluetooth::State {
+            on: false,
+            connected: vec![],
+        };
+        assert!(bluetooth_icon(true, Some(&bt)).crossed);
+        bt.on = true;
+        assert_eq!(bluetooth_icon(true, Some(&bt)).opacity, 0.7);
+        assert!(!bluetooth_icon(true, Some(&bt)).badge);
+        bt.connected.push("Mouse".into());
+        assert!(bluetooth_icon(true, Some(&bt)).badge);
+        assert_eq!(bluetooth_icon(true, Some(&bt)).opacity, 1.0);
+        bt.on = false;
+        assert!(!bluetooth_icon(true, Some(&bt)).badge);
+    }
+
+    #[test]
     fn tooltip_keeps_four_cells_with_or_without_hardware() {
         let mut status = Status::default();
         let mut radios = Radios::default();
@@ -280,6 +404,7 @@ mod tests {
         radios.wifi = Some(crate::commands::wifi::State {
             on: true,
             network: Some("Office".into()),
+            signal: Some(43),
         });
         radios.bluetooth = Some(crate::commands::bluetooth::State {
             on: true,

@@ -23,6 +23,8 @@ pub struct State {
     pub on: bool,
     /// The connected network's name.
     pub network: Option<String>,
+    /// Connected network quality, 0 to 100; absent if querying is denied or disconnected.
+    pub signal: Option<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -47,10 +49,20 @@ pub struct Networks {
 /// `None` if the PC has no Wi-Fi adapter.
 pub fn state() -> Option<State> {
     let on = radio::is_on(RadioKind::WiFi)?;
-    Some(State {
-        on,
-        network: if on { connected_name() } else { None },
-    })
+    let connection = || {
+        let client = Client::open().ok()?;
+        let interface = client.interface()?;
+        Some(match client.current_connection(&interface) {
+            Some((name, signal)) => (Some(name), Some(signal)),
+            None => (nlm_name(&interface), None),
+        })
+    };
+    let (network, signal) = if on {
+        connection().unwrap_or_default()
+    } else {
+        (None, None)
+    };
+    Some(State { on, network, signal })
 }
 
 pub fn set_power(on: bool) -> Result<(), String> {
@@ -115,7 +127,10 @@ pub fn connect(profile: &str) -> Result<(), String> {
 fn connected_name() -> Option<String> {
     let client = Client::open().ok()?;
     let interface = client.interface()?;
-    client.current_ssid(&interface).or_else(|| nlm_name(&interface))
+    client
+        .current_connection(&interface)
+        .map(|(name, _)| name)
+        .or_else(|| nlm_name(&interface))
 }
 
 fn nlm_name(interface: &GUID) -> Option<String> {
@@ -185,7 +200,7 @@ impl Client {
         }
     }
 
-    fn current_ssid(&self, interface: &GUID) -> Option<String> {
+    fn current_connection(&self, interface: &GUID) -> Option<(String, u8)> {
         unsafe {
             let (mut size, mut data) = (0, std::ptr::null_mut());
             let code = WlanQueryInterface(
@@ -201,8 +216,12 @@ impl Client {
                 return None;
             }
             let attributes = &*(data as *const WLAN_CONNECTION_ATTRIBUTES);
-            let name = (attributes.isState == wlan_interface_state_connected)
-                .then(|| ssid(&attributes.wlanAssociationAttributes.dot11Ssid));
+            let name = (attributes.isState == wlan_interface_state_connected).then(|| {
+                (
+                    ssid(&attributes.wlanAssociationAttributes.dot11Ssid),
+                    attributes.wlanAssociationAttributes.wlanSignalQuality.min(100) as u8,
+                )
+            });
             WlanFreeMemory(data);
             name
         }

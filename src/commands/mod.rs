@@ -835,6 +835,7 @@ mod tests {
     fn ready() -> State {
         State {
             wifi: Some(Some(wifi::State {
+                signal: None,
                 on: true,
                 network: Some("Home".into()),
             })),

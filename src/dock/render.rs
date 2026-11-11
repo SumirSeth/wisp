@@ -41,6 +41,7 @@ struct Formats {
     chevron: IDWriteTextFormat,
     matrix: IDWriteTextFormat,
     status_icon: IDWriteTextFormat,
+    glyph: IDWriteTextFormat,
     badge: IDWriteTextFormat,
     /// Tooltips: left-aligned and wrapping.
     tip: IDWriteTextFormat,
@@ -58,6 +59,7 @@ pub struct Renderer {
     format_scale: f32,
     target: Option<Target>,
     shared_target: Option<Target>,
+    percent_width: Option<f32>,
 }
 
 pub struct Frame<'a> {
@@ -135,6 +137,7 @@ fn create_formats(dw: &IDWriteFactory, text: PCWSTR, display: PCWSTR, icons: PCW
             small: format(text, DWRITE_FONT_WEIGHT_NORMAL, 12.5)?,
             search: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 21.0)?,
             chevron: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 12.0)?,
+            glyph: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 17.0)?,
             status_icon: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 21.0)?,
             matrix: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 14.0)?,
             badge: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 8.0)?,
@@ -182,8 +185,26 @@ impl Renderer {
                 dw,
                 target: None,
                 shared_target: None,
+                percent_width: None,
             })
         }
+    }
+
+    /// Measure once per font scale; values and radio names never affect geometry.
+    pub fn percent_width(&mut self, scale: f32) -> Result<f32> {
+        self.update_formats(scale)?;
+        if let Some(width) = self.percent_width {
+            return Ok(width);
+        }
+        let wide: Vec<u16> = "100%".encode_utf16().collect();
+        let width = unsafe {
+            let layout = self.dw.CreateTextLayout(&wide, &self.formats.small, 10000.0, 1000.0)?;
+            let mut metrics = DWRITE_TEXT_METRICS::default();
+            layout.GetMetrics(&mut metrics)?;
+            (metrics.widthIncludingTrailingWhitespace / scale).ceil()
+        };
+        self.percent_width = Some(width);
+        Ok(width)
     }
 
     pub fn draw(&mut self, hwnd: HWND, frame: &Frame) -> Result<()> {
@@ -213,6 +234,7 @@ impl Renderer {
         if self.format_scale != scale {
             self.formats = create_formats(&self.dw, self.text_font, self.display_font, self.icon_font, scale)?;
             self.format_scale = scale;
+            self.percent_width = None;
         }
         Ok(())
     }
@@ -758,14 +780,18 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
     target
         .tray
         .retain(|key, _| frame.tray.iter().any(|shown| shown.icon.key() == *key));
-    for (_, left, _) in frame.layout.sections(frame.layout_scale).skip(1) {
-        separator(target, frame, left - logic::separator_width(frame.layout_scale) / 2.0);
+    let mut previous_right = None;
+    for (_, left, width) in frame.layout.sections(frame.layout_scale) {
+        if previous_right.is_some_and(|right| left - right > logic::OWN_INNER_GAP * frame.layout_scale + 0.01) {
+            separator(target, frame, left - logic::separator_width(frame.layout_scale) / 2.0);
+        }
+        previous_right = Some(left + width);
     }
     for &part in parts.iter() {
         let Some(left) = frame.layout.part_left(part, frame.layout_scale) else {
             continue;
         };
-        let right = left + part.width_scaled(frame.layout_scale);
+        let right = left + frame.layout.part_width(part, frame.layout_scale);
         if *hover_part == Some(part) || part == Part::Chevron && frame.flyout_open {
             tile(
                 target,
@@ -796,7 +822,7 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
                         target,
                         frame.dpi,
                         shown,
-                        left + part.width_scaled(frame.layout_scale) / 2.0,
+                        left + frame.layout.part_width(part, frame.layout_scale) / 2.0,
                         middle,
                     )?;
                 }
@@ -815,12 +841,8 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
                     let battery = status
                         .battery
                         .map_or_else(|| battery_glyph(0, false), |b| battery_glyph(b.percent, b.charging));
-                    let wifi = match &radios.wifi {
-                        Some(w) if w.on && w.network.is_some() => "\u{E701}",
-                        Some(w) if w.on => "\u{EB5E}",
-                        _ => "\u{E701}",
-                    };
-                    let bluetooth = "\u{E702}";
+                    let wifi = super::status::wifi_icon(radios.read, radios.wifi.as_ref());
+                    let bluetooth = super::status::bluetooth_icon(radios.read, radios.bluetooth.as_ref());
                     let cells = [
                         (volume, status.volume.is_some(), false),
                         (
@@ -829,32 +851,61 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
                             status.battery.is_some_and(|b| b.percent <= 20 && !b.charging),
                         ),
                         // Until the first reading, the radios look present rather than missing.
-                        (wifi, !radios.read || radios.wifi.is_some(), false),
-                        (bluetooth, !radios.read || radios.bluetooth.is_some(), false),
+                        (wifi.glyph, true, false),
+                        (bluetooth.glyph, true, false),
                     ];
                     let group = match part {
                         Part::Icon(item) => logic::STATUS_ITEMS.map(|candidate| candidate == item),
                         _ => frame.layout.status.group,
                     };
-                    for (item, x, y, size) in logic::status_cells(group) {
+                    for (item, mut x, y, size) in logic::status_cells(group) {
+                        let own = matches!(part, Part::Icon(_));
+                        if own {
+                            x = ((right - left) / frame.layout_scale - size) / 2.0;
+                        }
                         let i = item as usize;
+                        // Exactly the stable upper/lower geometry, formats and colours.
+                        if own && i < 2 {
+                            let percent = if i == 0 {
+                                status.volume.map(|v| v.percent)
+                            } else {
+                                status.battery.map(|b| b.percent)
+                            };
+                            if let Some(percent) = percent {
+                                brush.SetColor(if cells[i].2 { &RED } else { &p.text });
+                                text(rt, brush, &formats.glyph, cells[i].0, upper);
+                                brush.SetColor(&p.subtext);
+                                text(rt, brush, &formats.small, &format!("{percent}%"), lower);
+                            }
+                            continue;
+                        }
                         let (glyph, present, low) = cells[i];
                         let full = size > logic::STATUS_CELL;
                         let detail = size / logic::STATUS_CELL;
                         let scale = frame.layout_scale;
                         let mut color = if low { RED } else { p.text };
-                        let off = i == 2 && radios.wifi.as_ref().is_some_and(|w| !w.on)
-                            || i == 3 && radios.bluetooth.as_ref().is_some_and(|b| !b.on);
-                        if !present {
+                        let radio = match i {
+                            2 => Some(wifi),
+                            3 => Some(bluetooth),
+                            _ => None,
+                        };
+                        let off = radio.is_some_and(|r| r.crossed);
+                        if let Some(radio) = radio {
+                            color.a *= radio.opacity;
+                        } else if !present {
                             color.a *= 0.3;
-                        } else if off {
-                            color.a *= 0.5;
                         }
                         brush.SetColor(&color);
                         text(
                             rt,
                             brush,
-                            if full { &formats.status_icon } else { &formats.matrix },
+                            if own {
+                                &formats.glyph
+                            } else if full {
+                                &formats.status_icon
+                            } else {
+                                &formats.matrix
+                            },
                             glyph,
                             rect(
                                 left + x * scale,
@@ -879,7 +930,7 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
                                     scale,
                                     None,
                                 );
-                            } else if i == 3 && radios.bluetooth.as_ref().is_some_and(|b| !b.connected.is_empty()) {
+                            } else if i == 3 && bluetooth.badge {
                                 text(
                                     rt,
                                     brush,
@@ -915,3 +966,19 @@ const RED: D2D1_COLOR_F = D2D1_COLOR_F {
     b: 0.27,
     a: 1.0,
 };
+
+#[cfg(test)]
+mod own_width_tests {
+    use super::*;
+
+    #[test]
+    fn percentage_measurement_is_cached_and_fits_stable_slots() -> Result<()> {
+        let mut renderer = Renderer::new()?;
+        for scale in [0.75, 1.0, 1.25, 2.0] {
+            let width = renderer.percent_width(scale)?;
+            assert!(width > 17.0 && width + 4.0 <= 46.0);
+            assert_eq!(renderer.percent_width(scale)?, width);
+        }
+        Ok(())
+    }
+}
