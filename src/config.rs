@@ -173,9 +173,9 @@ mod tests {
                 .unwrap()
                 .dock_order,
             [
+                "launcher",
                 "clock",
                 "apps",
-                "launcher",
                 "tray",
                 "status",
                 "sound",
@@ -197,15 +197,15 @@ mod tests {
         assert_eq!(
             Config::parse(&saved).unwrap().dock_order,
             [
-                "status",
-                "clock",
                 "launcher",
                 "apps",
                 "tray",
+                "status",
                 "sound",
                 "battery",
                 "wifi",
-                "bluetooth"
+                "bluetooth",
+                "clock"
             ]
         );
         std::fs::write(&path, "hotkey = [").unwrap();

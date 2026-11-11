@@ -204,16 +204,25 @@ impl Section {
     }
 }
 
-/// Unknown and duplicate names disappear; omitted blocks follow in default order.
+/// Unknown and duplicate names disappear. An omitted block goes after the block
+/// it follows by default, so a section added in a later version starts in its usual place.
 pub fn section_order<'a>(names: impl IntoIterator<Item = &'a str>) -> [Section; 9] {
     let mut order = Vec::with_capacity(9);
     for section in names
         .into_iter()
         .filter_map(|name| DEFAULT_ORDER.into_iter().find(|section| section.name() == name))
-        .chain(DEFAULT_ORDER)
     {
         if !order.contains(&section) {
             order.push(section);
+        }
+    }
+    for (i, section) in DEFAULT_ORDER.into_iter().enumerate() {
+        if !order.contains(&section) {
+            let at = match i {
+                0 => 0,
+                _ => order.iter().position(|&item| item == DEFAULT_ORDER[i - 1]).unwrap() + 1,
+            };
+            order.insert(at, section);
         }
     }
     order.try_into().unwrap()
@@ -636,15 +645,15 @@ mod tests {
         assert_eq!(
             section_order(["wifi", "wifi", "bad", "sound"]).map(Section::name),
             [
-                "wifi",
-                "sound",
                 "launcher",
                 "apps",
                 "tray",
                 "status",
-                "battery",
+                "wifi",
                 "bluetooth",
-                "clock"
+                "clock",
+                "sound",
+                "battery"
             ]
         );
     }
@@ -655,9 +664,9 @@ mod tests {
         assert_eq!(
             section_order(["clock", "bad", "clock", "apps"]),
             [
+                Section::Launcher,
                 Section::Clock,
                 Section::Apps,
-                Section::Launcher,
                 Section::Tray,
                 Section::Status,
                 Section::Icon(StatusItem::Sound),
