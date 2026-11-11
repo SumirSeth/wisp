@@ -732,6 +732,8 @@ impl Settings {
                         .label(text)
                         .small()
                         .selected(index == selected)
+                        // The plain selected fill is too faint to tell the choice apart.
+                        .when(index == selected, |b| b.primary())
                         .on_click(cx.listener(move |this, _, window, cx| {
                             let key = if index == 0 {
                                 "dock_status_group"
@@ -785,7 +787,7 @@ impl Settings {
                 group(p)
                     .child(row(
                         "Dock",
-                        "Show running apps, notification icons, volume, battery and the clock at the bottom of the screen.",
+                        "Show running apps, notification icons, status and the clock at the bottom of the screen.",
                         Switch::new("dock")
                             .checked(self.config.dock)
                             .accessibility_label("Dock")
