@@ -4,17 +4,29 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ## Unreleased
 
+## 0.7.0 - 2026-11-12
+
 ### New
 
-- The dock shows sound, battery, Wi-Fi and Bluetooth together in one 2x2 group. Hover for details, scroll to change the volume, click to open Now. (#64)
-- Drag dock apps to rearrange them, pinning or unpinning them by where you drop. (#65, by @SorbetMango, fixes #32)
-- Drag the launcher, notification icons, status and clock to any place in the dock. The order is saved. (#65)
-- Choose which status icons the dock shows, and whether each sits in the status group or on its own. In Settings, under Status. (#66)
-- Now lists Wi-Fi networks and Bluetooth devices. Select a network or supported audio device to connect or disconnect, or turn Wi-Fi and Bluetooth on or off. (#68)
+- **Arrange the dock your way.** Drag the launcher, apps, notification icons, status and clock to any place in the dock. The order is saved. (#65)
 
-- Pin apps to the dock: right-click an app and choose Pin to dock. Pinned apps stay in the dock, before running apps, and start with a click. (#54, by @SorbetMango, fixes #31)
+  <img src="https://github.com/SumirSeth/wisp/raw/v0.7.0/assets/0.7.0/dock-rearranged.png" width="513" alt="The same dock in three orders, with pinned File Explorer and Helium before running Paint and Notepad">
+
+- **Choose your status icons.** Sound, battery, Wi-Fi and Bluetooth sit together in one 2x2 group. Hover for details, scroll over sound to change the volume, click to open Now. Each can stay in the group, get its own icon, or be hidden: in Settings, under Status. Own sound and battery icons show their percentage, and Wi-Fi shows its signal. (#64, #66, #67)
+
+  <img src="https://github.com/SumirSeth/wisp/raw/v0.7.0/assets/0.7.0/status-options.png" width="317" alt="The status group as a 2x2, as 2x1 with sound and battery on their own, as four own icons, and with battery hidden">
+
+  <img src="https://github.com/SumirSeth/wisp/raw/v0.7.0/assets/0.7.0/settings-status.png" width="588" alt="The Status settings: a switch to group status icons and a choice for each icon">
+
+- **Pin apps to the dock.** Right-click an app and choose Pin to dock. Pinned apps stay in the dock, before running apps, and start with a click. (#54, by @SorbetMango, fixes #31)
+- **Rearrange apps by dragging.** Drop an app among the pinned apps to pin it there, or among the running apps to unpin it. (#65, by @SorbetMango, fixes #32)
+- **Wi-Fi and Bluetooth in Now.** Pick a network to connect, entering its password right there, or a Bluetooth audio device to connect or disconnect it. Turn Wi-Fi and Bluetooth on or off. Type "wifi" or "bluetooth" in the launcher to go straight there. (#68)
 - Apps with more than one window open show a second dot under their dock icon. (#55)
 - The autohide dock starts to slide in sooner when you move the pointer to the bottom edge. (#25, by @RayTrunk, fixes #20)
+
+### Thanks
+
+@SorbetMango contributed their first pull request to Wisp in this release, and the dragging in #65 started from their fork.
 
 ## 0.6.1 - 2026-11-09
 
