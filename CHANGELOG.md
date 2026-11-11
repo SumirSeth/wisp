@@ -10,7 +10,7 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 - Drag dock apps to rearrange them, pinning or unpinning them by where you drop. (#65, by @SorbetMango, fixes #32)
 - Drag the launcher, notification icons, status and clock to any place in the dock. The order is saved. (#65)
 - Choose which status icons the dock shows, and whether each sits in the status group or on its own. In Settings, under Status. (#66)
-- Now lists Wi-Fi networks and Bluetooth devices. Select a network or supported audio device to connect or disconnect, or turn Wi-Fi and Bluetooth on or off. (#PR)
+- Now lists Wi-Fi networks and Bluetooth devices. Select a network or supported audio device to connect or disconnect, or turn Wi-Fi and Bluetooth on or off. (#68)
 
 - Pin apps to the dock: right-click an app and choose Pin to dock. Pinned apps stay in the dock, before running apps, and start with a click. (#54, by @SorbetMango, fixes #31)
 - Apps with more than one window open show a second dot under their dock icon. (#55)
