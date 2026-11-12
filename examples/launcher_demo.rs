@@ -47,6 +47,8 @@ mod tray_host;
 mod update_notice;
 #[path = "../src/util.rs"]
 mod util;
+#[path = "../src/win_key.rs"]
+mod win_key;
 mod channel {
     use windows::core::{PCWSTR, w};
     pub const NIGHTLY: bool = true;

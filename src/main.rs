@@ -13,6 +13,7 @@ mod files;
 mod history;
 mod hotkey;
 mod indexer;
+mod win_key;
 // Settings also uses package-manager detection and update instructions.
 #[allow(dead_code)]
 mod install;

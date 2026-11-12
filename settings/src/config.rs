@@ -20,6 +20,7 @@ const MISSING_KEYS: &str = include_str!("../../src/config-0.3.toml");
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
     pub hotkey: String,
+    pub win_key: bool,
     pub max_results: i64,
     pub theme: String,
     pub backdrop: String,
@@ -104,6 +105,7 @@ impl Config {
         let placement = StatusPlacement::new(&list("dock_status_group")?, &list("dock_status_icons")?);
         Ok(Self {
             hotkey: string("hotkey")?,
+            win_key: boolean("win_key")?,
             max_results,
             theme,
             backdrop,
@@ -236,6 +238,8 @@ fn validate_edit(key: &str, value: &Value) -> Result<(), String> {
         "hotkey" => {
             crate::hotkey::parse(value.as_str().ok_or("Shortcut must be text.")?)?;
         }
+        "win_key" if !value.is_bool() => return Err("win_key must be true or false.".into()),
+        "win_key" => {}
         "search_url" => validate_url(value.as_str().ok_or("Search URL must be text.")?)?,
         "max_results" if !value.as_integer().is_some_and(|value| (1..=20).contains(&value)) => {
             return Err("Choose between 1 and 20 results.".into());
@@ -440,5 +444,19 @@ mod tests {
             let doc = format!("dock_icon_size = {value}").parse().unwrap();
             assert_eq!(Config::from_document(&doc).unwrap().dock_icon_size, expected);
         }
+    }
+
+    #[test]
+    fn win_key_round_trips_without_changing_the_shortcut() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("config.toml"));
+        std::fs::write(&store.path, "# keep me\nhotkey = 'Ctrl+F12'\n").unwrap();
+        assert!(!store.load().unwrap().win_key);
+        let enabled = store.set("win_key", true.into()).unwrap();
+        assert!(enabled.win_key);
+        assert_eq!(enabled.hotkey, "Ctrl+F12");
+        assert!(!store.set("win_key", false.into()).unwrap().win_key);
+        assert!(store.set("win_key", "true".into()).is_err());
+        assert!(std::fs::read_to_string(&store.path).unwrap().contains("# keep me"));
     }
 }

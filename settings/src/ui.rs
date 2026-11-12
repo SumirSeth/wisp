@@ -770,6 +770,20 @@ impl Settings {
             .on_change(cx.listener(|this, enabled: &bool, _, cx| this.set_autostart(*enabled, cx)))
     }
 
+    fn win_key_row(&self, p: Palette, cx: &mut Context<Self>) -> Div {
+        row(
+            "Use Win key",
+            "Tap the Windows key alone to open Wisp instead of Start.",
+            Switch::new("win-key")
+                .checked(self.config.win_key)
+                .accessibility_label("Use Win key")
+                .on_change(cx.listener(|this, enabled: &bool, window, cx| {
+                    this.save("win_key", (*enabled).into(), window, cx);
+                })),
+            p,
+        )
+    }
+
     fn general(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         v_flex()
             .gap_2()
@@ -779,7 +793,9 @@ impl Settings {
                     item("Shortcut", "Shows or hides the launcher.", p)
                         .child(self.shortcut_control(p, cx))
                         .children(self.conflict_warning(p)),
-                ),
+                )
+                .child(divider(p))
+                .child(self.win_key_row(p, cx)),
             )
             .child(div().h_3())
             .child(label("Dock", p))
@@ -1137,8 +1153,10 @@ impl Settings {
     }
 
     fn onboarding_view(&self, step: usize, p: Palette, cx: &mut Context<Self>) -> AnyElement {
-        let shortcut =
-            group(p).child(item("Shortcut", "Shows or hides the launcher.", p).child(self.shortcut_control(p, cx)));
+        let shortcut = group(p)
+            .child(item("Shortcut", "Shows or hides the launcher.", p).child(self.shortcut_control(p, cx)))
+            .child(divider(p))
+            .child(self.win_key_row(p, cx));
         let (title, body): (&str, Div) = match step {
             0 => (
                 "Welcome to Wisp",

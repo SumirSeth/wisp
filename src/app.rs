@@ -241,6 +241,7 @@ pub fn run() -> Result<()> {
             config,
             config_mtime: Config::modified(),
             registered_hotkey: None,
+            win_key_hook: None,
             tray_icon: small_icon,
             palette: Palette::new(true, true),
             renderer,
@@ -401,6 +402,7 @@ struct Launcher {
     config_mtime: Option<SystemTime>,
     /// Registered shortcut; may differ from `config.hotkey` if registration fails.
     registered_hotkey: Option<String>,
+    win_key_hook: Option<crate::win_key::Hook>,
     tray_icon: HICON,
     palette: Palette,
     renderer: Renderer,
@@ -521,6 +523,7 @@ impl Launcher {
         tray::add(self.hwnd, self.tray_icon, &self.tooltip());
         if !crate::util::perf::hook_on("WISP_CAPTURE") {
             self.register_hotkey(true);
+            self.sync_win_key();
         }
         self.indexer.rescan();
         self.last_scan = Instant::now();
@@ -577,6 +580,17 @@ impl Launcher {
         tray::set_tip(hwnd, &self.tooltip());
     }
 
+    fn sync_win_key(&mut self) {
+        if !self.config.win_key {
+            self.win_key_hook = None;
+        } else if self.win_key_hook.is_none() && !crate::util::perf::hook_on("WISP_CAPTURE") {
+            match crate::win_key::Hook::install(self.hwnd, WM_HOTKEY) {
+                Ok(hook) => self.win_key_hook = Some(hook),
+                Err(error) => tray::notify(self.hwnd, "Could not enable Win key", &error.to_string(), true),
+            }
+        }
+    }
+
     fn reload_config_if_changed(&mut self) {
         let _span = util::perf::Span::new("config");
         let mtime = Config::modified();
@@ -595,6 +609,7 @@ impl Launcher {
         self.sync_shell();
         self.apply_theme();
         self.register_hotkey(true);
+        self.sync_win_key();
     }
 
     /// Hides or restores the Windows taskbar and creates or removes the dock
@@ -2380,6 +2395,7 @@ impl Launcher {
     }
 
     fn shutdown(&mut self) {
+        self.win_key_hook = None;
         self.dock = None;
         if let Err(e) = TaskbarHider::configure(&mut self.taskbar, self.hwnd, false) {
             eprintln!("could not restore the taskbar: {e}");

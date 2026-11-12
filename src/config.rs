@@ -64,6 +64,7 @@ pub struct Config {
     pub dock_status_group: Vec<String>,
     pub dock_status_icons: Vec<String>,
     pub hotkey: String,
+    pub win_key: bool,
     pub max_results: usize,
     pub theme: Theme,
     pub backdrop: Backdrop,
@@ -239,6 +240,7 @@ mod tests {
         let config = Config::parse("hotkey = \"Ctrl+Space\"").unwrap();
         assert_eq!((config.hotkey.as_str(), config.max_results), ("Ctrl+Space", 8));
         assert!(!config.dock && !config.hide_taskbar);
+        assert!(!config.win_key);
         assert_eq!(config.position, Position::Center);
         // A new config has them all.
         let default = Config::default();
@@ -246,5 +248,12 @@ mod tests {
         assert_eq!(default.dock_icon_size, 32);
         assert_eq!(default.position, Position::Bottom);
         assert!(Config::parse("dock = \"yes\"").is_err());
+    }
+
+    #[test]
+    fn win_key_is_opt_in_and_requires_a_boolean() {
+        assert!(!Config::default().win_key);
+        assert!(Config::parse("win_key = true").unwrap().win_key);
+        assert!(Config::parse("win_key = 'true'").is_err());
     }
 }
