@@ -763,7 +763,8 @@ impl Launcher {
             Theme::Light => false,
             Theme::System => !system::system_uses_light_theme(),
         };
-        self.palette = crate::theme::apply_backdrop(self.hwnd, dark, self.config.backdrop, self.unified());
+        // Use the dock's persistent material in either launcher placement.
+        self.palette = crate::theme::apply_backdrop(self.hwnd, dark, self.config.backdrop, true);
         if let Some(dock) = &mut self.dock {
             dock.apply_theme(Palette::new(dark, true), self.config.backdrop);
         }
@@ -1057,15 +1058,13 @@ impl Launcher {
                 SWP_NOACTIVATE,
             );
         }
-        if self.unified() {
-            crate::theme::shape(
-                self.hwnd,
-                width,
-                height,
-                crate::morph::radius(self.morph_opacity()),
-                self.dpi,
-            );
-        }
+        crate::theme::shape(
+            self.hwnd,
+            width,
+            height,
+            crate::morph::radius(if self.unified() { self.morph_opacity() } else { 1.0 }),
+            self.dpi,
+        );
         self.renderer.resize(width.max(1) as u32, height.max(1) as u32);
         if self.morph.is_some()
             && let Some(dock) = &mut self.dock
@@ -1838,7 +1837,6 @@ impl Launcher {
             opacity: crate::morph::fades(opacity).1,
             dock_opacity: crate::morph::fades(opacity).0,
             content_size,
-            shared: self.unified(),
             radius: crate::morph::radius(opacity),
         };
         if let Err(e) = self.renderer.draw(self.hwnd, &frame, |rt| {
@@ -2696,7 +2694,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             return LRESULT(0);
         },
         WM_ERASEBKGND => return LRESULT(1),
-        WM_SETTINGCHANGE => {
+        WM_SETTINGCHANGE | WM_THEMECHANGED | WM_POWERBROADCAST => {
             // Explorer waits for every window while it broadcasts this, and
             // the taskbar hider asks Explorer for its state: let it go first.
             unsafe {

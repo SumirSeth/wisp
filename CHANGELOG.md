@@ -4,6 +4,10 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ## Unreleased
 
+### Fixes
+
+- Keep the launcher's backdrop and border consistent at the bottom and center of the screen, in both light and dark themes. (fixes #45)
+
 ## 0.7.0 - 2026-11-12
 
 ### New

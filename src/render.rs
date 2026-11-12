@@ -126,7 +126,6 @@ pub struct Frame<'a> {
     pub bottom: bool,
     pub opacity: f32,
     pub dock_opacity: f32,
-    pub shared: bool,
     pub radius: f32,
     pub content_size: Option<(f32, f32)>,
 }
@@ -285,11 +284,7 @@ impl Renderer {
         let result = unsafe {
             rt.BeginDraw();
             self.stops.clear();
-            if frame.shared {
-                crate::theme::paint_background(&rt, &target.brush, frame.palette, frame.radius);
-            } else {
-                rt.Clear(Some(&frame.palette.background));
-            }
+            crate::theme::paint_background(&rt, &target.brush, frame.palette, frame.radius);
             let size = rt.GetSize();
             let (width, height) = frame.content_size.unwrap_or((size.width, size.height));
             let (x, y) = crate::morph::content_offset(size.width, size.height, width, height);
