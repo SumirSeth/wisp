@@ -221,7 +221,8 @@ fn worker(requests: Receiver<Request>, events: Sender<Event>, icon_size: i32, no
                 Request::Refresh => stale = true,
                 Request::List(drill) => send(Event::List(drill, list_items(drill))),
                 Request::Run(command) => {
-                    let result = if superseded(&command, &requests, &mut queued) {
+                    let skipped = superseded(&command, &requests, &mut queued);
+                    let result = if skipped {
                         Ok(())
                     } else {
                         match &command {
@@ -246,7 +247,13 @@ fn worker(requests: Receiver<Request>, events: Sender<Event>, icon_size: i32, no
                         send(Event::Failed(error));
                     }
                     // Apps update their media state and close windows a moment later.
-                    if matches!(command, Command::Media(_) | Command::CloseWindow(_)) {
+                    // Play and pause wait for the app themselves.
+                    if !skipped
+                        && matches!(
+                            command,
+                            Command::Media(media::Control::Next | media::Control::Previous) | Command::CloseWindow(_)
+                        )
+                    {
                         std::thread::sleep(Duration::from_millis(300));
                     }
                     ran += 1;
@@ -590,9 +597,25 @@ fn media_items(words: &[&str], state: Option<&Option<media::State>>) -> Vec<Resu
             .glyph(glyph)
             .verb(verb)
     };
+    // One play/pause toggle for whatever is playing, under every name.
+    let status = if media.playing { "Playing" } else { "Paused" };
+    let toggle = row(
+        if media.title.is_empty() {
+            status
+        } else {
+            media.title.as_str()
+        },
+        [media.artist.as_str(), media.app.as_str(), status]
+            .into_iter()
+            .filter(|p| !p.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · "),
+        Action::Command(Command::Media(Control::toggle(media.playing))),
+    )
+    .glyph(if media.playing { glyph::PAUSE } else { glyph::PLAY })
+    .verb(if media.playing { "Pause" } else { "Play" });
     match *name {
-        "play" | "resume" => vec![control("Play", Control::Play, glyph::PLAY, "Play")],
-        "pause" => vec![control("Pause", Control::Pause, glyph::PAUSE, "Pause")],
+        "play" | "resume" | "pause" => vec![toggle],
         "next" | "skip" => vec![control("Next track", Control::Next, glyph::NEXT, "Next")],
         "previous" | "prev" => vec![control(
             "Previous track",
@@ -600,28 +623,11 @@ fn media_items(words: &[&str], state: Option<&Option<media::State>>) -> Vec<Resu
             glyph::PREVIOUS,
             "Previous",
         )],
-        "media" | "music" => {
-            let status = if media.playing { "Playing" } else { "Paused" };
-            vec![
-                row(
-                    if media.title.is_empty() {
-                        status
-                    } else {
-                        media.title.as_str()
-                    },
-                    [media.artist.as_str(), media.app.as_str(), status]
-                        .into_iter()
-                        .filter(|p| !p.is_empty())
-                        .collect::<Vec<_>>()
-                        .join(" · "),
-                    Action::Command(Command::Media(Control::toggle(media.playing))),
-                )
-                .glyph(if media.playing { glyph::PAUSE } else { glyph::PLAY })
-                .verb(if media.playing { "Pause" } else { "Play" }),
-                control("Next track", Control::Next, glyph::NEXT, "Next"),
-                control("Previous track", Control::Previous, glyph::PREVIOUS, "Previous"),
-            ]
-        }
+        "media" | "music" => vec![
+            toggle,
+            control("Next track", Control::Next, glyph::NEXT, "Next"),
+            control("Previous track", Control::Previous, glyph::PREVIOUS, "Previous"),
+        ],
         _ => Vec::new(),
     }
 }
@@ -1042,7 +1048,9 @@ mod tests {
     #[test]
     fn controls_media_only_while_something_plays() {
         let state = ready();
-        assert_eq!(titles("pause", &state), ["Pause"]);
+        // Play, resume and pause all offer the same toggle as "media".
+        assert_eq!(titles("pause", &state), ["Song"]);
+        assert_eq!(titles("play", &state), titles("music", &state)[..1]);
         assert_eq!(search("next", &state)[0].subtitle, "Song · Band · Spotify");
         assert_eq!(titles("music", &state)[0], "Song");
         let idle = State {
