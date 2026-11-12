@@ -2694,7 +2694,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             return LRESULT(0);
         },
         WM_ERASEBKGND => return LRESULT(1),
-        WM_SETTINGCHANGE | WM_THEMECHANGED | WM_POWERBROADCAST => {
+        // Battery saver and theme changes can turn transparency off.
+        WM_THEMECHANGED | WM_POWERBROADCAST => {
+            with_launcher(Launcher::apply_theme);
+        }
+        WM_SETTINGCHANGE => {
             // Explorer waits for every window while it broadcasts this, and
             // the taskbar hider asks Explorer for its state: let it go first.
             unsafe {
