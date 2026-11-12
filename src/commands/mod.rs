@@ -19,7 +19,7 @@ pub mod settings;
 pub mod time;
 pub mod wifi;
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
@@ -206,7 +206,9 @@ fn worker(requests: Receiver<Request>, events: Sender<Event>, icon_size: i32, no
             .collect();
         send(Event::State(Box::new(state), icons, ran));
     };
-    while let Ok(first) = requests.recv() {
+    // Requests read ahead while checking for newer toggles; handled first.
+    let mut queued = VecDeque::new();
+    while let Some(first) = queued.pop_front().or_else(|| requests.recv().ok()) {
         // Handle the queued requests, then read the state once. Holding a
         // slider key queues many volume changes.
         let started = Instant::now();
@@ -219,22 +221,26 @@ fn worker(requests: Receiver<Request>, events: Sender<Event>, icon_size: i32, no
                 Request::Refresh => stale = true,
                 Request::List(drill) => send(Event::List(drill, list_items(drill))),
                 Request::Run(command) => {
-                    let result = match &command {
-                        Command::NightLight(on) => night_light::set(*on, &mut night_light_written),
-                        Command::LightMode(light) => appearance::set(*light),
-                        Command::WindowControl(target, control) => target.run(*control),
-                        Command::WifiPower(on) => wifi::set_power(*on),
-                        Command::WifiConnect(profile) => wifi::connect(profile),
-                        Command::BluetoothPower(on) => bluetooth::set_power(*on),
-                        Command::Volume(percent) => audio::set_volume(*percent),
-                        Command::Mute(muted) => audio::set_mute(*muted),
-                        Command::AppVolume { pid, percent } => audio::set_app_volume(*pid, *percent),
-                        Command::Output(id) => audio::set_output(id),
-                        Command::Media(control) => media::control(*control),
-                        Command::FocusWindow(hwnd) => open_windows::focus(*hwnd),
-                        Command::CloseWindow(hwnd) => open_windows::close(*hwnd),
-                        Command::Power(power) => power::run(*power),
-                        Command::Quit | Command::RadioView(_) | Command::RadioSelect(_) => Ok(()),
+                    let result = if superseded(&command, &requests, &mut queued) {
+                        Ok(())
+                    } else {
+                        match &command {
+                            Command::NightLight(on) => night_light::set(*on, &mut night_light_written),
+                            Command::LightMode(light) => appearance::set(*light),
+                            Command::WindowControl(target, control) => target.run(*control),
+                            Command::WifiPower(on) => wifi::set_power(*on),
+                            Command::WifiConnect(profile) => wifi::connect(profile),
+                            Command::BluetoothPower(on) => bluetooth::set_power(*on),
+                            Command::Volume(percent) => audio::set_volume(*percent),
+                            Command::Mute(muted) => audio::set_mute(*muted),
+                            Command::AppVolume { pid, percent } => audio::set_app_volume(*pid, *percent),
+                            Command::Output(id) => audio::set_output(id),
+                            Command::Media(control) => media::control(*control),
+                            Command::FocusWindow(hwnd) => open_windows::focus(*hwnd),
+                            Command::CloseWindow(hwnd) => open_windows::close(*hwnd),
+                            Command::Power(power) => power::run(*power),
+                            Command::Quit | Command::RadioView(_) | Command::RadioSelect(_) => Ok(()),
+                        }
                     };
                     if let Err(error) = result {
                         send(Event::Failed(error));
@@ -248,13 +254,44 @@ fn worker(requests: Receiver<Request>, events: Sender<Event>, icon_size: i32, no
                 }
             }
             if handled < MAX_BATCH && started.elapsed() < MAX_BATCH_TIME {
-                next = requests.try_recv().ok();
+                next = queued.pop_front().or_else(|| requests.try_recv().ok());
             }
         }
         if stale {
             refresh(ran);
         }
     }
+}
+
+/// Pressing a toggle repeatedly, or holding a volume key, queues a change per
+/// press, and Windows applies some slowly (radios, theme, Night Light). Each of
+/// these commands sets a value, so only the latest one matters: an earlier one
+/// is skipped when a newer one for the same setting is already waiting.
+fn superseded(command: &Command, requests: &Receiver<Request>, queued: &mut VecDeque<Request>) -> bool {
+    let Some(target) = setting(command) else {
+        return false;
+    };
+    queued.extend(requests.try_iter());
+    queued
+        .iter()
+        .any(|request| matches!(request, Request::Run(newer) if setting(newer) == Some(target)))
+}
+
+/// What a command sets, for commands whose outcome doesn't depend on how many
+/// times they run. Media keys and window actions are left out: each press counts.
+fn setting(command: &Command) -> Option<(std::mem::Discriminant<Command>, u32)> {
+    let pid = match command {
+        Command::AppVolume { pid, .. } => *pid,
+        Command::NightLight(_)
+        | Command::LightMode(_)
+        | Command::WifiPower(_)
+        | Command::BluetoothPower(_)
+        | Command::Volume(_)
+        | Command::Mute(_)
+        | Command::Output(_) => 0,
+        _ => return None,
+    };
+    Some((std::mem::discriminant(command), pid))
 }
 
 fn read_state() -> State {
@@ -1121,6 +1158,51 @@ mod system_action_tests {
                 .iter()
                 .all(|i| !matches!(i.action, Action::Command(Command::NightLight(_))))
         );
+    }
+    #[test]
+    fn only_the_latest_toggle_of_a_kind_runs() {
+        let (send, requests) = channel();
+        let mut queued = VecDeque::new();
+        send.send(Request::Run(Command::NightLight(true))).unwrap();
+        send.send(Request::Run(Command::LightMode(true))).unwrap();
+        // A newer theme request is waiting: skip this one.
+        assert!(superseded(&Command::LightMode(false), &requests, &mut queued));
+        // The waiting requests stay queued, in order.
+        assert_eq!(queued.len(), 2);
+        let Some(Request::Run(Command::NightLight(_))) = queued.pop_front() else {
+            panic!("order changed")
+        };
+        assert!(!superseded(&Command::NightLight(true), &requests, &mut queued));
+        queued.pop_front();
+        assert!(!superseded(&Command::LightMode(true), &requests, &mut queued));
+        // Radios, volume and mute: the latest press wins too.
+        queued.clear();
+        send.send(Request::Run(Command::BluetoothPower(false))).unwrap();
+        assert!(superseded(&Command::BluetoothPower(true), &requests, &mut queued));
+        assert!(!superseded(&Command::WifiPower(true), &requests, &mut queued));
+        // Per-app volume only replaces the same app.
+        queued.clear();
+        send.send(Request::Run(Command::AppVolume { pid: 7, percent: 30 }))
+            .unwrap();
+        assert!(!superseded(
+            &Command::AppVolume { pid: 8, percent: 50 },
+            &requests,
+            &mut queued
+        ));
+        assert!(superseded(
+            &Command::AppVolume { pid: 7, percent: 50 },
+            &requests,
+            &mut queued
+        ));
+        // Media keys count every press.
+        queued.clear();
+        send.send(Request::Run(Command::Media(media::Control::PlayPause)))
+            .unwrap();
+        assert!(!superseded(
+            &Command::Media(media::Control::PlayPause),
+            &requests,
+            &mut queued
+        ));
     }
     #[test]
     fn color_mode_is_one_toggle_under_every_name() {

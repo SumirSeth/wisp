@@ -36,6 +36,10 @@ pub fn read() -> Option<[bool; 2]> {
 
 pub fn set(light: bool) -> Result<(), String> {
     let previous = read().ok_or("Windows did not provide its color modes.")?;
+    // Every change makes all open windows repaint, so skip one that changes nothing.
+    if previous == [light; 2] {
+        return Ok(());
+    }
     unsafe {
         let mut key = HKEY::default();
         RegOpenKeyExW(HKEY_CURRENT_USER, KEY, None, KEY_SET_VALUE, &mut key)

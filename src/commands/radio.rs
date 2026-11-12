@@ -28,6 +28,10 @@ pub fn set_with_access(kind: RadioKind, name: &str, on: bool, access: Access) ->
         .map_err(|error| error.message())?
         .ok_or_else(|| format!("This PC has no {name} adapter."))?;
     let state = if on { RadioState::On } else { RadioState::Off };
+    // Turning a radio off and on again takes seconds: skip a change that changes nothing.
+    if radio.State().is_ok_and(|actual| actual == state) {
+        return Ok(());
+    }
     match radio.SetStateAsync(state).and_then(|op| op.join()) {
         Ok(status) if status == RadioAccessStatus::Allowed => {
             // Allowed acknowledges the request; wait for the actual radio state.
