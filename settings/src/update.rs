@@ -57,12 +57,13 @@ pub fn check() -> Result<Option<Release>, String> {
         return Ok(None);
     }
     // Tests can provide a local release response without contacting GitHub.
-    let body = match std::env::var("WISP_RELEASE_URL") {
-        Ok(url) => match url.strip_prefix("file://") {
-            Some(path) => std::fs::read(path).map_err(|e| e.to_string())?,
-            None => get(&url)?,
-        },
-        Err(_) => get(LATEST_URL)?,
+    // Only local files: the release it names is what gets installed.
+    let body = match std::env::var("WISP_RELEASE_URL")
+        .ok()
+        .and_then(|url| url.strip_prefix("file://").map(String::from))
+    {
+        Some(path) => std::fs::read(path).map_err(|error| format!("Cannot check for updates: {error}"))?,
+        None => get(LATEST_URL).map_err(|error| format!("Cannot check for updates: {error}"))?,
     };
     let release = parse_release(&body)?;
     Ok(is_newer(release.version(), env!("CARGO_PKG_VERSION")).then_some(release))
