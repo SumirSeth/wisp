@@ -883,31 +883,38 @@ fn setting_actions(query: &str, state: &State) -> Vec<ResultItem> {
                 break;
             }
         }
-        if let Some(modes) = state.color_modes {
-            let target = if "dark mode".starts_with(query) {
-                Some(false)
-            } else if "light mode".starts_with(query) {
-                Some(true)
-            } else if "toggle theme".starts_with(query) {
-                Some(!modes[0])
-            } else {
-                None
+        // One toggle: any of these names offers the mode that isn't on now.
+        if let Some(modes) = state.color_modes
+            && [
+                "theme",
+                "toggle theme",
+                "switch theme",
+                "dark mode",
+                "light mode",
+                "color mode",
+                "colour mode",
+            ]
+            .iter()
+            .any(|keyword| keyword.starts_with(query))
+        {
+            let light = !modes[0];
+            let current = match modes {
+                [true, true] => "Light mode is on",
+                [false, false] => "Dark mode is on",
+                _ => "Mixed app and system modes",
             };
-            if let Some(light) = target {
-                let current = match modes {
-                    [true, true] => "Light mode",
-                    [false, false] => "Dark mode",
-                    _ => "Mixed app and system modes",
-                };
-                items.push(
-                    row(
-                        if light { "Use light mode" } else { "Use dark mode" },
-                        current,
-                        Action::Command(Command::LightMode(light)),
-                    )
-                    .glyph(glyph::SETTINGS),
-                );
-            }
+            items.push(
+                row(
+                    if light {
+                        "Switch to light mode"
+                    } else {
+                        "Switch to dark mode"
+                    },
+                    current,
+                    Action::Command(Command::LightMode(light)),
+                )
+                .glyph(glyph::SETTINGS),
+            );
         }
     }
     items
@@ -1116,19 +1123,25 @@ mod system_action_tests {
         );
     }
     #[test]
-    fn color_modes_keep_mixed_state_and_explicit_choices() {
-        let state = State {
-            color_modes: Some([true, false]),
-            ..State::default()
-        };
-        assert!(matches!(
-            search("dark mode", &state)[0].action,
-            Action::Command(Command::LightMode(false))
-        ));
-        assert!(matches!(
-            search("light mode", &state)[0].action,
-            Action::Command(Command::LightMode(true))
-        ));
-        assert_eq!(search("dark mode", &state)[0].subtitle, "Mixed app and system modes");
+    fn color_mode_is_one_toggle_under_every_name() {
+        for (modes, light, subtitle) in [
+            ([true, true], false, "Light mode is on"),
+            ([false, false], true, "Dark mode is on"),
+            ([true, false], false, "Mixed app and system modes"),
+        ] {
+            let state = State {
+                color_modes: Some(modes),
+                ..State::default()
+            };
+            for query in ["theme", "dark", "dark mode", "light mode", "toggle theme"] {
+                let rows: Vec<_> = search(query, &state)
+                    .into_iter()
+                    .filter(|i| matches!(i.action, Action::Command(Command::LightMode(_))))
+                    .collect();
+                assert_eq!(rows.len(), 1, "{query}");
+                assert!(matches!(rows[0].action, Action::Command(Command::LightMode(target)) if target == light));
+                assert_eq!(rows[0].subtitle, subtitle);
+            }
+        }
     }
 }

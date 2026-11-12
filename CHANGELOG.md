@@ -6,7 +6,7 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ### New
 
-- Turn Night Light on or off and switch Windows between dark and light mode from the launcher. Minimize, maximize, restore, close or keep on top the window you opened it over. (#76, fixes #62)
+- Turn Night Light on or off and switch Windows between dark and light mode from the launcher: type `theme`, `dark` or `light` for one toggle. Minimize, maximize, restore, close or keep on top the window you opened it over. (#76, #78, fixes #62)
 - Wisp checks daily for stable updates and shows a notification once per version, with an update row in the launcher. Turn checks off in Settings. Metered connections and Nightly builds skip checks. (#77, fixes #43)
 
 ### Fixes
