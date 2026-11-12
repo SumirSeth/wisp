@@ -41,7 +41,7 @@ winget install SumirSeth.Wisp
 Update that install with `winget upgrade SumirSeth.Wisp`.
 
 > [!NOTE]
-Enable **Use Win key** in Settings to open Wisp by tapping either Windows key alone. Windows shortcuts and Win+click still work. With an elevated app in front, Windows may block the hook or its mask key (UIPI), so Start can open as usual.
+Enable **Use Win key** in Settings to open Wisp by tapping either Windows key alone, instead of your shortcut. Windows shortcuts and Win+click still work. With an elevated app in front, Windows may block the hook or its mask key (UIPI), so Start can open as usual.
 
 > PowerToys Run also uses <kbd>Alt</kbd>+<kbd>Space</kbd>. Turn it off, or change Wisp's shortcut.
 
@@ -149,7 +149,7 @@ Open **Settings** from Wisp's tray icon, or edit `%APPDATA%\wisp\config.toml`. T
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `hotkey` | `"Alt+Space"` | Shows or hides the launcher |
-| `win_key` | `false` | Tap either Windows key alone to show or hide Wisp instead of Start; the shortcut above still works |
+| `win_key` | `false` | Tap either Windows key alone to show or hide Wisp instead of Start. Replaces `hotkey` while on |
 | `dock` | `true` | Shows the dock |
 | `dock_autohide` | `true` | Hides the dock until the pointer touches the bottom edge. `false` keeps it visible. |
 | `window_list` | `"multiple"` | `"multiple"` lists an app's windows when it has more than one; `"always"` or `"off"` |

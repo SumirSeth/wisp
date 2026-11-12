@@ -522,14 +522,17 @@ impl Launcher {
         // Windows needs the tray icon before it can show notifications.
         tray::add(self.hwnd, self.tray_icon, &self.tooltip());
         if !crate::util::perf::hook_on("WISP_CAPTURE") {
-            self.register_hotkey(true);
             self.sync_win_key();
+            self.register_hotkey(true);
         }
         self.indexer.rescan();
         self.last_scan = Instant::now();
     }
 
     fn tooltip(&self) -> String {
+        if self.config.win_key && self.win_key_hook.is_some() {
+            return format!("{} (Win)", crate::channel::NAME);
+        }
         match &self.registered_hotkey {
             Some(hotkey) => format!("{} ({hotkey})", crate::channel::NAME),
             None => format!("{} (no shortcut)", crate::channel::NAME),
@@ -539,6 +542,17 @@ impl Launcher {
     /// Tries to restore the previous shortcut if the new shortcut cannot be
     /// registered, so an invalid config does not disable access to the launcher.
     fn register_hotkey(&mut self, report_errors: bool) {
+        // The Win key replaces the shortcut, which stays saved for when it's off.
+        // If the Win key can't be watched, keep the shortcut so Wisp stays reachable.
+        if self.config.win_key && self.win_key_hook.is_some() {
+            if self.registered_hotkey.take().is_some() {
+                unsafe {
+                    let _ = UnregisterHotKey(Some(self.hwnd), HOTKEY_ID);
+                }
+            }
+            tray::set_tip(self.hwnd, &self.tooltip());
+            return;
+        }
         if self.registered_hotkey.as_deref() == Some(self.config.hotkey.as_str()) {
             return;
         }
@@ -588,6 +602,7 @@ impl Launcher {
                 Ok(hook) => self.win_key_hook = Some(hook),
                 Err(error) => tray::notify(self.hwnd, "Could not enable Win key", &error.to_string(), true),
             }
+            tray::set_tip(self.hwnd, &self.tooltip());
         }
     }
 
@@ -608,8 +623,8 @@ impl Launcher {
         self.taskbar_failures = 0;
         self.sync_shell();
         self.apply_theme();
-        self.register_hotkey(true);
         self.sync_win_key();
+        self.register_hotkey(true);
     }
 
     /// Hides or restores the Windows taskbar and creates or removes the dock

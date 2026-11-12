@@ -4,7 +4,8 @@
 # Examples: "Alt+Space", "Ctrl+Shift+Space", "Win+Alt+R", "Ctrl+F12"
 hotkey = "Alt+Space"
 
-# Tap the Windows key alone to open Wisp instead of Start.
+# Tap the Windows key alone to open Wisp instead of Start. Replaces hotkey
+# while on.
 win_key = false
 
 # Results visible at once. Scroll to see more.

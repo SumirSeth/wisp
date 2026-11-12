@@ -652,6 +652,13 @@ impl Settings {
     }
 
     fn shortcut_control(&self, p: Palette, cx: &mut Context<Self>) -> Div {
+        if self.config.win_key {
+            // The Win key replaces the shortcut; the saved one returns when it's off.
+            return v_flex().child(hint(
+                "Using the Win key. Turn off Use Win key to choose your own shortcut.",
+                p,
+            ));
+        }
         v_flex()
             .gap_2()
             .child(
@@ -678,7 +685,7 @@ impl Settings {
 
     fn conflict_warning(&self, p: Palette) -> Option<Div> {
         let enabled = self.powertoys.as_ref().copied().unwrap_or(false);
-        system::has_shortcut_conflict(&self.config.hotkey, enabled).then(|| {
+        (!self.config.win_key && system::has_shortcut_conflict(&self.config.hotkey, enabled)).then(|| {
             note(
                 "PowerToys Run is on and also uses Alt+Space. Turn it off in PowerToys Settings, or choose another shortcut.",
                 p.warn,
