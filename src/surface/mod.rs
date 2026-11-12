@@ -545,7 +545,7 @@ fn media_widget(playing: &media::State) -> Widget {
         Input::Buttons {
             buttons: vec![
                 (glyph::PREVIOUS, Command::Media(media::Control::Previous)),
-                (play, Command::Media(media::Control::PlayPause)),
+                (play, Command::Media(media::Control::toggle(playing.playing))),
                 (glyph::NEXT, Command::Media(media::Control::Next)),
             ],
         },
@@ -568,6 +568,11 @@ pub fn apply(command: &Command, state: &mut State) {
             }
             if let (Some(Some(audio)), Some(output)) = (&mut state.audio, state.outputs.iter().find(|o| o.default)) {
                 audio.device = output.name.clone();
+            }
+        }
+        Command::Media(control @ (media::Control::Play | media::Control::Pause)) => {
+            if let Some(Some(media)) = &mut state.media {
+                media.playing = *control == media::Control::Play;
             }
         }
         _ => {}

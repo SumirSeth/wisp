@@ -289,6 +289,8 @@ fn setting(command: &Command) -> Option<(std::mem::Discriminant<Command>, u32)> 
         | Command::Volume(_)
         | Command::Mute(_)
         | Command::Output(_) => 0,
+        // Play and pause set a state, unlike a play/pause key that flips it.
+        Command::Media(media::Control::Play | media::Control::Pause) => 1,
         _ => return None,
     };
     Some((std::mem::discriminant(command), pid))
@@ -612,7 +614,7 @@ fn media_items(words: &[&str], state: Option<&Option<media::State>>) -> Vec<Resu
                         .filter(|p| !p.is_empty())
                         .collect::<Vec<_>>()
                         .join(" · "),
-                    Action::Command(Command::Media(Control::PlayPause)),
+                    Action::Command(Command::Media(Control::toggle(media.playing))),
                 )
                 .glyph(if media.playing { glyph::PAUSE } else { glyph::PLAY })
                 .verb(if media.playing { "Pause" } else { "Play" }),
@@ -1194,12 +1196,18 @@ mod system_action_tests {
             &requests,
             &mut queued
         ));
-        // Media keys count every press.
+        // Play and pause replace each other; track skips count every press.
         queued.clear();
-        send.send(Request::Run(Command::Media(media::Control::PlayPause)))
-            .unwrap();
+        send.send(Request::Run(Command::Media(media::Control::Pause))).unwrap();
+        assert!(superseded(
+            &Command::Media(media::Control::Play),
+            &requests,
+            &mut queued
+        ));
+        queued.clear();
+        send.send(Request::Run(Command::Media(media::Control::Next))).unwrap();
         assert!(!superseded(
-            &Command::Media(media::Control::PlayPause),
+            &Command::Media(media::Control::Next),
             &requests,
             &mut queued
         ));

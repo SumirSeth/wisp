@@ -1617,6 +1617,10 @@ impl Launcher {
                         state.wifi = shown.wifi.clone();
                         state.bluetooth = shown.bluetooth.clone();
                         state.audio = shown.audio.clone();
+                        // Keep the shown play state, but take a new track's details.
+                        if let (Some(Some(media)), Some(Some(old))) = (&mut state.media, &shown.media) {
+                            media.playing = old.playing;
+                        }
                         state.outputs = shown.outputs.clone();
                         for session in &mut state.sessions {
                             if let Some(old) = shown.sessions.iter().find(|s| s.pid == session.pid) {

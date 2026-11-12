@@ -11,7 +11,7 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ### Fixes
 
-- Pressing a toggle in the launcher many times in a row, such as Bluetooth, Wi-Fi or dark mode, no longer keeps Windows switching for seconds afterwards: only the last press is applied. (#78)
+- Pressing a toggle in the launcher many times in a row, such as Bluetooth, Wi-Fi, dark mode or play/pause, no longer keeps Windows switching for seconds afterwards: only the last press is applied. (#78)
 - Keep the launcher's backdrop and border consistent at the bottom and center of the screen, in both light and dark themes. (#75, fixes #45)
 
 ## 0.7.0 - 2026-11-12

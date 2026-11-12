@@ -8,7 +8,6 @@ use windows::Media::Control::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Control {
-    PlayPause,
     Play,
     Pause,
     Next,
@@ -22,6 +21,14 @@ pub struct State {
     /// The app that plays, such as "Spotify".
     pub app: String,
     pub playing: bool,
+}
+
+impl Control {
+    /// The button for media in this state: pause while playing, otherwise play.
+    /// Setting a state, rather than flipping it, makes repeated presses safe to collapse.
+    pub fn toggle(playing: bool) -> Self {
+        if playing { Self::Pause } else { Self::Play }
+    }
 }
 
 fn session() -> windows::core::Result<Session> {
@@ -47,7 +54,6 @@ pub fn state() -> Option<State> {
 pub fn control(control: Control) -> Result<(), String> {
     let session = session().map_err(|_| "Nothing is playing.".to_string())?;
     let request = match control {
-        Control::PlayPause => session.TryTogglePlayPauseAsync(),
         Control::Play => session.TryPlayAsync(),
         Control::Pause => session.TryPauseAsync(),
         Control::Next => session.TrySkipNextAsync(),
