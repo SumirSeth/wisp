@@ -96,6 +96,9 @@ Type to search, then press <kbd>Enter</kbd>.
 | `^vis` · `term$` · `'note` · `!edge` | Match the start · the end · exactly · exclude |
 | `sqrt(2) * 10` | Calculate. <kbd>Enter</kbd> copies the result. |
 | `> ipconfig` | Run a command in Command Prompt |
+| `night light` ? `night light off` | Turn Night Light on or off. The row shows its current state; Settings stays available. |
+| `dark mode` ? `light mode` | Change both Windows and app color modes. |
+| `minimize` ? `maximize` ? `restore` ? `close window` ? `always on top` | Control the window you opened the launcher over. Its title appears below the action. |
 | `wifi off` · `bt` · `vol 40` · `mute` | Change a setting. <kbd>Tab</kbd> lists networks, devices or outputs. |
 | `play` · `pause` · `next` | Control media |
 | `w code` | Switch to an open window |

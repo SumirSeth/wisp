@@ -5,11 +5,13 @@
 //! launcher keeps the latest state the worker reported and builds results
 //! from it; the worker posts a message when new state arrives.
 
+pub mod appearance;
 pub mod audio;
 pub mod battery;
 pub mod bluetooth;
 pub mod bluetooth_audio;
 pub mod media;
+pub mod night_light;
 pub mod open_windows;
 pub mod power;
 pub(crate) mod radio;
@@ -74,6 +76,9 @@ pub enum Command {
     /// Surface navigation and selection, handled by the launcher.
     RadioView(bool),
     RadioSelect(String),
+    NightLight(bool),
+    LightMode(bool),
+    WindowControl(open_windows::Target, open_windows::Control),
     WifiPower(bool),
     WifiConnect(String),
     BluetoothPower(bool),
@@ -99,7 +104,11 @@ impl Command {
     pub fn stays_open(&self) -> bool {
         !matches!(
             self,
-            Command::WifiConnect(_) | Command::FocusWindow(_) | Command::Power(_) | Command::Quit
+            Command::WifiConnect(_)
+                | Command::FocusWindow(_)
+                | Command::WindowControl(_, _)
+                | Command::Power(_)
+                | Command::Quit
         )
     }
 }
@@ -108,6 +117,8 @@ impl Command {
 /// `Some(None)` if the PC lacks the device (or, for media, nothing plays).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct State {
+    pub night_light: Option<bool>,
+    pub color_modes: Option<[bool; 2]>,
     pub wifi: Option<Option<wifi::State>>,
     pub bluetooth: Option<Option<bluetooth::State>>,
     pub audio: Option<Option<audio::State>>,
@@ -182,6 +193,7 @@ fn worker(requests: Receiver<Request>, events: Sender<Event>, icon_size: i32, no
     };
     let mut icons_sent = HashSet::new();
     let mut ran = 0;
+    let mut night_light_written = 0;
     let mut refresh = |ran: u64| {
         let state = read_state();
         let windows = state.windows.iter().map(|w| (w.icon_key(), &w.exe));
@@ -208,6 +220,9 @@ fn worker(requests: Receiver<Request>, events: Sender<Event>, icon_size: i32, no
                 Request::List(drill) => send(Event::List(drill, list_items(drill))),
                 Request::Run(command) => {
                     let result = match &command {
+                        Command::NightLight(on) => night_light::set(*on, &mut night_light_written),
+                        Command::LightMode(light) => appearance::set(*light),
+                        Command::WindowControl(target, control) => target.run(*control),
                         Command::WifiPower(on) => wifi::set_power(*on),
                         Command::WifiConnect(profile) => wifi::connect(profile),
                         Command::BluetoothPower(on) => bluetooth::set_power(*on),
@@ -244,6 +259,8 @@ fn worker(requests: Receiver<Request>, events: Sender<Event>, icon_size: i32, no
 
 fn read_state() -> State {
     State {
+        night_light: night_light::read(),
+        color_modes: appearance::read(),
         wifi: Some(wifi::state()),
         bluetooth: Some(bluetooth::state()),
         audio: Some(audio::state()),
@@ -289,6 +306,7 @@ pub fn search(query: &str, state: &State) -> Vec<ResultItem> {
     }
     let words: Vec<&str> = query.split_whitespace().collect();
     let mut items = Vec::new();
+    items.extend(setting_actions(&query, state));
     items.extend(wifi_items(&words, state.wifi.as_ref()));
     items.extend(bluetooth_items(&words, state.bluetooth.as_ref()));
     items.extend(volume_items(&words, state.audio.as_ref()));
@@ -836,6 +854,65 @@ pub fn radio_on_bluetooth() -> bool {
     radio::is_on(windows::Devices::Radios::RadioKind::Bluetooth).unwrap_or(false)
 }
 
+fn setting_actions(query: &str, state: &State) -> Vec<ResultItem> {
+    let mut items = Vec::new();
+    if query.len() >= 3 {
+        for keyword in ["night light", "nightlight", "blue light"] {
+            let target = if keyword.starts_with(query) {
+                state.night_light.map(|on| !on)
+            } else if query == format!("{keyword} on") {
+                state.night_light.map(|_| true)
+            } else if query == format!("{keyword} off") {
+                state.night_light.map(|_| false)
+            } else {
+                None
+            };
+            if let (Some(target), Some(on)) = (target, state.night_light) {
+                items.push(
+                    row(
+                        if target {
+                            "Turn Night Light on"
+                        } else {
+                            "Turn Night Light off"
+                        },
+                        if on { "Night Light is on" } else { "Night Light is off" },
+                        Action::Command(Command::NightLight(target)),
+                    )
+                    .glyph(glyph::SETTINGS),
+                );
+                break;
+            }
+        }
+        if let Some(modes) = state.color_modes {
+            let target = if "dark mode".starts_with(query) {
+                Some(false)
+            } else if "light mode".starts_with(query) {
+                Some(true)
+            } else if "toggle theme".starts_with(query) {
+                Some(!modes[0])
+            } else {
+                None
+            };
+            if let Some(light) = target {
+                let current = match modes {
+                    [true, true] => "Light mode",
+                    [false, false] => "Dark mode",
+                    _ => "Mixed app and system modes",
+                };
+                items.push(
+                    row(
+                        if light { "Use light mode" } else { "Use dark mode" },
+                        current,
+                        Action::Command(Command::LightMode(light)),
+                    )
+                    .glyph(glyph::SETTINGS),
+                );
+            }
+        }
+    }
+    items
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -996,5 +1073,62 @@ mod tests {
             network_items(state.wifi.as_ref(), None)[0].title,
             "Looking for networks…"
         );
+    }
+}
+
+#[cfg(test)]
+mod system_action_tests {
+    use super::*;
+    #[test]
+    fn night_light_keeps_settings_and_hides_unreadable_toggle() {
+        let mut state = State::default();
+        assert!(
+            search("night light", &state)
+                .iter()
+                .all(|i| !matches!(i.action, Action::Command(Command::NightLight(_))))
+        );
+        assert!(
+            search("night light", &state)
+                .iter()
+                .any(|i| matches!(&i.action, Action::Open(uri) if uri == "ms-settings:nightlight"))
+        );
+        for on in [false, true] {
+            state.night_light = Some(on);
+            let rows = search("night light", &state);
+            assert_eq!(
+                rows[0].title,
+                if on {
+                    "Turn Night Light off"
+                } else {
+                    "Turn Night Light on"
+                }
+            );
+            assert!(matches!(rows[0].action, Action::Command(Command::NightLight(target)) if target != on));
+            assert!(matches!(
+                search("night light off", &state)[0].action,
+                Action::Command(Command::NightLight(false))
+            ));
+        }
+        assert!(
+            search("night light nonsense", &state)
+                .iter()
+                .all(|i| !matches!(i.action, Action::Command(Command::NightLight(_))))
+        );
+    }
+    #[test]
+    fn color_modes_keep_mixed_state_and_explicit_choices() {
+        let state = State {
+            color_modes: Some([true, false]),
+            ..State::default()
+        };
+        assert!(matches!(
+            search("dark mode", &state)[0].action,
+            Action::Command(Command::LightMode(false))
+        ));
+        assert!(matches!(
+            search("light mode", &state)[0].action,
+            Action::Command(Command::LightMode(true))
+        ));
+        assert_eq!(search("dark mode", &state)[0].subtitle, "Mixed app and system modes");
     }
 }

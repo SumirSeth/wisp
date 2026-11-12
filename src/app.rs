@@ -286,6 +286,7 @@ pub fn run() -> Result<()> {
             morphed: false,
             outline: None,
             previous_foreground: HWND::default(),
+            previous_target: None,
         };
         LAUNCHER.with(|cell| *cell.borrow_mut() = Some(launcher));
         with_launcher(|l| {
@@ -463,6 +464,7 @@ struct Launcher {
     morphed: bool,
     outline: Option<RECT>,
     previous_foreground: HWND,
+    previous_target: Option<commands::open_windows::Target>,
 }
 
 struct Morph {
@@ -826,6 +828,7 @@ impl Launcher {
         });
         if !self.visible {
             self.previous_foreground = unsafe { GetForegroundWindow() };
+            self.previous_target = commands::open_windows::Target::capture(self.previous_foreground);
         }
         self.editor.select_all();
         self.update_results();
@@ -1214,6 +1217,10 @@ impl Launcher {
             return;
         }
         self.base_results = commands::search(self.editor.text(), &self.command_state);
+        self.base_results.extend(commands::open_windows::target_items(
+            self.editor.text(),
+            self.previous_target.as_ref(),
+        ));
         if !commands::is_window_query(self.editor.text()) {
             self.base_results.extend(self.surfaces.search(self.editor.text()));
             self.base_results.extend(
@@ -1434,6 +1441,17 @@ impl Launcher {
                 self.hide();
                 return;
             }
+            Command::WindowControl(ref target, control) => {
+                if !target.valid() {
+                    tray::notify(self.hwnd, "Wisp", "The original window was closed or replaced.", true);
+                    return;
+                }
+                self.hide();
+                if let Err(error) = target.run(control) {
+                    tray::notify(self.hwnd, "Wisp", &error, true);
+                }
+                return;
+            }
             Command::Power(power) => {
                 self.hide();
                 if let Err(error) = commands::power::run(power) {
@@ -1446,6 +1464,8 @@ impl Launcher {
         // Show the new state now; the worker confirms it.
         surface::apply(&command, &mut self.command_state);
         match &command {
+            Command::NightLight(on) => self.command_state.night_light = Some(*on),
+            Command::LightMode(light) => self.command_state.color_modes = Some([*light; 2]),
             Command::WifiPower(on) => {
                 if let Some(Some(wifi)) = &mut self.command_state.wifi {
                     wifi.on = *on;
@@ -1548,6 +1568,8 @@ impl Launcher {
                     // so keep what the launcher shows for those.
                     if ran < self.commands_sent {
                         let shown = &self.command_state;
+                        state.night_light = shown.night_light;
+                        state.color_modes = shown.color_modes;
                         state.wifi = shown.wifi.clone();
                         state.bluetooth = shown.bluetooth.clone();
                         state.audio = shown.audio.clone();

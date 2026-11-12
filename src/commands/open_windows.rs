@@ -198,3 +198,238 @@ pub fn program_name(exe: &str) -> &str {
         .or_else(|| file.strip_suffix(".EXE"))
         .unwrap_or(file)
 }
+
+/// The window the launcher opened over. Never resolve it from the current
+/// foreground window: that would be the launcher by the time Enter is pressed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Target {
+    pub hwnd: isize,
+    pid: u32,
+    class: Vec<u16>,
+    title: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Control {
+    Minimize,
+    Maximize,
+    Restore,
+    Close,
+    Topmost(bool),
+}
+
+impl Target {
+    pub fn capture(hwnd: HWND) -> Option<Self> {
+        unsafe {
+            if !IsWindow(Some(hwnd)).as_bool()
+                || !IsWindowVisible(hwnd).as_bool()
+                || hwnd == GetDesktopWindow()
+                || hwnd == GetShellWindow()
+                || GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW.0 != 0
+            {
+                return None;
+            }
+            let mut pid = 0;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            if pid == 0 || pid == std::process::id() {
+                return None;
+            }
+            let mut class = vec![0u16; 256];
+            let len = GetClassNameW(hwnd, &mut class);
+            if len == 0 {
+                return None;
+            }
+            class.truncate(len as usize);
+            let mut title = [0u16; 512];
+            let len = GetWindowTextW(hwnd, &mut title);
+            if len == 0 {
+                return None;
+            }
+            Some(Self {
+                hwnd: hwnd.0 as isize,
+                pid,
+                class,
+                title: String::from_utf16_lossy(&title[..len as usize]),
+            })
+        }
+    }
+
+    pub fn valid(&self) -> bool {
+        unsafe {
+            let hwnd = HWND(self.hwnd as _);
+            let mut pid = 0;
+            let mut class = [0u16; 256];
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            let len = GetClassNameW(hwnd, &mut class).max(0) as usize;
+            IsWindow(Some(hwnd)).as_bool() && pid == self.pid && class[..len] == self.class
+        }
+    }
+
+    pub fn run(&self, control: Control) -> Result<(), String> {
+        if !self.valid() {
+            return Err("The original window was closed or replaced.".into());
+        }
+        unsafe {
+            let hwnd = HWND(self.hwnd as _);
+            match control {
+                Control::Minimize | Control::Maximize | Control::Restore => {
+                    let show = match control {
+                        Control::Minimize => SW_MINIMIZE,
+                        Control::Maximize => SW_MAXIMIZE,
+                        _ => SW_RESTORE,
+                    };
+                    ShowWindowAsync(hwnd, show).ok().map_err(|e| e.message())
+                }
+                Control::Close => close(self.hwnd),
+                Control::Topmost(on) => SetWindowPos(
+                    hwnd,
+                    Some(if on { HWND_TOPMOST } else { HWND_NOTOPMOST }),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                )
+                .map_err(|e| e.message()),
+            }
+        }
+    }
+}
+
+pub fn target_items(query: &str, target: Option<&Target>) -> Vec<crate::search::ResultItem> {
+    use super::{Command, glyph, row};
+    use crate::search::Action;
+    let Some(target) = target.filter(|t| t.valid()) else {
+        return Vec::new();
+    };
+    let query = query.trim().to_lowercase();
+    if query.len() < 3 {
+        return Vec::new();
+    }
+    let hwnd = HWND(target.hwnd as _);
+    let (zoomed, topmost, style) = unsafe {
+        (
+            IsZoomed(hwnd).as_bool(),
+            GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST.0 != 0,
+            GetWindowLongW(hwnd, GWL_STYLE) as u32,
+        )
+    };
+    let choices = [
+        (
+            "Minimize window",
+            "minimize window",
+            Control::Minimize,
+            style & WS_MINIMIZEBOX.0 != 0,
+        ),
+        (
+            if zoomed { "Restore window" } else { "Maximize window" },
+            if zoomed { "restore window" } else { "maximize window" },
+            if zoomed { Control::Restore } else { Control::Maximize },
+            style & WS_MAXIMIZEBOX.0 != 0,
+        ),
+        ("Close window", "close window", Control::Close, true),
+        (
+            if topmost {
+                "Stop keeping window on top"
+            } else {
+                "Keep window always on top"
+            },
+            "always on top",
+            Control::Topmost(!topmost),
+            true,
+        ),
+    ];
+    choices
+        .into_iter()
+        .filter(|(_, keyword, _, enabled)| *enabled && (keyword.starts_with(&query) || query == "window"))
+        .map(|(title, _, control, _)| {
+            row(
+                title,
+                &target.title,
+                Action::Command(Command::WindowControl(target.clone(), control)),
+            )
+            .glyph(glyph::WINDOW)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod target_tests {
+    use super::*;
+    #[test]
+    fn validates_both_pid_and_class_on_an_owned_message_window() {
+        use windows::core::w;
+        unsafe {
+            let hwnd = CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                w!("Wisp identity test"),
+                WINDOW_STYLE(0),
+                0,
+                0,
+                1,
+                1,
+                Some(HWND_MESSAGE),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let target = Target {
+                hwnd: hwnd.0 as isize,
+                pid: std::process::id(),
+                class: "Static".encode_utf16().collect(),
+                title: "Wisp identity test".into(),
+            };
+            // GetClassName returns the registered casing on this Windows version.
+            let mut class = [0u16; 256];
+            let len = GetClassNameW(hwnd, &mut class) as usize;
+            let target = Target {
+                class: class[..len].to_vec(),
+                ..target
+            };
+            assert!(target.valid());
+            let wrong_pid = Target {
+                pid: 0,
+                ..target.clone()
+            };
+            let wrong_class = Target {
+                class: vec![1],
+                ..target.clone()
+            };
+            for invalid in [wrong_pid, wrong_class] {
+                assert!(!invalid.valid());
+                assert!(invalid.run(Control::Close).is_err());
+                assert!(IsWindow(Some(hwnd)).as_bool());
+            }
+            target.run(Control::Close).unwrap();
+            let mut msg = MSG::default();
+            while PeekMessageW(&mut msg, Some(hwnd), 0, 0, PM_REMOVE).as_bool() {
+                DispatchMessageW(&msg);
+            }
+            assert!(!IsWindow(Some(hwnd)).as_bool());
+            assert!(!target.valid());
+        }
+    }
+
+    #[test]
+    fn rejects_closed_targets_before_every_control() {
+        let target = Target {
+            hwnd: 0,
+            pid: std::process::id(),
+            class: vec![1],
+            title: "Closed test window".into(),
+        };
+        assert!(Target::capture(HWND::default()).is_none());
+        assert!(target_items("window", Some(&target)).is_empty());
+        for control in [
+            Control::Minimize,
+            Control::Maximize,
+            Control::Restore,
+            Control::Close,
+            Control::Topmost(true),
+        ] {
+            assert!(target.run(control).is_err());
+        }
+    }
+}

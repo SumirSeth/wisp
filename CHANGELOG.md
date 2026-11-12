@@ -4,6 +4,10 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ## Unreleased
 
+### New
+
+- Turn Night Light on or off and switch Windows between dark and light mode from the launcher. Minimize, maximize, restore, close or keep on top the window you opened it over. (#76, fixes #62)
+
 ### Fixes
 
 - Keep the launcher's backdrop and border consistent at the bottom and center of the screen, in both light and dark themes. (#75, fixes #45)
