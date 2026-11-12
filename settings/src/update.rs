@@ -56,9 +56,61 @@ pub fn check() -> Result<Option<Release>, String> {
     if crate::channel::NIGHTLY {
         return Ok(None);
     }
-    let body = get(LATEST_URL).map_err(|error| format!("Cannot check for updates: {error}"))?;
+    // Tests can provide a local release response without contacting GitHub.
+    let body = match std::env::var("WISP_RELEASE_URL") {
+        Ok(url) => match url.strip_prefix("file://") {
+            Some(path) => std::fs::read(path).map_err(|e| e.to_string())?,
+            None => get(&url)?,
+        },
+        Err(_) => get(LATEST_URL)?,
+    };
     let release = parse_release(&body)?;
     Ok(is_newer(release.version(), env!("CARGO_PKG_VERSION")).then_some(release))
+}
+
+/// Runs before GPUI starts. Errors leave the previous notice alone.
+pub fn check_hidden() {
+    if crate::channel::NIGHTLY {
+        return;
+    }
+    let Ok(config_path) = crate::config::path() else { return };
+    let Ok(config) = crate::config::Store::new(config_path.clone()).load() else {
+        return;
+    };
+    if !config.check_for_updates || !unmetered() {
+        return;
+    }
+    let Ok(release) = check() else { return };
+    let path = config_path.with_file_name("update.toml");
+    let mut state = crate::update_notice::State::load(&path);
+    state.version = release.map(|r| r.version().to_owned()).unwrap_or_default();
+    debug_assert!(state.version.is_empty() || state.available());
+    if state.save(&path).is_err() {
+        return;
+    }
+    unsafe {
+        if let Ok(hwnd) = FindWindowW(crate::channel::LAUNCHER_CLASS, None) {
+            let _ = PostMessageW(Some(hwnd), crate::update_notice::MESSAGE, WPARAM(0), LPARAM(0));
+        }
+    }
+}
+
+fn unmetered() -> bool {
+    use windows::Win32::{Networking::NetworkListManager::*, System::Com::*};
+    unsafe {
+        if CoInitializeEx(None, COINIT_MULTITHREADED).is_err() {
+            return false;
+        }
+        let result = (|| {
+            let manager: INetworkCostManager = CoCreateInstance(&NetworkListManager, None, CLSCTX_ALL).ok()?;
+            let mut cost = 0;
+            manager.GetCost(&mut cost, std::ptr::null()).ok()?;
+            Some(cost == NLM_CONNECTION_COST_UNRESTRICTED.0 as u32)
+        })()
+        .unwrap_or(false);
+        CoUninitialize();
+        result
+    }
 }
 
 /// Downloads, verifies and installs `release`. Restarts the launcher if it was

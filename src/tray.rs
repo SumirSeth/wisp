@@ -52,7 +52,32 @@ pub fn remove(hwnd: HWND) {
     }
 }
 
+thread_local! {
+    static UPDATE_BALLOON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub fn notify_update(hwnd: HWND, version: &str) {
+    notify(
+        hwnd,
+        "Wisp update",
+        &format!("Wisp {version} is available. Click to update."),
+        false,
+    );
+    UPDATE_BALLOON.set(true);
+}
+
+pub fn notification_click(event: u32) -> bool {
+    if event == NIN_BALLOONUSERCLICK {
+        return UPDATE_BALLOON.replace(false);
+    }
+    if event == NIN_BALLOONHIDE || event == NIN_BALLOONTIMEOUT {
+        UPDATE_BALLOON.set(false);
+    }
+    false
+}
+
 pub fn notify(hwnd: HWND, title: &str, message: &str, warning: bool) {
+    UPDATE_BALLOON.set(false);
     let mut d = data(hwnd);
     d.uFlags = NIF_INFO;
     d.dwInfoFlags = if warning { NIIF_WARNING } else { NIIF_INFO };

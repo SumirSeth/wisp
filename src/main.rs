@@ -26,6 +26,7 @@ mod taskbar;
 mod theme;
 mod tray;
 mod tray_host;
+mod update_notice;
 mod util;
 
 fn main() {

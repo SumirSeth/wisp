@@ -870,6 +870,19 @@ impl Settings {
             .child(label("Status", p))
             .child(self.status_controls(p, cx))
             .child(div().h_3())
+            .child(label("Updates", p))
+            .child(group(p).child(row(
+                "Check for updates",
+                "Check daily, except on metered connections. Nightly builds skip checks.",
+                Switch::new("check-for-updates")
+                    .checked(self.config.check_for_updates)
+                    .accessibility_label("Check for updates")
+                    .on_change(cx.listener(|this, enabled: &bool, window, cx| {
+                        this.save("check_for_updates", (*enabled).into(), window, cx);
+                    })),
+                p,
+            )))
+            .child(div().h_3())
             .child(label("Startup", p))
             .child(group(p).child(row(
                 "Start with Windows",

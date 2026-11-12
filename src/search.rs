@@ -48,6 +48,7 @@ pub enum Action {
         path: Option<String>,
         admin: bool,
     },
+    Update,
     Copy(String),
     Open(String),
     Shell {

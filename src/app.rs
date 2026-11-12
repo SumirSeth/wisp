@@ -48,6 +48,7 @@ const REEL_MS: u32 = 50;
 const WM_APP_COMMANDS: u32 = WM_APP + 7;
 const CLASS_NAME: PCWSTR = crate::channel::LAUNCHER_CLASS;
 const HOTKEY_ID: i32 = 1;
+const UPDATE_TIMER: usize = 5;
 const CARET_TIMER: usize = 1;
 /// Reads the state again while a surface is open, so it stays live.
 const SURFACE_TIMER: usize = 2;
@@ -249,6 +250,7 @@ pub fn run() -> Result<()> {
             visible: false,
             editor: crate::editor::Editor::default(),
             searcher: Searcher::new(),
+            update_version: None,
             results: Vec::new(),
             base_results: Vec::new(),
             file_results: Vec::new(),
@@ -291,6 +293,10 @@ pub fn run() -> Result<()> {
         LAUNCHER.with(|cell| *cell.borrow_mut() = Some(launcher));
         with_launcher(|l| {
             l.start();
+            if !crate::channel::NIGHTLY {
+                SetTimer(Some(l.hwnd), UPDATE_TIMER, 120_000, None);
+                l.read_update_notice();
+            }
             if crate::util::perf::hook_on("WISP_CAPTURE") {
                 if !matches!(
                     crate::util::perf::hook("WISP_CAPTURE_SCENARIO").as_deref(),
@@ -408,6 +414,7 @@ struct Launcher {
 
     editor: crate::editor::Editor,
     searcher: Searcher,
+    update_version: Option<String>,
     /// What the launcher shows: `base_results` with `file_results` inserted
     /// before the web search result.
     results: Vec<ResultItem>,
@@ -1184,6 +1191,26 @@ impl Launcher {
         }
     }
 
+    fn read_update_notice(&mut self) {
+        self.update_version = None;
+        if !crate::channel::NIGHTLY && self.config.check_for_updates {
+            let path = util::data_dir().join("update.toml");
+            let mut state = crate::update_notice::State::load(&path);
+            if state.available() {
+                self.update_version = Some(state.version.clone());
+                if state.last_notified != state.version {
+                    state.last_notified = state.version.clone();
+                    if state.save(&path).is_ok() {
+                        tray::notify_update(self.hwnd, &state.version);
+                    }
+                }
+            }
+        }
+        if self.visible {
+            self.update_results();
+        }
+    }
+
     fn update_results(&mut self) {
         let _span = util::perf::Span::new("search");
         let rows_before = self.window_rows();
@@ -1226,6 +1253,22 @@ impl Launcher {
             self.base_results.extend(
                 self.searcher
                     .search(self.editor.text(), &self.apps, &self.history, &self.config),
+            );
+        }
+        if self.config.check_for_updates
+            && self.editor.text().is_empty()
+            && let Some(version) = &self.update_version
+        {
+            self.base_results.insert(
+                0,
+                ResultItem::new(
+                    Kind::Command,
+                    format!("Update Wisp to {version}"),
+                    "Open Settings to update",
+                    Action::Update,
+                )
+                .glyph("\u{E777}")
+                .verb("Update"),
             );
         }
         if let Some(armed) = &self.armed {
@@ -1364,6 +1407,7 @@ impl Launcher {
                 }
                 result
             }
+            Action::Update => launch::update_settings(),
             Action::Copy(text) => system::set_clipboard(self.hwnd, text),
             Action::Open(target) => launch::open(target),
             Action::Shell { command, .. } if command.is_empty() => return,
@@ -2576,8 +2620,29 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_APP_RELOAD => {
             with_launcher(|l| {
                 l.reload_config_if_changed();
+                l.read_update_notice();
                 if let Some(dock) = &mut l.dock {
                     dock.reload_pins();
+                }
+            });
+        }
+        crate::update_notice::MESSAGE => {
+            with_launcher(Launcher::read_update_notice);
+        }
+        WM_TIMER if wparam.0 == UPDATE_TIMER => {
+            unsafe {
+                SetTimer(Some(hwnd), UPDATE_TIMER, 86_400_000, None);
+            }
+            with_launcher(|l| {
+                if l.config.check_for_updates
+                    && !crate::channel::NIGHTLY
+                    && let Ok(exe) = std::env::current_exe()
+                {
+                    use std::os::windows::process::CommandExt;
+                    let _ = std::process::Command::new(exe.with_file_name("wisp-settings.exe"))
+                        .arg("--check-updates")
+                        .creation_flags(0x08000000)
+                        .spawn();
                 }
             });
         }
@@ -2782,6 +2847,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_ENDSESSION if wparam.0 != 0 => taskbar::emergency_restore(),
         tray::WM_TRAY => match loword(lparam.0 as usize) {
+            event if tray::notification_click(event) => {
+                let _ = launch::update_settings();
+            }
             WM_LBUTTONUP => {
                 with_launcher(Launcher::show);
             }

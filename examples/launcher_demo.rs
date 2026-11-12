@@ -43,6 +43,8 @@ mod theme;
 mod tray;
 #[path = "../src/tray_host.rs"]
 mod tray_host;
+#[path = "../src/update_notice.rs"]
+mod update_notice;
 #[path = "../src/util.rs"]
 mod util;
 mod channel {

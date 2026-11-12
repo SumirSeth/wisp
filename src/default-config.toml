@@ -32,6 +32,9 @@ file_search = true
 # whose names start with a dot, such as .git.
 file_search_exclude = ["node_modules", "AppData", "site-packages", "__pycache__", "venv", "target", "dist", "build", "Cache", "Code Cache", "GPUCache", "Service Worker", "IndexedDB", "Extensions"]
 
+# Check daily for new stable releases, except on metered connections.
+check_for_updates = true
+
 # Hide the Windows taskbar while Wisp runs. The taskbar comes back when Wisp
 # quits.
 hide_taskbar = true

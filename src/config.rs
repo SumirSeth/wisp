@@ -55,6 +55,7 @@ pub enum WindowListMode {
 /// what an old config means.
 #[derive(Debug, Deserialize)]
 pub struct Config {
+    pub check_for_updates: bool,
     pub hide_taskbar: bool,
     pub dock: bool,
     pub dock_autohide: bool,

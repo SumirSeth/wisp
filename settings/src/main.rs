@@ -16,11 +16,17 @@ mod palette;
 mod system;
 mod ui;
 mod update;
+#[path = "../../src/update_notice.rs"]
+mod update_notice;
 
 use gpui_kit::{AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--check-updates") {
+        update::check_hidden();
+        return;
+    }
     let welcome = args.iter().any(|a| a == "--welcome");
     // `--page search` opens a page directly, for screenshots and testing.
     let page = args

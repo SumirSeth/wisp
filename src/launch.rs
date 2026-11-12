@@ -94,6 +94,15 @@ pub fn settings(welcome: bool) -> Result<()> {
     execute(&settings.to_string_lossy(), welcome.then_some("--welcome"), false)
 }
 
+pub fn update_settings() -> Result<()> {
+    let exe = std::env::current_exe().map_err(|e| windows::core::Error::new(E_FAIL, e.to_string()))?;
+    execute(
+        &exe.with_file_name("wisp-settings.exe").to_string_lossy(),
+        Some("--page about"),
+        false,
+    )
+}
+
 /// Uses an absolute path to avoid running a same-named executable in the
 /// current directory.
 fn system_tool(relative: &str) -> String {
