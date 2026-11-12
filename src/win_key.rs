@@ -1,4 +1,4 @@
-//! Opt-in Windows-key taps. Hooks run on the launcher's message-loop thread.
+//! Opt-in Windows-key taps. Hooks run on a thread of their own.
 //!
 //! Elevated foreground apps can block the hook or SendInput through UIPI;
 //! Start then opens as usual. Never swallow a physical key, including Win-down.
@@ -54,38 +54,79 @@ thread_local! {
     static TARGET: Cell<(HWND, u32)> = const { Cell::new((HWND(std::ptr::null_mut()), 0)) };
 }
 
-/// Owns both hooks; dropping it on reload removes all input monitoring.
+/// Owns the hook thread; dropping it on reload removes all input monitoring.
+///
+/// The hooks get their own thread and message loop. Every key press and mouse
+/// event system-wide waits for this thread, so it must never be busy drawing
+/// or loading like the launcher's thread, or the pointer would stutter and
+/// Windows would drop the hook after it exceeds `LowLevelHooksTimeout`.
 pub struct Hook {
-    keyboard: HHOOK,
-    mouse: HHOOK,
+    thread: u32,
+    handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Hook {
     pub fn install(hwnd: HWND, message: u32) -> Result<Self> {
-        unsafe {
-            let module = GetModuleHandleW(None)?;
-            let keyboard = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), Some(module.into()), 0)?;
-            let mouse = match SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), Some(module.into()), 0) {
-                Ok(mouse) => mouse,
-                Err(error) => {
-                    let _ = UnhookWindowsHookEx(keyboard);
-                    return Err(error);
+        let target = hwnd.0 as isize;
+        let (ready, started) = std::sync::mpsc::channel();
+        let handle = std::thread::Builder::new()
+            .name("win-key".into())
+            .spawn(move || unsafe {
+                let installed = (|| -> Result<(HHOOK, HHOOK)> {
+                    let module = GetModuleHandleW(None)?;
+                    let keyboard = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), Some(module.into()), 0)?;
+                    match SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), Some(module.into()), 0) {
+                        Ok(mouse) => Ok((keyboard, mouse)),
+                        Err(error) => {
+                            let _ = UnhookWindowsHookEx(keyboard);
+                            Err(error)
+                        }
+                    }
+                })();
+                let (keyboard, mouse) = match installed {
+                    Ok(hooks) => hooks,
+                    Err(error) => {
+                        let _ = ready.send(Err(error));
+                        return;
+                    }
+                };
+                // Seed held keys when enabling midway through a chord.
+                let mut tap = Tap::default();
+                for vk in 8..256 {
+                    // Low-level events identify the left/right modifier, not its
+                    // generic alias. Mouse buttons are excluded from this range.
+                    if !matches!(vk, 0x10..=0x12) && GetAsyncKeyState(vk) < 0 {
+                        tap.key(vk as u32, true, false);
+                    }
                 }
-            };
-            // Seed held keys when enabling midway through a chord. No hooks or
-            // Windows input are involved in the pure state-machine tests.
-            let mut tap = Tap::default();
-            for vk in 8..256 {
-                // Low-level events identify the left/right modifier, not its
-                // generic alias. Mouse buttons are excluded from this range.
-                if !matches!(vk, 0x10..=0x12) && GetAsyncKeyState(vk) < 0 {
-                    tap.key(vk as u32, true, false);
+                tap.candidate = None;
+                TAP.with(|state| state.set(tap));
+                TARGET.with(|t| t.set((HWND(target as _), message)));
+                let _ = ready.send(Ok(windows::Win32::System::Threading::GetCurrentThreadId()));
+                let mut msg = MSG::default();
+                while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                    DispatchMessageW(&msg);
                 }
+                let _ = UnhookWindowsHookEx(keyboard);
+                let _ = UnhookWindowsHookEx(mouse);
+            })
+            .map_err(|error| windows::core::Error::new(windows::core::HRESULT(-1), error.to_string()))?;
+        match started.recv() {
+            Ok(Ok(thread)) => Ok(Self {
+                thread,
+                handle: Some(handle),
+            }),
+            Ok(Err(error)) => {
+                let _ = handle.join();
+                Err(error)
             }
-            tap.candidate = None;
-            TAP.with(|state| state.set(tap));
-            TARGET.with(|target| target.set((hwnd, message)));
-            Ok(Self { keyboard, mouse })
+            Err(_) => {
+                let _ = handle.join();
+                Err(windows::core::Error::new(
+                    windows::core::HRESULT(-1),
+                    "The Win key hook stopped.",
+                ))
+            }
         }
     }
 }
@@ -93,11 +134,11 @@ impl Hook {
 impl Drop for Hook {
     fn drop(&mut self) {
         unsafe {
-            let _ = UnhookWindowsHookEx(self.keyboard);
-            let _ = UnhookWindowsHookEx(self.mouse);
+            let _ = PostThreadMessageW(self.thread, WM_QUIT, WPARAM(0), LPARAM(0));
         }
-        TARGET.with(|target| target.set((HWND(std::ptr::null_mut()), 0)));
-        TAP.with(|state| state.set(Tap::default()));
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
     }
 }
 
