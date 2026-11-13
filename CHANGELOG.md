@@ -17,7 +17,7 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ### Fixes
 
-- Hibernate from the launcher when the PC supports hibernation and has a hibernation file. (#PR, fixes #83)
+- Hibernate from the launcher when the PC supports hibernation and has a hibernation file. (#87, fixes #83)
 - Pressing a toggle in the launcher many times in a row, such as Bluetooth, Wi-Fi, dark mode or play/pause, no longer keeps Windows switching for seconds afterwards: only the last press is applied. (#78)
 - Keep the launcher's backdrop and border consistent at the bottom and center of the screen, in both light and dark themes. (#75, fixes #45)
 - Windows Terminal and other Microsoft Store apps whose windows don't name their app now group with their pinned icon, and start from the dock. Before, a pinned Terminal did nothing when clicked. Pins made from such an app move to it on their own. (#73, by @Kendoismebutmaybenot)
