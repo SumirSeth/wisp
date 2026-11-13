@@ -97,6 +97,8 @@ pub enum Command {
     Power(Power),
     /// Quits Wisp. The launcher handles it, so the worker never sees it.
     Quit,
+    /// Opens Wisp's own Settings. The launcher handles it too.
+    WispSettings,
 }
 
 impl Command {
@@ -109,6 +111,7 @@ impl Command {
                 | Command::WindowControl(_, _)
                 | Command::Power(_)
                 | Command::Quit
+                | Command::WispSettings
         )
     }
 }
@@ -240,7 +243,9 @@ fn worker(requests: Receiver<Request>, events: Sender<Event>, icon_size: i32, no
                             Command::FocusWindow(hwnd) => open_windows::focus(*hwnd),
                             Command::CloseWindow(hwnd) => open_windows::close(*hwnd),
                             Command::Power(power) => power::run(*power),
-                            Command::Quit | Command::RadioView(_) | Command::RadioSelect(_) => Ok(()),
+                            Command::Quit | Command::WispSettings | Command::RadioView(_) | Command::RadioSelect(_) => {
+                                Ok(())
+                            }
                         }
                     };
                     if let Err(error) = result {
@@ -358,6 +363,7 @@ pub fn search(query: &str, state: &State) -> Vec<ResultItem> {
     items.extend(volume_items(&words, state.audio.as_ref()));
     items.extend(media_items(&words, state.media.as_ref()));
     items.extend(power_items(&query));
+    items.extend(wisp_settings_item(&query));
     items.extend(quit_item(&query));
     items.extend(time_items(&words));
     for (title, link) in settings::find(&query) {
@@ -650,6 +656,32 @@ fn power_items(query: &str) -> Vec<ResultItem> {
                 .verb(p.title())
         })
         .collect()
+}
+
+/// Wisp's own Settings, for `wisp`, `settings` or `wisp settings`, so they
+/// don't need the tray icon, which is hidden with the taskbar.
+fn wisp_settings_item(query: &str) -> Option<ResultItem> {
+    let name = crate::channel::NAME.to_lowercase();
+    let matches = query.chars().count() >= 3
+        && [
+            "wisp",
+            "wisp settings",
+            "settings",
+            "preferences",
+            &name,
+            &format!("{name} settings"),
+        ]
+        .iter()
+        .any(|keyword| keyword.starts_with(query));
+    matches.then(|| {
+        row(
+            format!("{} Settings", crate::channel::NAME),
+            "Theme, shortcut, dock and more",
+            Action::Command(Command::WispSettings),
+        )
+        .glyph(glyph::SETTINGS)
+        .verb("Open")
+    })
 }
 
 /// The tray icon is hidden with the taskbar, so the launcher offers Quit too.
@@ -1069,6 +1101,20 @@ mod tests {
         assert!(titles("re", &state).is_empty());
         assert_eq!(titles("quit", &state), ["Quit Wisp"]);
         assert_eq!(titles("exit wi", &state), ["Quit Wisp"]);
+        let settings = format!("{} Settings", crate::channel::NAME);
+        for query in [
+            "wisp",
+            "wis",
+            "wisp settings",
+            "wisp set",
+            "settings",
+            "sett",
+            "preferences",
+        ] {
+            assert!(titles(query, &state).contains(&settings), "{query}");
+        }
+        assert!(!titles("se", &state).contains(&settings));
+        assert!(!titles("wifi", &state).contains(&settings));
         assert_eq!(search("lock", &state)[0].subtitle, "Locks the PC");
         assert_eq!(
             search("restart", &state)[0].subtitle,
