@@ -2235,21 +2235,36 @@ impl State {
         }
     }
 
-    fn menu(&mut self, index: usize) {
-        let Some(item) = index.checked_sub(1).and_then(|i| self.items.get(i + self.scroll)) else {
-            return;
-        };
-        let windows: Vec<_> = item.windows.iter().map(|window| window.hwnd).collect();
-        let app = item.app.clone();
-        let id = app.id.clone();
-        let pinned = self.pinned.iter().any(|pin| pin.id.eq_ignore_ascii_case(&id));
+    /// The app at a dock slot: its ID, its file and its windows.
+    fn app_at(&self, index: usize) -> Option<(String, Option<String>, Vec<isize>)> {
+        let item = index.checked_sub(1).and_then(|i| self.items.get(i + self.scroll))?;
+        let id = item.app.id.clone();
         // A pin made before the index knew the app may lack the file the index has.
-        let path = app.path.clone().or_else(|| {
+        let path = item.app.path.clone().or_else(|| {
             self.apps
                 .iter()
                 .find(|known| known.id.eq_ignore_ascii_case(&id))
                 .and_then(|known| known.path.clone())
         });
+        Some((id, path, item.windows.iter().map(|window| window.hwnd).collect()))
+    }
+
+    /// Starts reading the hovered app's Jump List, so its menu opens ready.
+    fn prefetch_jump_list(&self) {
+        if let Some((id, path, windows)) = self.hover.and_then(|index| self.app_at(index)) {
+            jump_lists::prefetch(&id, path.as_deref(), &windows);
+        }
+    }
+
+    fn menu(&mut self, index: usize) {
+        let Some(item) = index.checked_sub(1).and_then(|i| self.items.get(i + self.scroll)) else {
+            return;
+        };
+        let Some((id, path, windows)) = self.app_at(index) else {
+            return;
+        };
+        let app = item.app.clone();
+        let pinned = self.pinned.iter().any(|pin| pin.id.eq_ignore_ascii_case(&id));
         // A Store app starts by its ID and runs from its package: it has no file
         // to show, and its windows belong to hosts such as ApplicationFrameHost.
         let packaged = path.is_none() && app.id.contains('!');
@@ -2873,6 +2888,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     let hover_part = s.hit_part(lp);
                     if s.hover != hover || s.hover_part != hover_part {
                         s.hover = hover;
+                        s.prefetch_jump_list();
                         s.animate_hover();
                         s.hover_part = hover_part;
                         let _ = InvalidateRect(Some(hwnd), None, false);

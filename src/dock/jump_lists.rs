@@ -1,8 +1,12 @@
-//! Read-only Jump Lists, collected afresh for each menu. No undocumented COM.
+//! Read-only Jump Lists. No undocumented COM.
+//!
+//! One background thread reads them, starting when the pointer rests on an
+//! app, so the right-click menu rarely waits. Each app's first read loads its
+//! list from disk (often 20–200 ms); later reads take a millisecond or two.
 use std::io::Read;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::PROPERTYKEY;
@@ -19,17 +23,24 @@ mod format;
 
 pub const MENU_FIRST: usize = 1000; // 18 commands at most; existing app commands are 1..=15.
 const LIMIT: usize = 6;
-const BUDGET: Duration = Duration::from_millis(150);
-static READING: AtomicBool = AtomicBool::new(false);
+/// How long the menu waits for lists it doesn't have yet.
+const WAIT: Duration = Duration::from_millis(200);
+/// A read stops after this, so one slow provider can't hold the thread.
+const BUDGET: Duration = Duration::from_secs(2);
+/// Lists read on hover are used by a menu opened this soon after.
+const FRESH: Duration = Duration::from_secs(10);
 
+#[derive(Clone)]
 pub struct Section {
     pub title: &'static str,
     pub items: Vec<Item>,
 }
+#[derive(Clone)]
 pub struct Item {
     pub title: String,
     action: Action,
 }
+#[derive(Clone)]
 enum Action {
     Shell(Vec<u8>),
     Link {
@@ -76,81 +87,128 @@ impl Item {
     }
 }
 
-/// A blocked provider must not block the message loop or accumulate workers.
-/// Only owned bytes/strings cross apartments; all COM objects die on their STA.
+/// Which app's lists: its dock ID, file and windows.
+#[derive(Clone, PartialEq)]
+struct Key {
+    id: String,
+    path: Option<String>,
+    windows: Vec<isize>,
+}
+
+struct Request {
+    key: Key,
+    reply: Option<Sender<Vec<Section>>>,
+}
+
+/// The last lists read, with when they were read.
+static LAST: Mutex<Option<(Key, Instant, Vec<Section>)>> = Mutex::new(None);
+
+fn worker() -> Option<&'static Mutex<Sender<Request>>> {
+    static WORKER: OnceLock<Option<Mutex<Sender<Request>>>> = OnceLock::new();
+    WORKER
+        .get_or_init(|| {
+            let (tx, rx) = mpsc::channel();
+            std::thread::Builder::new()
+                .name("jump-list".into())
+                .spawn(move || serve(rx))
+                .ok()
+                .map(|_| Mutex::new(tx))
+        })
+        .as_ref()
+}
+
+/// Reads on one STA thread that keeps COM and the shell loaded. Only the
+/// latest request is read; older ones were for an app the pointer has left.
+fn serve(requests: Receiver<Request>) {
+    if unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_err() {
+        return;
+    }
+    while let Ok(mut request) = requests.recv() {
+        let mut replies: Vec<Sender<Vec<Section>>> = request.reply.take().into_iter().collect();
+        while let Ok(mut newer) = requests.try_recv() {
+            if newer.key != request.key {
+                replies.clear();
+            }
+            replies.extend(newer.reply.take());
+            request = newer;
+        }
+        let sections = collect(&request.key);
+        if let Ok(mut last) = LAST.lock() {
+            *last = Some((request.key, Instant::now(), sections.clone()));
+        }
+        for reply in replies {
+            let _ = reply.send(sections.clone());
+        }
+    }
+}
+
+fn fresh(key: &Key) -> Option<Vec<Section>> {
+    let last = LAST.lock().ok()?;
+    let (known, at, sections) = last.as_ref()?;
+    (known == key && at.elapsed() < FRESH).then(|| sections.clone())
+}
+
+/// Starts reading an app's lists, as the pointer rests on it.
+pub fn prefetch(id: &str, path: Option<&str>, windows: &[isize]) {
+    let key = Key {
+        id: id.into(),
+        path: path.map(str::to_owned),
+        windows: windows.to_vec(),
+    };
+    if fresh(&key).is_some() {
+        return;
+    }
+    if let Some(worker) = worker()
+        && let Ok(worker) = worker.lock()
+    {
+        let _ = worker.send(Request { key, reply: None });
+    }
+}
+
+/// The lists for the menu: read on hover, or now, waiting at most `WAIT`.
 pub fn read(id: &str, path: Option<&str>, windows: &[isize]) -> Vec<Section> {
-    if READING.swap(true, Ordering::AcqRel) {
-        return Vec::new();
+    let key = Key {
+        id: id.into(),
+        path: path.map(str::to_owned),
+        windows: windows.to_vec(),
+    };
+    if let Some(sections) = fresh(&key) {
+        return sections;
     }
-    let start = Instant::now();
-    let id = id.to_owned();
-    let path = path.map(str::to_owned);
-    let windows = windows.to_vec();
     let (tx, rx) = mpsc::channel();
-    let worker = std::thread::Builder::new().name("jump-list".into()).spawn(move || {
-        struct Reading;
-        impl Drop for Reading {
-            fn drop(&mut self) {
-                READING.store(false, Ordering::Release);
-            }
-        }
-        let _reading = Reading;
-        if unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_err() {
-            return;
-        }
-        struct Apartment;
-        impl Drop for Apartment {
-            fn drop(&mut self) {
-                unsafe { CoUninitialize() };
-            }
-        }
-        let _apartment = Apartment;
-        let Some(aumid) = resolve_id(&id, path.as_deref(), &windows, start) else {
-            return;
-        };
-        if start.elapsed() >= BUDGET {
-            return;
-        }
-        if let Ok(lists) = unsafe {
-            CoCreateInstance::<_, IApplicationDocumentLists>(&ApplicationDocumentLists, None, CLSCTX_INPROC_SERVER)
-        } && unsafe { lists.SetAppID(&HSTRING::from(&aumid)) }.is_ok()
-        {
-            for (title, kind) in [("Recent", ADLT_RECENT), ("Frequent", ADLT_FREQUENT)] {
-                if start.elapsed() >= BUDGET {
-                    return;
-                }
-                if let Ok(items) = documents(&lists, kind, start)
-                    && start.elapsed() < BUDGET
-                    && !items.is_empty()
-                {
-                    // Like the taskbar, one of the two: they mostly repeat each other.
-                    let _ = tx.send(Section { title, items });
-                    break;
-                }
-            }
-        }
-        if start.elapsed() < BUDGET
-            && let Some(items) = tasks(&aumid, start)
-            && start.elapsed() < BUDGET
-            && !items.is_empty()
-        {
-            let _ = tx.send(Section { title: "Tasks", items });
-        }
-    });
-    if worker.is_err() {
-        READING.store(false, Ordering::Release);
+    let sent = worker()
+        .and_then(|worker| worker.lock().ok())
+        .is_some_and(|worker| worker.send(Request { key, reply: Some(tx) }).is_ok());
+    if !sent {
         return Vec::new();
     }
+    rx.recv_timeout(WAIT).unwrap_or_default()
+}
+
+fn collect(key: &Key) -> Vec<Section> {
+    let start = Instant::now();
     let mut sections = Vec::new();
-    while let Some(remaining) = BUDGET.checked_sub(start.elapsed()) {
-        match rx.recv_timeout(remaining) {
-            Ok(section) => {
-                if let Some(section) = section_with_items(section.title, section.items) {
-                    sections.push(section);
-                }
+    let Some(aumid) = resolve_id(&key.id, key.path.as_deref(), &key.windows, start) else {
+        return sections;
+    };
+    if let Ok(lists) = unsafe {
+        CoCreateInstance::<_, IApplicationDocumentLists>(&ApplicationDocumentLists, None, CLSCTX_INPROC_SERVER)
+    } && unsafe { lists.SetAppID(&HSTRING::from(&aumid)) }.is_ok()
+    {
+        // Like the taskbar, one of the two: they mostly repeat each other.
+        for (title, kind) in [("Recent", ADLT_RECENT), ("Frequent", ADLT_FREQUENT)] {
+            if let Ok(items) = documents(&lists, kind, start)
+                && let Some(section) = section_with_items(title, items)
+            {
+                sections.push(section);
+                break;
             }
-            Err(_) => break,
         }
+    }
+    if let Some(items) = tasks(&aumid, start)
+        && let Some(section) = section_with_items("Tasks", items)
+    {
+        sections.push(section);
     }
     sections
 }
@@ -321,7 +379,12 @@ fn link_item(link: &IShellLinkW) -> Result<Option<Item>> {
 fn visible(title: &str, path: Option<&str>, exists: impl FnOnce(&str) -> bool) -> bool {
     // Avoid network I/O here; UNC paths and shell namespace items are left to
     // the shell. The worker's deadline also covers slow local/removable disks.
-    !title.trim().is_empty() && path.is_none_or(|p| !local_path(p) || exists(p))
+    !title.trim().is_empty() && !uri(title) && path.is_none_or(|p| !local_path(p) || exists(p))
+}
+/// A title such as `ms-settings:network` names a link, not something to show.
+/// Windows file names can't contain `:`.
+fn uri(title: &str) -> bool {
+    title.contains(':') && !local_path(title)
 }
 fn local_path(path: &str) -> bool {
     let bytes = path.as_bytes();
@@ -467,6 +530,16 @@ mod tests {
     #[test]
     fn hides_empty_and_missing_local_targets() {
         assert!(!visible("", None, |_| true));
+        assert!(!visible("ms-settings:network", None, |_| true));
+        assert!(!visible("https://example.com", None, |_| true));
+        assert!(visible(
+            "notes.md",
+            Some(
+                r"C:
+otes.md"
+            ),
+            |_| true
+        ));
         assert!(!visible("File", Some(r"C:\missing"), |_| false));
         assert!(visible("File", Some(r"C:\present"), |_| true));
         assert!(visible("Virtual", None, |_| panic!("no filesystem lookup")));
