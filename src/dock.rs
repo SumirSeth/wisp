@@ -924,6 +924,7 @@ impl State {
                     let id = aumid.filter(|s| !s.is_empty()).unwrap_or_else(|| window.exe.clone());
                     AppEntry {
                         aliases: Vec::new(),
+                        target: None,
                         name: open_windows::program_name(&window.exe).into(),
                         id,
                         path: (!window.exe.is_empty()).then(|| window.exe.clone()),
@@ -1007,6 +1008,7 @@ impl State {
             self.pinned.iter().map(|pin| Item {
                 app: AppEntry {
                     aliases: Vec::new(),
+                    target: None,
                     id: pin.id.clone(),
                     name: pin.name.clone(),
                     path: pin.path.clone(),
@@ -2597,6 +2599,7 @@ impl State {
         } else if let Some(item) = self.items.iter().find(|item| item.app.id.eq_ignore_ascii_case(id)) {
             self.pinned.push(AppEntry {
                 aliases: Vec::new(),
+                target: None,
                 id: item.app.id.clone(),
                 name: item.app.name.clone(),
                 path: item.app.path.clone(),
@@ -2628,6 +2631,7 @@ fn load_pins() -> Vec<AppEntry> {
         .into_iter()
         .map(|pin| AppEntry {
             aliases: Vec::new(),
+            target: None,
             id: pin.id,
             name: pin.name,
             path: pin.path,
