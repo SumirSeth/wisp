@@ -627,12 +627,22 @@ impl Launcher {
         if let Some(warning) = warning {
             tray::notify(self.hwnd, "Wisp config", &warning, true);
         }
+        let file_search_changed = config.file_search != self.config.file_search
+            || config.file_search_everything != self.config.file_search_everything
+            || config.file_search_exclude != self.config.file_search_exclude;
         self.config = config;
         self.taskbar_failures = 0;
         self.sync_shell();
         self.apply_theme();
         self.sync_win_key();
         self.register_hotkey(true);
+        // Search files again with the new settings.
+        if file_search_changed && self.file_query.is_some() {
+            self.file_query = None;
+            if self.visible {
+                self.update_results();
+            }
+        }
     }
 
     /// Hides or restores the Windows taskbar and creates or removes the dock

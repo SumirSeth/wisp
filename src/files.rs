@@ -1,9 +1,11 @@
 //! File search on a worker thread, through Everything when it runs and the
 //! Windows Search index (`SystemIndex`) otherwise.
 //!
-//! An index query takes about 80–120 ms, most of it for matches inside names,
-//! so it runs off the UI thread. When the user types faster than queries
-//! finish, the worker skips to the latest query.
+//! The index runs two queries: words that start a word in the name, which
+//! takes 10–30 ms and is shown at once, then words inside names, which takes
+//! 70–200 ms more and is skipped when the first one already fills the list.
+//! When the user types faster than queries finish, the worker skips to the
+//! latest query.
 
 #[path = "files/everything.rs"]
 mod everything;
@@ -11,7 +13,7 @@ mod everything;
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
 use std::time::{Duration, Instant};
 
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
@@ -28,8 +30,12 @@ use everything::Everything;
 
 /// The index has no constant for this OLE DB dialect GUID in the `windows` crate.
 const DBGUID_DEFAULT: GUID = GUID::from_u128(0xc8b521fb_5cf3_11ce_ade5_00aa0044773d);
-/// Rows fetched per query before filtering and ranking.
+/// Rows fetched per index query before filtering and ranking.
 const CANDIDATES: usize = 100;
+/// Rows asked from Everything. It covers every drive, so the newest 100 are
+/// mostly program and temp files, and older files in the user's folders would
+/// never be ranked.
+const EVERYTHING_CANDIDATES: u32 = 500;
 /// Longest path or name read from the index, in UTF-16 units.
 const MAX_CHARS: usize = 1024;
 /// How long to wait before trying to reopen an index that failed to open.
@@ -48,8 +54,9 @@ pub struct FileHit {
     pub icon_key: String,
 }
 
-/// The worker sends each query's results first, then a second message with any
-/// icons it had to load. Icon loading takes longer than the query.
+/// The worker sends each query's results, then a message with any icons it
+/// had to load. Icon loading takes longer than the query. An index query can
+/// send its results twice: the hits of its first pass, then all hits.
 pub struct FileResults {
     pub query: String,
     /// `None` in the message that carries only icons.
@@ -66,39 +73,65 @@ struct Request {
     everything: bool,
 }
 
+/// What the worker waits for: the next query, or Everything's reply.
+enum Message {
+    Search(Request),
+    Everything(u32, Vec<u8>),
+    Stop,
+}
+
+/// The worker should end: the launcher is gone.
+struct Stop;
+
 pub struct FileSearch {
-    requests: Sender<Request>,
+    messages: Sender<Message>,
 }
 
 impl FileSearch {
     /// Starts the worker. After each result is sent, it posts `notify_msg` to `hwnd`.
     pub fn spawn(hwnd: HWND, notify_msg: u32, results: Sender<FileResults>, icon_size: i32) -> FileSearch {
-        let (requests, rx) = channel();
+        let (messages, rx) = channel();
+        let replies = messages.clone();
         let hwnd = hwnd.0 as isize;
         std::thread::Builder::new()
             .name("file search".into())
             .spawn(move || {
-                worker(rx, results, icon_size, move || unsafe {
+                let notify = move || unsafe {
                     let _ = PostMessageW(Some(HWND(hwnd as _)), notify_msg, WPARAM(0), LPARAM(0));
-                })
+                };
+                let output = Output {
+                    results,
+                    notify,
+                    icon_size,
+                    icons_sent: HashSet::new(),
+                };
+                worker(rx, replies, output)
             })
             .expect("could not start file search thread");
-        FileSearch { requests }
+        FileSearch { messages }
     }
 
     /// Searches file names for `query`. `exclude` lists folder names to skip.
     /// With `everything`, asks Everything if it runs, and the index otherwise.
     pub fn search(&self, query: &str, limit: usize, exclude: Arc<[String]>, everything: bool) {
-        let _ = self.requests.send(Request {
+        let _ = self.messages.send(Message::Search(Request {
             query: query.to_string(),
             limit,
             exclude,
             everything,
-        });
+        }));
     }
 }
 
-fn worker(requests: Receiver<Request>, results: Sender<FileResults>, icon_size: i32, notify: impl Fn()) {
+impl Drop for FileSearch {
+    fn drop(&mut self) {
+        // The worker holds a sender for Everything's replies, so the channel
+        // alone would never tell it to end.
+        let _ = self.messages.send(Message::Stop);
+    }
+}
+
+fn worker(messages: Receiver<Message>, replies: Sender<Message>, mut output: Output<impl Fn()>) {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
     }
@@ -107,35 +140,50 @@ fn worker(requests: Receiver<Request>, results: Sender<FileResults>, icon_size: 
     let mut everything: Option<Everything> = None;
     let mut failed_at: Option<Instant> = None;
     let mut matcher = NameMatcher::new();
-    let mut icons_sent = HashSet::new();
 
-    let mut next = requests.recv().ok();
-    while let Some(mut request) = next.take() {
+    let mut next = next_request(&messages);
+    while let Some(request) = next.take() {
         // Only the latest query matters.
-        loop {
-            match requests.try_recv() {
-                Ok(newer) => request = newer,
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => return,
-            }
-        }
-
+        let Ok(newest) = newer(&messages) else { return };
+        let request = newest.unwrap_or(request);
         let words = words(&request.query);
-        let mut passes = Vec::new();
-        let mut newer = None;
-        if request.everything && !words.is_empty() {
-            if everything.is_none() {
-                everything = Everything::new();
+        if words.is_empty() {
+            if !output.send(&request.query, Vec::new()) {
+                return;
             }
-            if let Some(rows) = everything
-                .as_mut()
-                .and_then(|e| e.query(&words, &request.exclude, CANDIDATES as u32))
-            {
-                passes.push(rows);
+            next = next_request(&messages);
+            continue;
+        }
+
+        if request.everything {
+            match ask_everything(&mut everything, &replies, &messages, &request, &words) {
+                // No rows can mean Everything doesn't cover the drive; the index may.
+                Waited::Rows(rows) if !rows.is_empty() => {
+                    let hits = rank(&[rows], &request, &profile, &mut matcher);
+                    match newer(&messages) {
+                        Ok(None) => {}
+                        Ok(newest) => {
+                            next = newest;
+                            continue;
+                        }
+                        Err(Stop) => return,
+                    }
+                    if !output.send(&request.query, hits) {
+                        return;
+                    }
+                    next = next_request(&messages);
+                    continue;
+                }
+                Waited::Newer(newest) => {
+                    next = Some(newest);
+                    continue;
+                }
+                Waited::Stop => return,
+                Waited::Rows(_) | Waited::Nothing => {}
             }
         }
 
-        if passes.is_empty() && index.is_none() && failed_at.is_none_or(|t| t.elapsed() > REOPEN_AFTER) {
+        if index.is_none() && failed_at.is_none_or(|t| t.elapsed() > REOPEN_AFTER) {
             match unsafe { Index::open() } {
                 Ok(opened) => index = Some(opened),
                 Err(e) => {
@@ -145,75 +193,175 @@ fn worker(requests: Receiver<Request>, results: Sender<FileResults>, icon_size: 
             }
         }
 
-        // The index, unless Everything answered.
-        let queries = if passes.is_empty() { sql(&words) } else { Vec::new() };
-        for (pass, sql) in queries.iter().enumerate() {
-            // The second pass is the slow one; skip it if a newer query is waiting.
-            if pass > 0 {
-                match requests.try_recv() {
-                    Ok(request) => {
-                        newer = Some(request);
+        // Shows each pass's hits as soon as it's done, together with the
+        // earlier passes'. The later pass is the slow one.
+        let mut passes = Vec::new();
+        let mut shown: Option<Vec<String>> = None;
+        for sql in sql(&words) {
+            if let Some(shown) = &shown {
+                if shown.len() >= request.limit {
+                    break;
+                }
+                match newer(&messages) {
+                    Ok(None) => {}
+                    Ok(newest) => {
+                        next = newest;
                         break;
                     }
-                    Err(TryRecvError::Disconnected) => return,
-                    Err(TryRecvError::Empty) => {}
+                    Err(Stop) => return,
                 }
             }
-            passes.push(fetch(&mut index, sql));
-        }
-        if newer.is_some() {
-            next = newer;
-            continue;
-        }
-        let hits = rank(passes, &request, &profile, &mut matcher);
-
-        // Skip icon loading and sending if a newer query is already waiting.
-        match requests.try_recv() {
-            Ok(newer) => {
-                next = Some(newer);
+            let rows = fetch(&mut index, &sql);
+            if shown.is_some() && rows.is_empty() {
+                break;
+            }
+            passes.push(rows);
+            let hits = rank(&passes, &request, &profile, &mut matcher);
+            let paths: Vec<String> = hits.iter().map(|hit| hit.path.clone()).collect();
+            if shown.as_ref() == Some(&paths) {
                 continue;
             }
-            Err(TryRecvError::Disconnected) => return,
-            Err(TryRecvError::Empty) => {}
+            // Skip icon loading and sending if a newer query is already waiting.
+            match newer(&messages) {
+                Ok(None) => {}
+                Ok(newest) => {
+                    next = newest;
+                    break;
+                }
+                Err(Stop) => return,
+            }
+            if !output.send(&request.query, hits) {
+                return;
+            }
+            shown = Some(paths);
         }
+        if next.is_none() {
+            next = next_request(&messages);
+        }
+    }
+}
 
+/// Blocks until the next query. `None` once the worker should end.
+fn next_request(messages: &Receiver<Message>) -> Option<Request> {
+    loop {
+        match messages.recv() {
+            Ok(Message::Search(request)) => return Some(request),
+            // A reply that came after the worker stopped waiting for it.
+            Ok(Message::Everything(..)) => {}
+            Ok(Message::Stop) | Err(_) => return None,
+        }
+    }
+}
+
+/// The latest query that's already waiting, if any.
+fn newer(messages: &Receiver<Message>) -> std::result::Result<Option<Request>, Stop> {
+    let mut newest = None;
+    loop {
+        match messages.try_recv() {
+            Ok(Message::Search(request)) => newest = Some(request),
+            Ok(Message::Everything(..)) => {}
+            Ok(Message::Stop) | Err(TryRecvError::Disconnected) => return Err(Stop),
+            Err(TryRecvError::Empty) => return Ok(newest),
+        }
+    }
+}
+
+enum Waited {
+    Rows(Vec<Row>),
+    /// Everything isn't running, is busy, or sent a malformed reply.
+    Nothing,
+    Newer(Request),
+    Stop,
+}
+
+/// Asks Everything and waits for its reply, or for a newer query.
+fn ask_everything(
+    everything: &mut Option<Everything>,
+    replies: &Sender<Message>,
+    messages: &Receiver<Message>,
+    request: &Request,
+    words: &[String],
+) -> Waited {
+    if everything.is_none() {
+        let replies = replies.clone();
+        *everything = Everything::spawn(move |id, bytes| {
+            let _ = replies.send(Message::Everything(id, bytes));
+        });
+    }
+    let Some(everything) = everything.as_mut() else {
+        return Waited::Nothing;
+    };
+    let Some((id, deadline)) = everything.ask(words, &request.exclude, EVERYTHING_CANDIDATES) else {
+        return Waited::Nothing;
+    };
+    loop {
+        match messages.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(Message::Everything(got, bytes)) if got == id => {
+                return everything.answer(&bytes).map_or(Waited::Nothing, Waited::Rows);
+            }
+            Ok(Message::Everything(..)) => {}
+            Ok(Message::Search(newest)) => {
+                everything.cancel();
+                return Waited::Newer(newest);
+            }
+            Ok(Message::Stop) | Err(RecvTimeoutError::Disconnected) => return Waited::Stop,
+            Err(RecvTimeoutError::Timeout) => {
+                everything.timed_out();
+                return Waited::Nothing;
+            }
+        }
+    }
+}
+
+/// Sends results to the UI.
+struct Output<F: Fn()> {
+    results: Sender<FileResults>,
+    notify: F,
+    icon_size: i32,
+    icons_sent: HashSet<String>,
+}
+
+impl<F: Fn()> Output<F> {
+    /// Sends `hits`, then the icons the UI doesn't have yet. False once the UI
+    /// is gone.
+    fn send(&mut self, query: &str, hits: Vec<FileHit>) -> bool {
         let missing: Vec<(String, String)> = hits
             .iter()
-            .filter(|hit| !icons_sent.contains(&hit.icon_key))
+            .filter(|hit| !self.icons_sent.contains(&hit.icon_key))
             .map(|hit| (hit.icon_key.clone(), hit.path.clone()))
             .collect();
-        let sent = results.send(FileResults {
-            query: request.query.clone(),
+        let sent = self.results.send(FileResults {
+            query: query.to_string(),
             hits: Some(hits),
             icons: Vec::new(),
         });
         if sent.is_err() {
-            return;
+            return false;
         }
-        notify();
+        (self.notify)();
 
         let mut icons = Vec::new();
         for (key, path) in missing {
-            if icons_sent.contains(&key) {
+            if self.icons_sent.contains(&key) {
                 continue;
             }
-            if let Some(pixels) = unsafe { load_icon(&path, icon_size) } {
-                icons_sent.insert(key.clone());
+            if let Some(pixels) = unsafe { load_icon(&path, self.icon_size) } {
+                self.icons_sent.insert(key.clone());
                 icons.push((key, Arc::new(pixels)));
             }
         }
         if !icons.is_empty() {
-            let sent = results.send(FileResults {
-                query: request.query,
+            let sent = self.results.send(FileResults {
+                query: query.to_string(),
                 hits: None,
                 icons,
             });
             if sent.is_err() {
-                return;
+                return false;
             }
-            notify();
+            (self.notify)();
         }
-        next = requests.recv().ok();
+        true
     }
 }
 
@@ -238,27 +386,32 @@ fn fetch(index: &mut Option<Index>, sql: &str) -> Vec<Row> {
 }
 
 /// Drops noise, then orders by name match, user folders, path depth and recency.
-/// `passes` holds the rows of each query in `sql`, each newest first.
-fn rank(passes: Vec<Vec<Row>>, request: &Request, profile: &str, matcher: &mut NameMatcher) -> Vec<FileHit> {
+/// `passes` holds the rows of each query, each newest first.
+fn rank(passes: &[Vec<Row>], request: &Request, profile: &str, matcher: &mut NameMatcher) -> Vec<FileHit> {
     let pattern = Pattern::parse(&request.query, CaseMatching::Ignore, Normalization::Smart);
     let mut scored: Vec<(i64, FileHit)> = passes
-        .into_iter()
-        .flat_map(|rows| rows.into_iter().enumerate())
+        .iter()
+        .flat_map(|rows| {
+            // Recency counts the same over Everything's 500 rows as over 100.
+            let per = rows.len().max(CANDIDATES);
+            rows.iter()
+                .enumerate()
+                .map(move |(position, row)| (position * CANDIDATES / per, row))
+        })
         .filter(|(_, row)| !is_excluded(&row.path, &request.exclude))
         .filter_map(|(position, row)| {
             let (name_score, highlights) = matcher.score(&pattern, &row.name)?;
             let recency = (CANDIDATES - position.min(CANDIDATES)) as i64 / 4;
             let (in_user_folder, depth) = location(&row.path, profile);
             let score = name_score as i64 + recency + if in_user_folder { 40 } else { 0 } - 4 * depth.min(10) as i64;
-            let icon_key = icon_key(&row);
             Some((
                 score,
                 FileHit {
-                    name: row.name,
-                    path: row.path,
+                    name: row.name.clone(),
+                    path: row.path.clone(),
                     is_folder: row.is_folder,
                     highlights,
-                    icon_key,
+                    icon_key: icon_key(row),
                 },
             ))
         })
@@ -449,13 +602,14 @@ impl Index {
     }
 }
 
-/// The query's words, without quotes and wildcards, which would break out of
-/// the index's `CONTAINS` literal and change Everything's search.
+/// The query's words, without double quotes and wildcards, which would break
+/// out of the index's `CONTAINS` literal and change Everything's search.
+/// Apostrophes stay, so `it's` finds `it's.txt`; `sql` escapes them.
 fn words(query: &str) -> Vec<String> {
     query
         .split_whitespace()
-        .map(|word| word.replace(['\'', '"', '*', '?'], ""))
-        .filter(|word| !word.is_empty())
+        .map(|word| word.replace(['"', '*', '?'], ""))
+        .filter(|word| word.chars().any(|c| c != '\''))
         .collect()
 }
 
@@ -470,13 +624,20 @@ fn sql(words: &[String]) -> Vec<String> {
     }
     let prefix = words
         .iter()
-        .map(|word| format!("CONTAINS(System.FileName, '\"{word}*\"')"))
+        // Without apostrophes, which would end the CONTAINS literal.
+        .map(|word| format!("CONTAINS(System.FileName, '\"{}*\"')", word.replace('\'', "")))
         .collect::<Vec<_>>()
         .join(" AND ");
     let inside = words
         .iter()
-        // LIKE treats % _ [ as wildcards; brackets make them literal.
-        .map(|word| word.replace('[', "[[]").replace('%', "[%]").replace('_', "[_]"))
+        // LIKE treats % _ [ as wildcards; brackets make them literal. A doubled
+        // apostrophe is one apostrophe in the SQL string.
+        .map(|word| {
+            word.replace('[', "[[]")
+                .replace('%', "[%]")
+                .replace('_', "[_]")
+                .replace('\'', "''")
+        })
         .map(|word| format!("System.FileName LIKE '%{word}%'"))
         .collect::<Vec<_>>()
         .join(" AND ");
@@ -535,7 +696,8 @@ mod tests {
     fn searches_with_everything() {
         let exclude: Arc<[String]> = Arc::from(crate::config::Config::default().file_search_exclude);
         let profile = std::env::var("USERPROFILE").unwrap().to_lowercase();
-        let mut everything = Everything::new().expect("could not create the reply window");
+        let (replies, messages) = channel();
+        let mut everything = None;
         let mut matcher = NameMatcher::new();
         for query in [
             "readme",
@@ -545,10 +707,17 @@ mod tests {
             "everything.rs",
             "zzqx-no-such-file-qxzz",
         ] {
+            let request = Request {
+                query: query.into(),
+                limit: 5,
+                exclude: exclude.clone(),
+                everything: true,
+            };
             let started = Instant::now();
-            let rows = everything
-                .query(&words(query), &exclude, CANDIDATES as u32)
-                .expect("Everything is not running or did not answer");
+            let Waited::Rows(rows) = ask_everything(&mut everything, &replies, &messages, &request, &words(query))
+            else {
+                panic!("Everything is not running or did not answer");
+            };
             let took = started.elapsed();
             let count = rows.len();
             for row in &rows {
@@ -558,18 +727,30 @@ mod tests {
                     row.path
                 );
             }
-            let request = Request {
-                query: query.into(),
-                limit: 5,
-                exclude: exclude.clone(),
-                everything: true,
-            };
-            let hits = rank(vec![rows], &request, &profile, &mut matcher);
+            let hits = rank(&[rows], &request, &profile, &mut matcher);
             println!("{query}: {count} rows in {took:?}");
             for hit in &hits {
                 println!("  {} {}", if hit.is_folder { "dir " } else { "file" }, hit.path);
             }
         }
+
+        // A newer query stops the wait, and the late reply is dropped.
+        let request = |query: &str| Request {
+            query: query.into(),
+            limit: 5,
+            exclude: exclude.clone(),
+            everything: true,
+        };
+        replies.send(Message::Search(request("newer"))).unwrap();
+        let waited = ask_everything(&mut everything, &replies, &messages, &request("setup"), &words("setup"));
+        assert!(matches!(waited, Waited::Newer(newer) if newer.query == "newer"));
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(messages.try_recv().is_err(), "a late reply got through");
+        let Waited::Rows(rows) = ask_everything(&mut everything, &replies, &messages, &request("wisp"), &words("wisp"))
+        else {
+            panic!("Everything stopped answering after a cancelled query");
+        };
+        assert!(!rows.is_empty());
     }
 
     #[test]
@@ -581,7 +762,7 @@ mod tests {
         let prefix = "CONTAINS(System.FileName, '\"its*\"') AND CONTAINS(System.FileName, '\"x*\"') AND CONTAINS(System.FileName, '\"ab*\"')";
         assert!(q[0].contains(&format!("AND {prefix} ORDER BY")));
         assert!(q[1].contains(&format!(
-            "System.FileName LIKE '%its%' AND System.FileName LIKE '%x%' AND System.FileName LIKE '%ab%' AND NOT ({prefix})"
+            "System.FileName LIKE '%it''s%' AND System.FileName LIKE '%x%' AND System.FileName LIKE '%ab%' AND NOT ({prefix})"
         )));
         let q = sql("50%_[a]");
         assert!(q[1].contains("System.FileName LIKE '%50[%][_][[]a]%'"));
@@ -602,7 +783,7 @@ mod tests {
         };
         // Both are the newest row of their query; the word start wins.
         let passes = vec![vec![row("setup.exe")], vec![row("rsetup.exe")]];
-        let hits = rank(passes, &request, r"c:\users\me", &mut NameMatcher::new());
+        let hits = rank(&passes, &request, r"c:\users\me", &mut NameMatcher::new());
         let names: Vec<&str> = hits.iter().map(|hit| hit.name.as_str()).collect();
         assert_eq!(names, ["setup.exe", "rsetup.exe"]);
         assert_eq!(hits[1].highlights, vec![(1, 5)]);
@@ -646,7 +827,7 @@ mod tests {
             exclude: Arc::from(Vec::new()),
             everything: false,
         };
-        let hits = rank(vec![rows], &request, r"c:\users\me", &mut NameMatcher::new());
+        let hits = rank(&[rows], &request, r"c:\users\me", &mut NameMatcher::new());
         assert_eq!(hits[0].path, r"C:\Users\me\Downloads\Resume.pdf");
         assert_eq!(hits[0].highlights, vec![(0, 6)]);
         assert_eq!(hits[0].icon_key, "file:.pdf");
