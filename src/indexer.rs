@@ -23,6 +23,9 @@ pub struct AppEntry {
     pub id: String,
     /// File path for desktop apps, if Windows can resolve it.
     pub path: Option<String>,
+    /// The program the app's shortcut starts, if Windows says. It ties a
+    /// running program whose windows carry no ID to its Start menu entry.
+    pub target: Option<String>,
 }
 
 /// Premultiplied BGRA pixels.
@@ -134,7 +137,8 @@ unsafe fn enumerate_apps() -> Result<Vec<(AppEntry, IShellItem)>> {
             let target = path
                 .as_deref()
                 .and_then(shortcut_target)
-                .or_else(|| shell_target(&item));
+                .or_else(|| shell_target(&item))
+                .map(|target| expand(&target));
             let aliases = app_aliases(&id, path.as_deref(), target.as_deref());
             apps.push((
                 AppEntry {
@@ -142,6 +146,7 @@ unsafe fn enumerate_apps() -> Result<Vec<(AppEntry, IShellItem)>> {
                     id,
                     path,
                     aliases,
+                    target,
                 },
                 item,
             ));
@@ -283,6 +288,7 @@ unsafe fn add_tool_shortcuts(
                         name,
                         aliases,
                         path: Some(id.clone()),
+                        target: Some(expand(&target)),
                         id,
                     },
                     item,
@@ -290,6 +296,20 @@ unsafe fn add_tool_shortcuts(
             }
         }
     }
+}
+
+/// Shortcuts may save a target as `%LOCALAPPDATA%\...`.
+fn expand(path: &str) -> String {
+    if !path.contains('%') {
+        return path.into();
+    }
+    let source = HSTRING::from(path);
+    let mut buffer = vec![0u16; 32768];
+    let len = unsafe { windows::Win32::System::Environment::ExpandEnvironmentStringsW(&source, Some(&mut buffer)) };
+    if len == 0 || len as usize > buffer.len() {
+        return path.into();
+    }
+    String::from_utf16_lossy(&buffer[..len as usize - 1])
 }
 
 /// Excludes uninstallers, documents and web links from app results.

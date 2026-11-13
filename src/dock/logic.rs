@@ -616,10 +616,28 @@ pub fn match_app<'a>(apps: &'a [AppEntry], exe: &str, aumid: Option<&str>) -> Op
     let exe = normalize(exe);
     apps.iter()
         .find(|app| app.path.as_deref().is_some_and(|path| normalize(path) == exe) || normalize(&app.id) == exe)
+        // A Start menu entry known only by its ID, such as Visual Studio Code,
+        // whose shortcut starts this program. Only when exactly one does.
+        .or_else(|| {
+            let mut started = apps
+                .iter()
+                .filter(|app| app.target.as_deref().is_some_and(|target| normalize(target) == exe));
+            let app = started.next()?;
+            started.next().is_none().then_some(app)
+        })
+        // File Explorer's Start entry opens a shell folder, not explorer.exe.
+        .or_else(|| {
+            exe.ends_with(r"\explorer.exe")
+                .then(|| apps.iter().find(|app| app.id.eq_ignore_ascii_case(FILE_EXPLORER)))
+                .flatten()
+        })
         // A Store app's exe cannot be started by path, so without an ID fall
         // back to its package's app.
         .or_else(|| package_app(apps, &family?))
 }
+
+/// File Explorer's AppUserModelID.
+const FILE_EXPLORER: &str = "Microsoft.Windows.Explorer";
 
 /// The app of a Store package, from the package's family name, if `apps`
 /// holds exactly one. A package with several apps does not say which of them
@@ -1280,12 +1298,14 @@ mod tests {
         let apps = vec![
             AppEntry {
                 aliases: Vec::new(),
+                target: None,
                 id: "{folder}\\a.exe".into(),
                 path: Some(r"C:\Apps\a.exe".into()),
                 name: "A".into(),
             },
             AppEntry {
                 aliases: Vec::new(),
+                target: None,
                 id: "Package!App".into(),
                 path: None,
                 name: "Store".into(),
@@ -1302,6 +1322,34 @@ mod tests {
         assert!(match_app(&apps, "", None).is_none());
     }
     #[test]
+    fn matches_a_program_to_the_one_start_entry_that_starts_it() {
+        let code = r"C:\Users\me\AppData\Local\Programs\Microsoft VS Code\Code.exe";
+        let entry = |id: &str, target: Option<&str>| AppEntry {
+            name: id.into(),
+            aliases: Vec::new(),
+            id: id.into(),
+            path: None,
+            target: target.map(str::to_owned),
+        };
+        let apps = vec![entry("Microsoft.VisualStudioCode", Some(code)), entry("Other", None)];
+        assert_eq!(
+            match_app(&apps, &code.to_uppercase(), None).unwrap().id,
+            "Microsoft.VisualStudioCode"
+        );
+        // Two entries starting the same program don't say which one a window is.
+        let twice = vec![entry("Profile.A", Some(code)), entry("Profile.B", Some(code))];
+        assert!(match_app(&twice, code, None).is_none());
+        let explorer = vec![entry(
+            "Microsoft.Windows.Explorer",
+            Some("::{52205FD8-5DFB-447D-801A-D0B52F2E83E1}"),
+        )];
+        assert_eq!(
+            match_app(&explorer, r"C:\Windows\explorer.exe", None).unwrap().id,
+            "Microsoft.Windows.Explorer"
+        );
+    }
+
+    #[test]
     fn matches_store_apps_by_package_folder() {
         let terminal = r"C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1.24.12741.0_x64__8wekyb3d8bbwe\WindowsTerminal.exe";
         assert_eq!(
@@ -1313,12 +1361,14 @@ mod tests {
         let apps = vec![
             AppEntry {
                 aliases: Vec::new(),
+                target: None,
                 id: r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\cmd.exe".into(),
                 path: Some(r"C:\Windows\System32\cmd.exe".into()),
                 name: "Command Prompt".into(),
             },
             AppEntry {
                 aliases: Vec::new(),
+                target: None,
                 id: "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App".into(),
                 path: None,
                 name: "Terminal".into(),
@@ -1333,6 +1383,7 @@ mod tests {
     fn a_package_with_several_apps_matches_only_by_id() {
         let python = |app: &str| AppEntry {
             aliases: Vec::new(),
+            target: None,
             id: format!("PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0!{app}"),
             path: None,
             name: app.into(),
@@ -1351,12 +1402,14 @@ mod tests {
         let path = r"C:\Program Files\WindowsApps\Package_1.0_x64__publisher\app.exe";
         let mut pins = vec![AppEntry {
             aliases: Vec::new(),
+            target: None,
             id: "Package_publisher!Hidden".into(),
             path: Some(path.into()),
             name: "Hidden app".into(),
         }];
         let apps = vec![AppEntry {
             aliases: Vec::new(),
+            target: None,
             id: "Package_publisher!Visible".into(),
             path: None,
             name: "Visible app".into(),
@@ -1371,18 +1424,21 @@ mod tests {
         let terminal = r"C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1.24.12741.0_x64__8wekyb3d8bbwe\WindowsTerminal.exe";
         let notepad = AppEntry {
             aliases: Vec::new(),
+            target: None,
             id: r"C:\Windows\notepad.exe".into(),
             path: Some(r"C:\Windows\notepad.exe".into()),
             name: "Notepad".into(),
         };
         let apps = vec![AppEntry {
             aliases: Vec::new(),
+            target: None,
             id: "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App".into(),
             path: None,
             name: "Terminal".into(),
         }];
         let old = AppEntry {
             aliases: Vec::new(),
+            target: None,
             id: terminal.into(),
             path: Some(terminal.into()),
             name: "WindowsTerminal".into(),

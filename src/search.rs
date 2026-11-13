@@ -488,6 +488,7 @@ mod tests {
     fn app(name: &str) -> AppEntry {
         AppEntry {
             aliases: Vec::new(),
+            target: None,
             name: name.into(),
             id: name.into(),
             path: None,
