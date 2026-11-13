@@ -7,6 +7,237 @@ pub use status_options::{STATUS_ITEMS, StatusItem, StatusPlacement};
 use crate::config::WindowListMode;
 use crate::indexer::AppEntry;
 
+/// Hold one downward crossing of a shared monitor edge inside the dock's span.
+/// All coordinates are physical pixels; right and bottom edges are exclusive.
+/// This only decides geometry and never reads or changes the actual pointer.
+pub fn bottom_edge_hold(
+    monitors: &[windows::Win32::Foundation::RECT],
+    previous: windows::Win32::Foundation::POINT,
+    current: windows::Win32::Foundation::POINT,
+    dock_span: std::ops::Range<i32>,
+    already_held: bool,
+) -> Option<windows::Win32::Foundation::POINT> {
+    use windows::Win32::Foundation::POINT;
+    if already_held || current.y <= previous.y || !dock_span.contains(&current.x) {
+        return None;
+    }
+    let contains = |rect: &&windows::Win32::Foundation::RECT, point: POINT| {
+        (rect.left..rect.right).contains(&point.x) && (rect.top..rect.bottom).contains(&point.y)
+    };
+    let upper = monitors.iter().find(|rect| contains(rect, previous))?;
+    let lower = monitors.iter().find(|rect| contains(rect, current))?;
+    if upper.bottom != lower.top || !(upper.left..upper.right).contains(&current.x) {
+        return None;
+    }
+    // Interpolate the sampled motion: a diagonal must cross the shared edge
+    // inside the dock too, rather than merely finish below its horizontal span.
+    let fraction = (f64::from(upper.bottom) - f64::from(previous.y)) / (f64::from(current.y) - f64::from(previous.y));
+    let crossing_x = f64::from(previous.x) + (f64::from(current.x) - f64::from(previous.x)) * fraction;
+    let left = upper.left.max(lower.left).max(dock_span.start);
+    let right = upper.right.min(lower.right).min(dock_span.end);
+    (crossing_x >= f64::from(left) && crossing_x < f64::from(right)).then_some(POINT {
+        x: current.x,
+        y: upper.bottom - 1,
+    })
+}
+
+/// Keep the consumed hold only in the two-pixel band on either side of the seam.
+pub fn at_held_edge(
+    monitor: windows::Win32::Foundation::RECT,
+    cursor: windows::Win32::Foundation::POINT,
+    dock_span: &std::ops::Range<i32>,
+) -> bool {
+    dock_span.contains(&cursor.x) && cursor.y >= monitor.bottom - 2 && cursor.y < monitor.bottom + 2
+}
+
+#[cfg(test)]
+mod edge_tests {
+    use super::{at_held_edge, bottom_edge_hold};
+    use windows::Win32::Foundation::{POINT, RECT};
+
+    const UPPER: RECT = RECT {
+        left: 0,
+        top: 0,
+        right: 2560,
+        bottom: 1440,
+    };
+    const LOWER: RECT = RECT {
+        left: 390,
+        top: 1440,
+        right: 2310,
+        bottom: 2520,
+    };
+
+    fn point(x: i32, y: i32) -> POINT {
+        POINT { x, y }
+    }
+
+    #[test]
+    fn stacked_crossing_holds_at_last_physical_row_at_any_sample_speed() {
+        for previous_y in [0, 1300, 1437, 1438, 1439] {
+            for current_y in [1440, 1441, 1500, 2519] {
+                assert_eq!(
+                    bottom_edge_hold(
+                        &[UPPER, LOWER],
+                        point(1280, previous_y),
+                        point(1280, current_y),
+                        960..1600,
+                        false
+                    ),
+                    Some(point(1280, 1439))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn three_screens_hold_each_shared_edge_but_not_the_last() {
+        let top = RECT {
+            top: -1080,
+            bottom: 0,
+            ..UPPER
+        };
+        let monitors = [top, UPPER, LOWER];
+        assert_eq!(
+            bottom_edge_hold(&monitors, point(1280, -20), point(1280, 30), 960..1600, false),
+            Some(point(1280, -1))
+        );
+        assert_eq!(
+            bottom_edge_hold(&monitors, point(1280, 1400), point(1280, 1500), 960..1600, false),
+            Some(point(1280, 1439))
+        );
+        assert_eq!(
+            bottom_edge_hold(&monitors, point(1280, 2500), point(1280, 2520), 960..1600, false),
+            None
+        );
+    }
+
+    #[test]
+    fn isolated_side_by_side_gaps_and_upward_motion_pass_freely() {
+        let beside = RECT {
+            left: 2560,
+            right: 4480,
+            top: 0,
+            bottom: 1440,
+        };
+        let gap = RECT { top: 1441, ..LOWER };
+        for monitors in [vec![UPPER], vec![UPPER, beside], vec![UPPER, gap]] {
+            assert_eq!(
+                bottom_edge_hold(&monitors, point(1280, 1400), point(1280, 1500), 960..1600, false),
+                None
+            );
+        }
+        assert_eq!(
+            bottom_edge_hold(
+                &[UPPER, beside],
+                point(2550, 1430),
+                point(2570, 1435),
+                2400..2600,
+                false
+            ),
+            None
+        );
+        assert_eq!(
+            bottom_edge_hold(&[UPPER, LOWER], point(1280, 1500), point(1280, 1400), 960..1600, false),
+            None
+        );
+    }
+
+    #[test]
+    fn dock_span_and_actual_shared_width_are_half_open() {
+        for (x, expected) in [
+            (959, None),
+            (960, Some(point(960, 1439))),
+            (1599, Some(point(1599, 1439))),
+            (1600, None),
+            (200, None),
+            (2400, None),
+        ] {
+            assert_eq!(
+                bottom_edge_hold(&[UPPER, LOWER], point(x, 1400), point(x, 1500), 960..1600, false),
+                expected
+            );
+        }
+        // Both samples can be on screens while the diagonal crosses outside
+        // their shared horizontal edge or outside the dock.
+        assert_eq!(
+            bottom_edge_hold(&[UPPER, LOWER], point(0, 1439), point(1280, 1500), 960..1600, false),
+            None
+        );
+        let offset = RECT {
+            left: 2000,
+            right: 3920,
+            ..LOWER
+        };
+        assert_eq!(
+            bottom_edge_hold(
+                &[UPPER, offset],
+                point(2200, 1400),
+                point(2700, 1500),
+                2000..2800,
+                false
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn second_push_is_free_and_leaving_then_reapproaching_can_hold_again() {
+        let monitors = [UPPER, LOWER];
+        let held = bottom_edge_hold(&monitors, point(1280, 1400), point(1280, 1500), 960..1600, false).unwrap();
+        assert_eq!(
+            bottom_edge_hold(&monitors, held, point(1280, 1500), 960..1600, true),
+            None
+        );
+        assert_eq!(
+            bottom_edge_hold(&monitors, point(1280, 1400), point(1280, 1500), 960..1600, false),
+            Some(held)
+        );
+    }
+
+    #[test]
+    fn consumed_hold_resets_after_leaving_either_side_or_the_dock_span() {
+        for y in [1438, 1439, 1440, 1441] {
+            assert!(at_held_edge(UPPER, point(1280, y), &(960..1600)));
+        }
+        for (x, y) in [(1280, 1437), (1280, 1442), (959, 1439), (1600, 1439)] {
+            assert!(!at_held_edge(UPPER, point(x, y), &(960..1600)));
+        }
+    }
+
+    #[test]
+    fn mixed_dpi_uses_physical_span_without_rescaling_monitor_coordinates() {
+        // Upper is 2560x1440 at 125%; lower is 1920x1080 at 100%, offset 390.
+        // A 512 DIP dock on the upper monitor is 640 physical pixels wide.
+        assert_eq!(
+            bottom_edge_hold(&[UPPER, LOWER], point(1599, 1420), point(1599, 1460), 960..1600, false),
+            Some(point(1599, 1439))
+        );
+        let upper_left = RECT {
+            left: -2560,
+            right: 0,
+            top: -1440,
+            bottom: 0,
+        };
+        let lower_left = RECT {
+            left: -2170,
+            right: -250,
+            top: 0,
+            bottom: 1080,
+        };
+        assert_eq!(
+            bottom_edge_hold(
+                &[upper_left, lower_left],
+                point(-1280, -40),
+                point(-1280, 40),
+                -1600..-960,
+                false
+            ),
+            Some(point(-1280, -1))
+        );
+    }
+}
+
 pub const DEFAULT_APP_ICON_SIZE: f32 = 32.0;
 pub const MIN_APP_ICON_SIZE: f32 = 24.0;
 pub const MAX_APP_ICON_SIZE: f32 = 40.0;
