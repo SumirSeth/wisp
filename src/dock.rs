@@ -21,6 +21,7 @@ mod tray;
 /// Reserved height in DIPs at the default app icon size.
 pub const DEFAULT_RESERVED_HEIGHT: f32 = logic::HEIGHT + 2.0 * logic::MARGIN;
 
+use crate::deferred::{Deferred, Queue};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -52,6 +53,8 @@ use crate::theme::{Palette, Tint};
 use crate::tray_host::{self, Action, TrayHost};
 
 pub const WM_SHOW_LAUNCHER: u32 = WM_APP + 20;
+pub(crate) const WM_DOCK_WAKE: u32 = WM_APP + 28;
+pub(crate) const WM_DOCK_DRAIN: u32 = WM_APP + 27;
 const WM_REFRESH: u32 = WM_APP + 21;
 /// The tray host's icons changed.
 const WM_TRAY_CHANGED: u32 = WM_APP + 22;
@@ -226,11 +229,88 @@ struct State {
     held_flyout: Option<Option<usize>>,
 }
 
+type DockMessage = (HWND, u32, WPARAM, LPARAM);
+type PendingMessages = Queue<(isize, u32, usize), DockMessage>;
+
+struct StateCell {
+    state: Deferred<State>,
+    messages: RefCell<PendingMessages>,
+}
+impl std::ops::Deref for StateCell {
+    type Target = Deferred<State>;
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+impl StateCell {
+    fn new(state: State) -> Self {
+        Self {
+            state: Deferred::new(state),
+            messages: RefCell::new(Queue::new()),
+        }
+    }
+    fn defer_message(&self, hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) {
+        let msg = if msg == WM_INPUT { WM_DOCK_WAKE } else { msg };
+        if retain_message(msg) {
+            let lp = if matches!(msg, WM_DPICHANGED | WM_SETTINGCHANGE | WM_POWERBROADCAST | WM_DOCK_WAKE) {
+                LPARAM(0)
+            } else {
+                lp
+            };
+            self.messages
+                .borrow_mut()
+                .push((hwnd.0 as isize, msg, wp.0), (hwnd, msg, wp, lp));
+            unsafe {
+                let _ = PostMessageW(Some(hwnd), WM_DOCK_DRAIN, WPARAM(0), LPARAM(0));
+            }
+        }
+    }
+    fn drain(&self) {
+        self.state.drain();
+        if self.try_borrow_mut().is_err() {
+            return;
+        }
+        loop {
+            let next = self.messages.borrow_mut().pop();
+            let Some((hwnd, msg, wp, lp)) = next else {
+                break;
+            };
+            unsafe {
+                let _ = PostMessageW(Some(hwnd), msg, wp, lp);
+            }
+        }
+    }
+}
+
+/// Only retain scalar payloads: DPI/setting pointers expire with SendMessage.
+/// Dock handlers recompute placement and material without using those pointers.
+pub(crate) fn retain_message(msg: u32) -> bool {
+    matches!(
+        msg,
+        WM_TIMER
+            | WM_CLOSE
+            | WM_MOUSELEAVE
+            | WM_REFRESH
+            | WM_TRAY_CHANGED
+            | WM_RADIOS
+            | WM_CLOSE_FLYOUT
+            | WM_DOCK_WAKE
+            | WM_PAINT
+            | WM_DISPLAYCHANGE
+            | WM_DPICHANGED
+            | WM_SETTINGCHANGE
+            | WM_THEMECHANGED
+            | WM_POWERBROADCAST
+            | WM_CAPTURECHANGED
+            | WM_ACTIVATE
+    )
+}
+
 /// Own on the launcher's message-loop thread. Never borrows Launcher from its wndproc.
 pub struct Dock {
     hwnd: HWND,
     shared: bool,
-    state: Box<RefCell<State>>,
+    state: Box<StateCell>,
     hooks: Vec<HWINEVENTHOOK>,
 }
 
@@ -247,7 +327,7 @@ impl Dock {
         if EVENT_TARGET.with(|target| !target.get().is_invalid()) {
             return Err(Error::new(E_FAIL, "A dock already exists on this thread"));
         }
-        let mut state = Box::new(RefCell::new(State {
+        let mut state = Box::new(StateCell::new(State {
             hwnd: HWND::default(),
             owner,
             apps: Vec::new(),
@@ -450,8 +530,48 @@ impl Dock {
         Ok(dock)
     }
 
+    fn native_rect(&self) -> RECT {
+        let mut rect = RECT::default();
+        unsafe {
+            let _ = GetWindowRect(self.hwnd, &mut rect);
+        }
+        rect
+    }
+    fn update<R>(&self, key: Option<&'static str>, op: impl FnOnce(&mut State) -> R + 'static) -> Option<R> {
+        let result = self.state.run(key, op);
+        if result.is_none() {
+            unsafe {
+                let _ = PostMessageW(Some(self.hwnd), WM_DOCK_DRAIN, WPARAM(0), LPARAM(0));
+            }
+        }
+        self.state.drain();
+        result
+    }
+
+    /// Keep ownership changes out of a standalone dock's modal stack as well.
+    /// Returns false when idle so the caller can handle the message normally.
+    pub fn defer_owner_message(&self, key: &'static str, msg: u32, wp: WPARAM, lp: LPARAM) -> bool {
+        if self.state.try_borrow_mut().is_ok() {
+            return false;
+        }
+        self.update(Some(key), move |s| unsafe {
+            let _ = PostMessageW(Some(s.owner), msg, wp, lp);
+        });
+        true
+    }
+
     pub fn draw_on(&mut self, rt: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget) -> Result<()> {
-        self.state.borrow_mut().paint(Some(rt))
+        // A render target belongs to this frame: skip it while busy and invalidate for a later paint.
+        let result = if let Ok(mut s) = self.state.try_borrow_mut() {
+            s.paint(Some(rt))
+        } else {
+            unsafe {
+                let _ = InvalidateRect(Some(self.hwnd), None, false);
+            }
+            Ok(())
+        };
+        self.state.drain();
+        result
     }
 
     pub fn shared(&self) -> bool {
@@ -464,94 +584,120 @@ impl Dock {
 
     pub fn owns_message(msg: u32, wp: WPARAM) -> bool {
         msg == WM_TIMER && (REFRESH_TIMER..=WINDOWS_HIDE_TIMER).contains(&wp.0)
-            || matches!(msg, WM_REFRESH | WM_TRAY_CHANGED | WM_RADIOS | WM_INPUT)
+            || matches!(
+                msg,
+                WM_REFRESH | WM_TRAY_CHANGED | WM_RADIOS | WM_INPUT | WM_DOCK_DRAIN | WM_DOCK_WAKE | WM_CLOSE_FLYOUT
+            )
     }
 
     pub fn mostly_visible(&self) -> bool {
-        let s = self.state.borrow();
+        // While busy, use native visibility without consulting the animation.
+        let Ok(s) = self.state.try_borrow() else {
+            return unsafe { IsWindowVisible(self.hwnd).as_bool() };
+        };
         unsafe { crate::morph::can_morph(IsWindowVisible(self.hwnd).as_bool(), s.slide_value()) }
     }
 
     pub fn pace_frames(&mut self) {
-        self.state.borrow_mut().frame_paced = true;
+        self.update(Some("pace_frames"), move |s| {
+            s.frame_paced = true;
+        });
     }
 
     /// Slides the dock in as the pointer would, and keeps it in, for captures.
     pub fn capture_reveal(&mut self) {
-        let mut s = self.state.borrow_mut();
-        s.held = true;
-        s.reveal();
+        self.update(Some("capture_reveal"), move |s| {
+            s.held = true;
+            s.reveal();
+        });
     }
 
     pub fn capture_slide(&mut self) {
-        let mut s = self.state.borrow_mut();
-        let to = if s.slide_to > 0.5 { 0.0 } else { 1.0 };
-        s.revealed = to < 0.5;
-        if !s.revealed {
-            s.radio_worker.hide();
-        }
-        unsafe {
-            let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
-        }
-        s.start_slide(to);
+        self.update(None, move |s| {
+            let to = if s.slide_to > 0.5 { 0.0 } else { 1.0 };
+            s.revealed = to < 0.5;
+            if !s.revealed {
+                s.radio_worker.hide();
+            }
+            unsafe {
+                let _ = ShowWindow(s.hwnd, SW_SHOWNOACTIVATE);
+            }
+            s.start_slide(to);
+        });
     }
 
     pub fn animating(&self) -> bool {
-        self.state.borrow().slide.is_some()
+        // Keep frames requested while a menu may be holding an animation.
+        self.state.try_borrow().map(|s| s.slide.is_some()).unwrap_or(true)
     }
 
     pub fn frame(&mut self) {
-        let mut s = self.state.borrow_mut();
-        if s.slide.is_some() {
-            s.step_slide();
-        }
+        self.update(Some("frame"), move |s| {
+            if s.slide.is_some() {
+                s.step_slide();
+            }
+        });
     }
 
     /// Pauses placement without hiding the shared surface.
     pub fn suspend(&mut self) -> RECT {
-        let mut s = self.state.borrow_mut();
-        s.finish_press(false);
-        s.close_flyout();
-        s.hide_tip();
-        s.hide_windows();
-        let mut rect = RECT::default();
-        unsafe {
-            let _ = GetWindowRect(self.hwnd, &mut rect);
-            if !IsWindowVisible(self.hwnd).as_bool() {
-                let height = rect.bottom - rect.top;
-                let layout_scale = logic::layout_scale(s.app_icon_size);
-                rect.top = s.top + height + (logic::margin(layout_scale) * s.dpi as f32 / 96.0).round() as i32;
-                rect.bottom = rect.top + height;
+        self.update(Some("suspend"), move |s| {
+            s.finish_press(false);
+            s.close_flyout();
+            s.hide_tip();
+            s.hide_windows();
+            let mut rect = RECT::default();
+            unsafe {
+                let _ = GetWindowRect(s.hwnd, &mut rect);
+                if !IsWindowVisible(s.hwnd).as_bool() {
+                    let height = rect.bottom - rect.top;
+                    let layout_scale = logic::layout_scale(s.app_icon_size);
+                    rect.top = s.top + height + (logic::margin(layout_scale) * s.dpi as f32 / 96.0).round() as i32;
+                    rect.bottom = rect.top + height;
+                }
+                let _ = KillTimer(Some(s.hwnd), POLL_TIMER);
             }
-            let _ = KillTimer(Some(self.hwnd), POLL_TIMER);
-        }
-        s.listen(false);
-        s.stop_slide();
-        s.suspended = true;
-        s.radio_worker.hide();
-        rect
+            s.listen(false);
+            s.stop_slide();
+            s.suspended = true;
+            s.radio_worker.hide();
+            rect
+        })
+        // While busy, return the current native rectangle; placement catches up after the menu.
+        .unwrap_or_else(|| {
+            let mut rect = RECT::default();
+            unsafe {
+                let _ = GetWindowRect(self.hwnd, &mut rect);
+            }
+            rect
+        })
     }
 
     pub fn resume(&mut self) {
-        let mut s = self.state.borrow_mut();
-        s.suspended = false;
-        s.surface_rect = None;
-        s.revealed = true;
-        s.visible = true;
-        s.away = 0;
-        s.stop_slide();
-        s.refresh();
-        s.start_poll(POLL_MS);
+        self.update(Some("resume"), move |s| {
+            s.suspended = false;
+            s.surface_rect = None;
+            s.revealed = true;
+            s.visible = true;
+            s.away = 0;
+            s.stop_slide();
+            s.refresh();
+            s.start_poll(POLL_MS);
+        });
     }
 
     pub fn surface_rect(&mut self, rect: RECT) {
-        let mut s = self.state.borrow_mut();
-        s.surface_rect = Some(rect);
-        s.publish_rects();
+        self.update(Some("surface_rect"), move |s| {
+            s.surface_rect = Some(rect);
+            s.publish_rects();
+        });
     }
 
     pub fn resting_rect(&self) -> RECT {
-        let s = self.state.borrow();
+        // Current window geometry is the best available rectangle while busy.
+        let Ok(s) = self.state.try_borrow() else {
+            return self.native_rect();
+        };
         RECT {
             left: s.left,
             top: s.top,
@@ -562,230 +708,258 @@ impl Dock {
 
     /// Call after index or icon batches.
     pub fn set_apps(&mut self, apps: &[AppEntry], icons: &HashMap<String, Arc<IconPixels>>) {
-        let mut s = self.state.borrow_mut();
-        s.apps = apps.to_vec();
-        s.migrate_pins();
-        for (id, pixels) in icons {
-            s.icons.entry(id.clone()).or_insert_with(|| pixels.clone());
-        }
-        s.refresh();
+        let apps = apps.to_vec();
+        let icons = icons.clone();
+        self.update(Some("set_apps"), move |s| {
+            s.apps = apps;
+            s.migrate_pins();
+            for (id, pixels) in &icons {
+                s.icons.entry(id.clone()).or_insert_with(|| pixels.clone());
+            }
+            s.refresh();
+        });
     }
 
     pub fn set_status_placement(&mut self, group: &[String], icons: &[String]) {
-        let mut s = self.state.borrow_mut();
-        let placement = logic::StatusPlacement::new(group, icons);
-        if s.status_placement == placement {
-            return;
-        }
-        s.finish_press(false);
-        s.radio_worker.hide();
-        s.radios = status::Radios::default();
-        s.status_placement = placement;
-        s.hide_tip();
-        s.hide_windows();
-        s.hover = None;
-        s.hover_part = None;
-        s.update_status();
-        s.place();
-        unsafe {
-            let _ = InvalidateRect(Some(s.hwnd), None, false);
-        }
+        let group = group.to_vec();
+        let icons = icons.to_vec();
+        self.update(Some("set_status_placement"), move |s| {
+            let placement = logic::StatusPlacement::new(&group, &icons);
+            if s.status_placement == placement {
+                return;
+            }
+            s.finish_press(false);
+            s.radio_worker.hide();
+            s.radios = status::Radios::default();
+            s.status_placement = placement;
+            s.hide_tip();
+            s.hide_windows();
+            s.hover = None;
+            s.hover_part = None;
+            s.update_status();
+            s.place();
+            unsafe {
+                let _ = InvalidateRect(Some(s.hwnd), None, false);
+            }
+        });
     }
 
     pub fn set_order(&mut self, names: &[String]) {
-        let mut s = self.state.borrow_mut();
-        s.finish_press(false);
-        s.order = logic::section_order(names.iter().map(String::as_str));
-        s.hide_tip();
-        s.hide_windows();
-        s.hover = None;
-        s.hover_part = None;
-        s.place();
-        unsafe {
-            let _ = InvalidateRect(Some(s.hwnd), None, false);
-        }
+        let names = names.to_vec();
+        self.update(Some("set_order"), move |s| {
+            s.finish_press(false);
+            s.order = logic::section_order(names.iter().map(String::as_str));
+            s.hide_tip();
+            s.hide_windows();
+            s.hover = None;
+            s.hover_part = None;
+            s.place();
+            unsafe {
+                let _ = InvalidateRect(Some(s.hwnd), None, false);
+            }
+        });
     }
 
     pub fn reload_pins(&mut self) {
-        let mut s = self.state.borrow_mut();
-        s.finish_press(false);
-        s.pinned = load_pins();
-        s.migrate_pins();
-        s.update_pins();
+        self.update(Some("reload_pins"), move |s| {
+            s.finish_press(false);
+            s.pinned = load_pins();
+            s.migrate_pins();
+            s.update_pins();
+        });
     }
 
     pub fn set_window_list_mode(&mut self, mode: WindowListMode) {
-        let mut s = self.state.borrow_mut();
-        s.finish_press(false);
-        s.window_list_mode = mode;
-        s.hide_windows();
+        self.update(Some("set_window_list_mode"), move |s| {
+            s.finish_press(false);
+            s.window_list_mode = mode;
+            s.hide_windows();
+        });
     }
 
     pub fn set_app_icon_size(&mut self, size: u32) {
-        let size = (size as f32).clamp(logic::MIN_APP_ICON_SIZE, logic::MAX_APP_ICON_SIZE);
-        let mut s = self.state.borrow_mut();
-        s.finish_press(false);
-        if s.app_icon_size == size {
-            return;
-        }
-        s.app_icon_size = size;
-        s.place();
-        unsafe {
-            let _ = InvalidateRect(Some(s.hwnd), None, false);
-        }
+        self.update(Some("set_app_icon_size"), move |s| {
+            let size = (size as f32).clamp(logic::MIN_APP_ICON_SIZE, logic::MAX_APP_ICON_SIZE);
+            s.finish_press(false);
+            if s.app_icon_size == size {
+                return;
+            }
+            s.app_icon_size = size;
+            s.place();
+            unsafe {
+                let _ = InvalidateRect(Some(s.hwnd), None, false);
+            }
+        });
     }
 
     pub fn refresh(&mut self) {
-        self.state.borrow_mut().refresh();
+        self.update(Some("refresh"), move |s| {
+            s.refresh();
+        });
     }
 
     pub fn apply_theme(&mut self, dark: bool, backdrop: Backdrop, tint: Option<Tint>) {
-        let mut s = self.state.borrow_mut();
-        s.finish_press(false);
-        s.apply_material(dark, backdrop, tint);
+        self.update(Some("apply_theme"), move |s| {
+            s.finish_press(false);
+            s.apply_material(dark, backdrop, tint);
+        });
     }
 
     /// Hosts the notification area in the dock while `enabled`, which
     /// should follow the hidden taskbar. Failure leaves icons to Explorer.
     pub fn set_tray(&mut self, enabled: bool) {
-        let mut s = self.state.borrow_mut();
-        s.finish_press(false);
-        if enabled == s.tray_host.is_some() {
-            return;
-        }
-        if enabled {
-            match TrayHost::start(self.hwnd, WM_TRAY_CHANGED) {
-                Ok(host) => s.tray_host = Some(host),
-                Err(error) => {
-                    eprintln!("Dock notification area: {error}");
-                    return;
-                }
+        self.update(Some("set_tray"), move |s| {
+            s.finish_press(false);
+            if enabled == s.tray_host.is_some() {
+                return;
             }
-        } else {
-            s.close_flyout();
-            s.hide_tip();
-            s.tray_host = None;
-        }
-        s.sync_tray();
+            if enabled {
+                match TrayHost::start(s.hwnd, WM_TRAY_CHANGED) {
+                    Ok(host) => s.tray_host = Some(host),
+                    Err(error) => {
+                        eprintln!("Dock notification area: {error}");
+                        return;
+                    }
+                }
+            } else {
+                s.close_flyout();
+                s.hide_tip();
+                s.tray_host = None;
+            }
+            s.sync_tray();
+        });
     }
 
     /// Keeps notification icons reaching Wisp after Explorer shows its taskbar.
     pub fn outrank_tray(&self) {
-        if let Some(host) = &self.state.borrow().tray_host {
-            host.outrank();
-        }
+        self.update(Some("outrank_tray"), move |s| {
+            if let Some(host) = &s.tray_host {
+                host.outrank();
+            }
+        });
     }
 
     /// Lets the dock auto-hide: it appears when the pointer reaches the
     /// bottom edge of a screen.
     pub fn show(&mut self) {
-        self.state.borrow_mut().suspended = false;
-        let mut s = self.state.borrow_mut();
-        s.visible = true;
-        // A dock that stays visible comes back in place, without sliding.
-        s.revealed = !s.autohide;
-        if !s.revealed {
-            s.radio_worker.hide();
-        }
-        s.surface_rect = None;
-        s.stop_slide();
-        s.start_poll(POLL_MS);
-        s.refresh();
+        self.update(Some("show"), move |s| {
+            s.suspended = false;
+            s.visible = true;
+            // A dock that stays visible comes back in place, without sliding.
+            s.revealed = !s.autohide;
+            if !s.revealed {
+                s.radio_worker.hide();
+            }
+            s.surface_rect = None;
+            s.stop_slide();
+            s.start_poll(POLL_MS);
+            s.refresh();
+        });
     }
     /// Reveals the dock for good, with a fixed hover, so screenshots can show it
     /// without moving the pointer.
     pub fn hold(&mut self, hover: Option<usize>, hover_part: Option<&str>, dpi: Option<u32>) {
-        let mut s = self.state.borrow_mut();
-        s.held = true;
-        s.held_dpi = dpi;
-        s.revealed = true;
-        s.hover = hover;
-        s.animate_hover();
-        s.hover_part = match hover_part {
-            Some("volume" | "battery" | "status") => Some(logic::Part::Status),
-            Some("clock") => Some(logic::Part::Clock),
-            Some("chevron") => Some(logic::Part::Chevron),
-            Some(part) => part
-                .strip_prefix("tray")
-                .and_then(|i| i.parse().ok())
-                .map(logic::Part::Tray),
-            _ => None,
-        };
-        // "flyout" opens the flyout, "flyout2" also hovers its third icon.
-        s.held_flyout = hover_part
-            .and_then(|part| part.strip_prefix("flyout"))
-            .map(|rest| rest.parse().ok());
-        s.reveal();
-        s.stop_slide();
-        s.place();
-        if hover_part == Some("desktops") {
-            s.show_desktops(desktops::read());
-        }
-        s.sync_tray();
+        let hover_part = hover_part.map(str::to_owned);
+        self.update(Some("hold"), move |s| {
+            let hover_part = hover_part.as_deref();
+            s.held = true;
+            s.held_dpi = dpi;
+            s.revealed = true;
+            s.hover = hover;
+            s.animate_hover();
+            s.hover_part = match hover_part {
+                Some("volume" | "battery" | "status") => Some(logic::Part::Status),
+                Some("clock") => Some(logic::Part::Clock),
+                Some("chevron") => Some(logic::Part::Chevron),
+                Some(part) => part
+                    .strip_prefix("tray")
+                    .and_then(|i| i.parse().ok())
+                    .map(logic::Part::Tray),
+                _ => None,
+            };
+            // "flyout" opens the flyout, "flyout2" also hovers its third icon.
+            s.held_flyout = hover_part
+                .and_then(|part| part.strip_prefix("flyout"))
+                .map(|rest| rest.parse().ok());
+            s.reveal();
+            s.stop_slide();
+            s.place();
+            if hover_part == Some("desktops") {
+                s.show_desktops(desktops::read());
+            }
+            s.sync_tray();
+        });
     }
     /// Shows or hides the search button, the first slot of the dock.
     pub fn set_search_button(&mut self, shown: bool) {
-        let mut s = self.state.borrow_mut();
-        if s.search_button == shown {
-            return;
-        }
-        s.search_button = shown;
-        s.finish_press(false);
-        s.hide_tip();
-        s.hide_windows();
-        s.hover = None;
-        s.hover_part = None;
-        s.place();
-        unsafe {
-            let _ = InvalidateRect(Some(s.hwnd), None, false);
-        }
+        self.update(Some("set_search_button"), move |s| {
+            if s.search_button == shown {
+                return;
+            }
+            s.search_button = shown;
+            s.finish_press(false);
+            s.hide_tip();
+            s.hide_windows();
+            s.hover = None;
+            s.hover_part = None;
+            s.place();
+            unsafe {
+                let _ = InvalidateRect(Some(s.hwnd), None, false);
+            }
+        });
     }
 
     /// Keeps the dock visible on the primary screen, or lets it auto-hide.
     pub fn set_autohide(&mut self, autohide: bool) {
-        let mut s = self.state.borrow_mut();
-        if s.autohide == autohide {
-            return;
-        }
-        s.autohide = autohide;
-        if !autohide && s.visible && !s.suspended && !s.revealed {
-            s.reveal();
-        } else {
-            // Move to the primary screen, or start the hide countdown.
-            s.away = 0;
-            s.place();
-        }
+        self.update(Some("set_autohide"), move |s| {
+            if s.autohide == autohide {
+                return;
+            }
+            s.autohide = autohide;
+            if !autohide && s.visible && !s.suspended && !s.revealed {
+                s.reveal();
+            } else {
+                // Move to the primary screen, or start the hide countdown.
+                s.away = 0;
+                s.place();
+            }
+        });
     }
 
     /// Whether the dock stays on screen instead of auto-hiding.
     pub fn stays_visible(&self) -> bool {
-        !self.state.borrow().autohide
+        // Conservatively reserve space until the menu releases the latest setting.
+        self.state.try_borrow().map(|s| !s.autohide).unwrap_or(true)
     }
 
     /// The room a dock that stays visible keeps at the bottom of the primary
     /// screen, in DIPs: its height and the margins above and below it.
     pub fn reserved_height(&self) -> f32 {
-        let s = self.state.borrow();
+        // Use the default reservation until the pending size can be applied.
+        let Ok(s) = self.state.try_borrow() else {
+            return DEFAULT_RESERVED_HEIGHT;
+        };
         let scale = logic::layout_scale(s.app_icon_size);
         logic::height(scale) + 2.0 * logic::margin(scale)
     }
 
     /// Hides the dock until `show`, such as while the launcher is open.
     pub fn hide(&mut self) {
-        let mut s = self.state.borrow_mut();
-        s.finish_press(false);
-        s.close_flyout();
-        s.hide_tip();
-        s.hide_windows();
-        s.visible = false;
-        s.stop_slide();
-        s.revealed = false;
-        s.radio_worker.hide();
-        s.listen(false);
-        unsafe {
-            let _ = KillTimer(Some(self.hwnd), POLL_TIMER);
-            let _ = ShowWindow(self.hwnd, SW_HIDE);
-        }
+        self.update(Some("hide"), move |s| {
+            s.finish_press(false);
+            s.close_flyout();
+            s.hide_tip();
+            s.hide_windows();
+            s.visible = false;
+            s.stop_slide();
+            s.revealed = false;
+            s.radio_worker.hide();
+            s.listen(false);
+            unsafe {
+                let _ = KillTimer(Some(s.hwnd), POLL_TIMER);
+                let _ = ShowWindow(s.hwnd, SW_HIDE);
+            }
+        });
     }
 }
 
@@ -2761,6 +2935,32 @@ unsafe extern "system" fn window_event(
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
+        let pointer = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const StateCell;
+        if let Some(cell) = pointer.as_ref() {
+            if cell.try_borrow_mut().is_err() {
+                cell.defer_message(hwnd, msg, wp, lp);
+                // DefWindowProc would destroy the window instead of our usual hide.
+                if msg == WM_CLOSE {
+                    return LRESULT(0);
+                }
+                // Validate paint / free raw input through DefWindowProc; discard stale input.
+                return DefWindowProcW(hwnd, msg, wp, lp);
+            }
+            if msg == WM_DOCK_DRAIN {
+                cell.drain();
+                return LRESULT(0);
+            }
+        }
+        let result = wndproc_inner(hwnd, msg, wp, lp);
+        if let Some(cell) = pointer.as_ref() {
+            cell.drain();
+        }
+        result
+    }
+}
+
+unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    unsafe {
         if msg == WM_NCCREATE {
             let create = &*(lp.0 as *const CREATESTRUCTW);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, create.lpCreateParams as isize);
@@ -2780,7 +2980,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         if msg == WM_ERASEBKGND {
             return LRESULT(1);
         }
-        let pointer = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const RefCell<State>;
+        let pointer = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const StateCell;
         if !pointer.is_null()
             && let Ok(mut s) = (*pointer).try_borrow_mut()
         {
@@ -2798,6 +2998,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 }
                 WM_TIMER if wp.0 == POLL_TIMER => {
                     s.poll();
+                    return LRESULT(0);
+                }
+                WM_DOCK_WAKE => {
+                    s.wake();
                     return LRESULT(0);
                 }
                 WM_INPUT => {
@@ -3032,6 +3236,32 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 /// The flyout and the tooltip, which share the dock's state.
 unsafe extern "system" fn popup_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
+        let pointer = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const StateCell;
+        if let Some(cell) = pointer.as_ref() {
+            if cell.try_borrow_mut().is_err() {
+                cell.defer_message(hwnd, msg, wp, lp);
+                // DefWindowProc would destroy the window instead of our usual hide.
+                if msg == WM_CLOSE {
+                    return LRESULT(0);
+                }
+                // Validate paint / free raw input through DefWindowProc; discard stale input.
+                return DefWindowProcW(hwnd, msg, wp, lp);
+            }
+            if msg == WM_DOCK_DRAIN {
+                cell.drain();
+                return LRESULT(0);
+            }
+        }
+        let result = popup_wndproc_inner(hwnd, msg, wp, lp);
+        if let Some(cell) = pointer.as_ref() {
+            cell.drain();
+        }
+        result
+    }
+}
+
+unsafe fn popup_wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    unsafe {
         if msg == WM_NCCREATE {
             let create = &*(lp.0 as *const CREATESTRUCTW);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, create.lpCreateParams as isize);
@@ -3042,7 +3272,7 @@ unsafe extern "system" fn popup_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LP
         if msg == WM_ERASEBKGND {
             return LRESULT(1);
         }
-        let pointer = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const RefCell<State>;
+        let pointer = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const StateCell;
         let Some(cell) = pointer.as_ref() else {
             return DefWindowProcW(hwnd, msg, wp, lp);
         };

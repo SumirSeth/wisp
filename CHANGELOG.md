@@ -19,6 +19,8 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ### Fixes
 
+- Wisp no longer quits, and the dock no longer gets stuck, when the dock changes while one of its menus is open. A crash now leaves a note in `wisp.log`. (#PR, fixes #91)
+
 - Hibernate from the launcher when the PC supports hibernation and has a hibernation file. (#87, fixes #83)
 - Pressing a toggle in the launcher many times in a row, such as Bluetooth, Wi-Fi, dark mode or play/pause, no longer keeps Windows switching for seconds afterwards: only the last press is applied. (#78)
 - Keep the launcher's backdrop and border consistent at the bottom and center of the screen, in both light and dark themes. (#75, fixes #45)
