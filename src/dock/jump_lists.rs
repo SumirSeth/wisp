@@ -242,7 +242,86 @@ fn property(store: &IPropertyStore, key: &PROPERTYKEY) -> Option<String> {
     }
 }
 
+/// The shell's own answer to "which app is this window?", the ID the taskbar
+/// groups, pins and keeps Jump Lists under. It covers the IDs Windows assigns
+/// itself (for programs that set none) and IDs a process set for itself,
+/// which no documented API reads from another process.
+///
+/// `IApplicationResolver` is undocumented, but its Windows 8 interface has
+/// been stable since then, and Open-Shell and ExplorerPatcher rely on it.
+/// If Windows ever drops it, creating it fails and the documented checks in
+/// `resolve_id` still run.
+mod resolver {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
+    use windows::core::{BOOL, GUID, HRESULT, IUnknown, Interface, PWSTR};
+
+    /// CLSID_StartMenuCacheAndAppResolver.
+    const CLSID: GUID = GUID::from_u128(0x660b90c8_73a9_4b58_8cae_355b7f55341b);
+    /// IID_IApplicationResolver8 (Windows 8 and later).
+    const IID: GUID = GUID::from_u128(0xde25675a_72de_44b4_9373_05170450c140);
+    /// `GetAppIDForWindow`, after IUnknown's three methods,
+    /// `GetAppIDForShortcut` and `GetAppIDForShortcutObject`.
+    const GET_APP_ID_FOR_WINDOW: usize = 5;
+
+    type GetAppIdForWindow = unsafe extern "system" fn(
+        this: *mut core::ffi::c_void,
+        hwnd: HWND,
+        id: *mut PWSTR,
+        pinning_prevented: *mut BOOL,
+        explicit: *mut BOOL,
+        embedded_shortcut_valid: *mut BOOL,
+    ) -> HRESULT;
+
+    /// One per thread that reads Jump Lists; call on a COM thread.
+    pub struct Resolver(IUnknown);
+
+    impl Resolver {
+        pub fn new() -> Option<Self> {
+            unsafe {
+                let unknown: IUnknown = CoCreateInstance(&CLSID, None, CLSCTX_INPROC_SERVER).ok()?;
+                let mut raw = std::ptr::null_mut();
+                unknown.query(&IID, &mut raw).ok().ok()?;
+                // Owns the reference QueryInterface added.
+                Some(Self(IUnknown::from_raw(raw)))
+            }
+        }
+
+        pub fn window(&self, hwnd: isize) -> Option<String> {
+            unsafe {
+                let this = self.0.as_raw();
+                // The object answered for IID, so its vtable is that interface's.
+                let vtable = *(this as *const *const usize);
+                let get: GetAppIdForWindow = std::mem::transmute(*vtable.add(GET_APP_ID_FOR_WINDOW));
+                let mut id = PWSTR::null();
+                let (mut prevented, mut explicit, mut embedded) = (BOOL(0), BOOL(0), BOOL(0));
+                let hr = get(
+                    this,
+                    HWND(hwnd as _),
+                    &mut id,
+                    &mut prevented,
+                    &mut explicit,
+                    &mut embedded,
+                );
+                if hr.is_err() || id.is_null() {
+                    return None;
+                }
+                let text = id.to_string().ok();
+                CoTaskMemFree(Some(id.0.cast()));
+                text.filter(|id| !id.trim().is_empty())
+            }
+        }
+    }
+}
+
 fn resolve_id(id: &str, path: Option<&str>, windows: &[isize], start: Instant) -> Option<String> {
+    // The taskbar's own ID for the app's window, when the shell can say.
+    if !windows.is_empty()
+        && let Some(resolver) = resolver::Resolver::new()
+        && let Some(id) = windows.iter().find_map(|&hwnd| resolver.window(hwnd))
+    {
+        return Some(id);
+    }
     // A window can override the process identity. The dock groups by that ID too.
     for &hwnd in windows {
         if start.elapsed() >= BUDGET {
