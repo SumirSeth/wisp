@@ -8,7 +8,7 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 - Type `wisp` or `settings` in the launcher to open Wisp's Settings, also while the taskbar and its tray icon are hidden. (#86)
 - Find Windows tools by their program name, such as `cmd`, `taskmgr` or `regedit`, whatever the language of Windows. (#89, fixes #84)
-- Right-click an app in the dock for its Jump List: recent and frequent files and the app's own tasks, as on the taskbar. (#PR, fixes #74)
+- Right-click an app in the dock for its Jump List: its recent files and its own tasks, as on the taskbar. (#PR, fixes #74)
 - Open or close the launcher by tapping the Windows key alone. Turn on Use Win key in Settings, under Shortcut; it replaces your shortcut, and Windows shortcuts such as Win+E still work. (#80)
 - Hide the search button in the dock: turn off Search button in Settings, under Dock, or set `dock_search_button = false`. Your shortcut still opens the launcher. (#81, by @SorbetMango, fixes #79; #82)
 - Turn Night Light on or off and switch Windows between dark and light mode from the launcher: type `theme`, `dark` or `light` for one toggle. Minimize, maximize, restore, close or keep on top the window you opened it over. (#76, #78, fixes #62)

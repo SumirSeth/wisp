@@ -123,7 +123,9 @@ pub fn read(id: &str, path: Option<&str>, windows: &[isize]) -> Vec<Section> {
                     && start.elapsed() < BUDGET
                     && !items.is_empty()
                 {
+                    // Like the taskbar, one of the two: they mostly repeat each other.
                     let _ = tx.send(Section { title, items });
+                    break;
                 }
             }
         }

@@ -79,7 +79,7 @@ Tray icons keep their usual clicks; drag their chevron or the gap beside them to
 
 Right-click an app and choose **Pin to dock** to keep it before running apps, in pin order. Click a closed pinned app to start it. To clear pins, choose **Unpin all apps** in Settings.
 
-Right-click an app for its Jump List above the app name: up to six recent files, frequent files and app-defined tasks per section. Empty sections and missing local files are hidden. Apps whose identity Windows does not expose have no Jump List.
+Right-click an app for its Jump List above the app name: up to six recent files (or frequent ones, when there are no recent ones) and up to six of the app's own tasks. Empty sections and missing local files are hidden. Apps whose identity Windows does not expose have no Jump List.
 
 The dock hides over full-screen apps. Tray icons you pin in Windows show in the dock; the rest are behind **⌄**.
 
