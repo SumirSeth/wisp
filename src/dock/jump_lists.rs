@@ -469,14 +469,24 @@ fn local_path(path: &str) -> bool {
     let bytes = path.as_bytes();
     bytes.len() > 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && matches!(bytes[2], b'\\' | b'/')
 }
-fn tasks(aumid: &str, start: Instant) -> Option<Vec<Item>> {
-    let root = std::env::var_os("APPDATA")?;
-    tasks_at(aumid, Path::new(&root), start)
+/// The user's Recent folder, from Windows rather than `%APPDATA%`, which a
+/// process may have changed.
+fn recent_folder() -> Option<std::path::PathBuf> {
+    unsafe {
+        let ptr = SHGetKnownFolderPath(&FOLDERID_Recent, KF_FLAG_DEFAULT, None).ok()?;
+        let path = ptr.to_string().ok();
+        CoTaskMemFree(Some(ptr.0.cast()));
+        path.map(Into::into)
+    }
 }
-fn tasks_at(aumid: &str, root: &Path, start: Instant) -> Option<Vec<Item>> {
-    let path = root
-        .join(r"Microsoft\Windows\Recent\CustomDestinations")
-        .join(format!("{:x}.customDestinations-ms", format::app_id_hash(aumid)));
+fn tasks(aumid: &str, start: Instant) -> Option<Vec<Item>> {
+    tasks_at(aumid, &recent_folder()?, start)
+}
+fn tasks_at(aumid: &str, recent: &Path, start: Instant) -> Option<Vec<Item>> {
+    // Windows names the file with all 16 hex digits of the hash.
+    let path = recent
+        .join("CustomDestinations")
+        .join(format!("{:016x}.customDestinations-ms", format::app_id_hash(aumid)));
     let file = std::fs::File::open(path).ok()?;
     let mut bytes = Vec::new();
     file.take((format::MAX_FILE + 1) as u64).read_to_end(&mut bytes).ok()?;
@@ -557,7 +567,7 @@ mod tests {
                 }
             }
             let task_start = Instant::now();
-            match tasks_at(id, Path::new(&root), task_start) {
+            match tasks_at(id, &Path::new(&root).join(r"Microsoft\Windows\Recent"), task_start) {
                 Some(items) => {
                     eprintln!(
                         "Tasks: {} items, section {:?}, total {:?}",
