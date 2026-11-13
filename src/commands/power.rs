@@ -1,7 +1,5 @@
 //! Lock, sleep, hibernate, restart, shut down, sign out and empty the Recycle Bin.
 
-use std::sync::OnceLock;
-
 use windows::{
     Win32::{
         Foundation::{CloseHandle, HANDLE, LUID},
@@ -98,13 +96,11 @@ impl Power {
     }
 }
 
-/// Power capabilities are cheap to read and cached for this process.
+/// Read when the query asks for it, so turning hibernation on or off in
+/// Windows shows without restarting Wisp. The call is cheap.
 pub fn can_hibernate() -> bool {
-    static AVAILABLE: OnceLock<bool> = OnceLock::new();
-    *AVAILABLE.get_or_init(|| {
-        let mut capabilities = SYSTEM_POWER_CAPABILITIES::default();
-        (unsafe { GetPwrCapabilities(&mut capabilities) }) && supports_hibernate(&capabilities)
-    })
+    let mut capabilities = SYSTEM_POWER_CAPABILITIES::default();
+    (unsafe { GetPwrCapabilities(&mut capabilities) }) && supports_hibernate(&capabilities)
 }
 
 fn supports_hibernate(capabilities: &SYSTEM_POWER_CAPABILITIES) -> bool {
