@@ -108,6 +108,7 @@ Type to search, then press <kbd>Enter</kbd>.
 | `time tokyo` · `date` | Copy a time or the date |
 | `dark mode` · `display` · … | Open that Settings page |
 | `now` · `sound` | Open live panels for status and audio |
+| `wisp` · `settings` | Open Wisp's Settings |
 | `quit` | Quit Wisp |
 | Anything else | Search the web |
 

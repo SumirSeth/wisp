@@ -1514,6 +1514,13 @@ impl Launcher {
                 let _ = PostMessageW(Some(self.hwnd), WM_APP_QUIT, WPARAM(0), LPARAM(0));
                 return;
             },
+            Command::WispSettings => {
+                if let Err(error) = launch::settings(false) {
+                    tray::notify(self.hwnd, "Could not open Settings", &error.message(), true);
+                }
+                self.hide();
+                return;
+            }
             // These need the launcher's foreground rights, so they run here.
             Command::FocusWindow(hwnd) => {
                 if let Err(error) = commands::open_windows::focus(hwnd) {
