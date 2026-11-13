@@ -2,6 +2,8 @@
 
 #[path = "dock/desktops.rs"]
 mod desktops;
+#[path = "dock/jump_lists.rs"]
+mod jump_lists;
 #[path = "dock/logic.rs"]
 pub(crate) mod logic;
 #[path = "dock/pins.rs"]
@@ -2293,6 +2295,7 @@ impl State {
                 let lower = path.to_ascii_lowercase();
                 lower.ends_with(".exe") || lower.ends_with(".lnk")
             });
+        let jumps = jump_lists::read(&id, path.as_deref(), &windows);
         'menus: {
             unsafe {
                 let (menu, submenu) = match (CreatePopupMenu(), CreatePopupMenu()) {
@@ -2304,6 +2307,19 @@ impl State {
                         break 'menus;
                     }
                 };
+                let mut jump_items = Vec::new();
+                for section in jumps {
+                    let header = HSTRING::from(section.title);
+                    let _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &header);
+                    for item in section.items {
+                        let title = HSTRING::from(item.title.replace('&', "&&").replace(['\t', '\r', '\n'], " "));
+                        let command = jump_lists::MENU_FIRST + jump_items.len();
+                        if AppendMenuW(menu, MF_STRING, command, &title).is_ok() {
+                            jump_items.push(item);
+                        }
+                    }
+                    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+                }
                 // The taskbar's order, with items that do not apply left out:
                 // the app's name, pinning, then closing.
                 let name = HSTRING::from(app.name.as_str());
@@ -2395,7 +2411,15 @@ impl State {
                             );
                         }
                     }
-                    _ => {}
+                    command => {
+                        if let Some(item) = command
+                            .checked_sub(jump_lists::MENU_FIRST)
+                            .and_then(|i| jump_items.get(i))
+                            && let Err(error) = item.invoke()
+                        {
+                            eprintln!("Dock Jump List: {error}");
+                        }
+                    }
                 }
             }
         }
