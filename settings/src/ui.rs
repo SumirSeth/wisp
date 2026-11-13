@@ -833,6 +833,23 @@ impl Settings {
                         p,
                     ))
                     .child(divider(p))
+                    .child(row(
+                        "Search button",
+                        if self.config.win_key {
+                            "Show a button at the start of the dock that opens the launcher. The Win key opens it either way."
+                        } else {
+                            "Show a button at the start of the dock that opens the launcher. Your shortcut opens it either way."
+                        },
+                        Switch::new("dock-search-button")
+                            .checked(self.config.dock_search_button)
+                            .disabled(!self.config.dock)
+                            .accessibility_label("Search button")
+                            .on_change(cx.listener(|this, enabled: &bool, window, cx| {
+                                this.save("dock_search_button", (*enabled).into(), window, cx);
+                            })),
+                        p,
+                    ))
+                    .child(divider(p))
                     .child(
                         item(
                             "App icon size",

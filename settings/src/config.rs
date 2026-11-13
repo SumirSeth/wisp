@@ -32,6 +32,7 @@ pub struct Config {
     pub position: String,
     pub dock: bool,
     pub dock_autohide: bool,
+    pub dock_search_button: bool,
     pub dock_icon_size: i64,
     pub hide_taskbar: bool,
     pub window_list: String,
@@ -117,6 +118,7 @@ impl Config {
             position,
             dock: boolean("dock")?,
             dock_autohide: boolean("dock_autohide")?,
+            dock_search_button: boolean("dock_search_button")?,
             dock_icon_size,
             hide_taskbar: boolean("hide_taskbar")?,
             window_list,
@@ -259,6 +261,7 @@ fn validate_edit(key: &str, value: &Value) -> Result<(), String> {
         | "position"
         | "dock"
         | "dock_autohide"
+        | "dock_search_button"
         | "dock_icon_size"
         | "hide_taskbar" => {}
         "window_list" if !matches!(value.as_str(), Some("always" | "multiple" | "off")) => {
@@ -323,6 +326,7 @@ mod tests {
         assert_eq!(config.file_search_exclude.len(), 14);
         assert_eq!(config.position, "bottom");
         assert!(config.dock && config.dock_autohide && config.hide_taskbar);
+        assert!(config.dock_search_button);
         assert_eq!(config.dock_icon_size, 32);
         // A config from Wisp 0.3 has no dock keys and keeps the taskbar, as in the launcher.
         let old = Config::from_document(&"hotkey = 'Alt+Space'".parse().unwrap()).unwrap();
@@ -457,6 +461,28 @@ mod tests {
         assert_eq!(enabled.hotkey, "Ctrl+F12");
         assert!(!store.set("win_key", false.into()).unwrap().win_key);
         assert!(store.set("win_key", "true".into()).is_err());
+        assert!(std::fs::read_to_string(&store.path).unwrap().contains("# keep me"));
+    }
+
+    #[test]
+    fn dock_search_button_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("config.toml"));
+        std::fs::write(
+            &store.path,
+            "# keep me
+hotkey = 'Ctrl+F12'
+",
+        )
+        .unwrap();
+        assert!(store.load().unwrap().dock_search_button);
+        assert!(
+            !store
+                .set("dock_search_button", false.into())
+                .unwrap()
+                .dock_search_button
+        );
+        assert!(store.set("dock_search_button", true.into()).unwrap().dock_search_button);
         assert!(std::fs::read_to_string(&store.path).unwrap().contains("# keep me"));
     }
 }
