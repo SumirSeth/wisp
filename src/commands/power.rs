@@ -1,4 +1,6 @@
-//! Lock, sleep, restart, shut down, sign out and empty the Recycle Bin.
+//! Lock, sleep, hibernate, restart, shut down, sign out and empty the Recycle Bin.
+
+use std::sync::OnceLock;
 
 use windows::{
     Win32::{
@@ -8,7 +10,7 @@ use windows::{
             TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
         },
         System::{
-            Power::SetSuspendState,
+            Power::{GetPwrCapabilities, SYSTEM_POWER_CAPABILITIES, SetSuspendState},
             Shutdown::*,
             Threading::{GetCurrentProcess, OpenProcessToken},
         },
@@ -21,6 +23,7 @@ use windows::{
 pub enum Power {
     Lock,
     Sleep,
+    Hibernate,
     Restart,
     ShutDown,
     SignOut,
@@ -28,9 +31,10 @@ pub enum Power {
 }
 
 impl Power {
-    pub const ALL: [Power; 6] = [
+    pub const ALL: [Power; 7] = [
         Power::Lock,
         Power::Sleep,
+        Power::Hibernate,
         Power::Restart,
         Power::ShutDown,
         Power::SignOut,
@@ -41,6 +45,7 @@ impl Power {
         match self {
             Power::Lock => "Lock",
             Power::Sleep => "Sleep",
+            Power::Hibernate => "Hibernate",
             Power::Restart => "Restart",
             Power::ShutDown => "Shut down",
             Power::SignOut => "Sign out",
@@ -52,6 +57,7 @@ impl Power {
         match self {
             Power::Lock => "Locks the PC",
             Power::Sleep => "Puts the PC to sleep",
+            Power::Hibernate => "Saves your session and turns off the PC",
             Power::Restart => "Restarts the PC",
             Power::ShutDown => "Turns off the PC",
             Power::SignOut => "Signs you out of Windows",
@@ -63,6 +69,7 @@ impl Power {
         match self {
             Power::Lock => &["lock", "lock screen"],
             Power::Sleep => &["sleep", "suspend"],
+            Power::Hibernate => &["hibernate", "hibernation", "hiber"],
             Power::Restart => &["restart", "reboot"],
             Power::ShutDown => &["shut down", "shutdown", "power off", "turn off pc"],
             Power::SignOut => &["sign out", "log out", "log off", "logout", "logoff"],
@@ -82,6 +89,7 @@ impl Power {
         match self {
             Power::Lock => "\u{E72E}",
             Power::Sleep => "\u{E708}",
+            Power::Hibernate => "\u{E823}",
             Power::Restart => "\u{E777}",
             Power::ShutDown => "\u{E7E8}",
             Power::SignOut => "\u{F3B1}",
@@ -90,13 +98,29 @@ impl Power {
     }
 }
 
+/// Power capabilities are cheap to read and cached for this process.
+pub fn can_hibernate() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        let mut capabilities = SYSTEM_POWER_CAPABILITIES::default();
+        (unsafe { GetPwrCapabilities(&mut capabilities) }) && supports_hibernate(&capabilities)
+    })
+}
+
+fn supports_hibernate(capabilities: &SYSTEM_POWER_CAPABILITIES) -> bool {
+    capabilities.SystemS4 && capabilities.HiberFilePresent
+}
+
 pub fn run(power: Power) -> Result<(), String> {
     let error = |e: windows::core::Error| e.message();
     unsafe {
         match power {
             Power::Lock => LockWorkStation().map_err(error),
-            Power::Sleep => {
-                if SetSuspendState(false, false, false) {
+            Power::Sleep | Power::Hibernate => {
+                if power == Power::Hibernate {
+                    enable_shutdown_privilege()?;
+                }
+                if SetSuspendState(power == Power::Hibernate, false, false) {
                     Ok(())
                 } else {
                     Err(windows::core::Error::from_thread().message())
@@ -115,9 +139,16 @@ pub fn run(power: Power) -> Result<(), String> {
     }
 }
 
-/// Restart and shut down need the shutdown privilege, which processes have
-/// but must turn on.
 unsafe fn exit(flags: EXIT_WINDOWS_FLAGS) -> Result<(), String> {
+    unsafe {
+        enable_shutdown_privilege()?;
+        ExitWindowsEx(flags, SHTDN_REASON_MAJOR_OTHER | SHTDN_REASON_FLAG_PLANNED).map_err(|e| e.message())
+    }
+}
+
+/// Restart, shut down and hibernate need the shutdown privilege, which
+/// processes have but must turn on.
+unsafe fn enable_shutdown_privilege() -> Result<(), String> {
     unsafe {
         let mut token = HANDLE::default();
         OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &mut token)
@@ -134,7 +165,25 @@ unsafe fn exit(flags: EXIT_WINDOWS_FLAGS) -> Result<(), String> {
             AdjustTokenPrivileges(token, false, Some(&privileges), 0, None, None)
         });
         let _ = CloseHandle(token);
-        enabled.map_err(|e| e.message())?;
-        ExitWindowsEx(flags, SHTDN_REASON_MAJOR_OTHER | SHTDN_REASON_FLAG_PLANNED).map_err(|e| e.message())
+        enabled.map_err(|e| e.message())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hibernate_requires_s4_and_a_hibernation_file() {
+        for system_s4 in [false, true] {
+            for hiber_file_present in [false, true] {
+                let capabilities = SYSTEM_POWER_CAPABILITIES {
+                    SystemS4: system_s4,
+                    HiberFilePresent: hiber_file_present,
+                    ..Default::default()
+                };
+                assert_eq!(supports_hibernate(&capabilities), system_s4 && hiber_file_present);
+            }
+        }
     }
 }

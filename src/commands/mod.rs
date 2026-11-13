@@ -639,11 +639,16 @@ fn media_items(words: &[&str], state: Option<&Option<media::State>>) -> Vec<Resu
 }
 
 fn power_items(query: &str) -> Vec<ResultItem> {
+    power_items_with_capability(query, power::can_hibernate())
+}
+
+fn power_items_with_capability(query: &str, can_hibernate: bool) -> Vec<ResultItem> {
     if query.chars().count() < 3 {
         return Vec::new();
     }
     Power::ALL
         .into_iter()
+        .filter(|p| *p != Power::Hibernate || can_hibernate)
         .filter(|p| p.keywords().iter().any(|keyword| keyword.starts_with(query)))
         .map(|p| {
             let subtitle = if p.needs_confirmation() {
@@ -1128,6 +1133,28 @@ mod tests {
         // The Bluetooth command already links to its settings page, so the
         // matching Settings page is not listed again.
         assert_eq!(titles("bluetooth", &state), ["Bluetooth · Off", "Bluetooth settings"]);
+    }
+
+    #[test]
+    fn hibernate_keywords_only_match_when_capable() {
+        for query in ["hib", "hiber", "hibernate", "hibernation"] {
+            let items = power_items_with_capability(query, true);
+            assert_eq!(items.len(), 1, "{query}");
+            assert_eq!(items[0].title, "Hibernate");
+            assert_eq!(items[0].subtitle, "Saves your session and turns off the PC");
+            assert!(matches!(
+                items[0].action,
+                Action::Command(Command::Power(Power::Hibernate))
+            ));
+            assert!(!Command::Power(Power::Hibernate).stays_open());
+            assert!(power_items_with_capability(query, false).is_empty(), "{query}");
+        }
+        assert!(power_items_with_capability("hi", true).is_empty());
+        assert!(power_items_with_capability("hibernate please", true).is_empty());
+        assert_eq!(power_items_with_capability("sleep", false)[0].title, "Sleep");
+        assert!(!Power::Hibernate.needs_confirmation());
+        assert!(Power::ShutDown.needs_confirmation());
+        assert!(Power::Restart.needs_confirmation());
     }
 
     #[test]
