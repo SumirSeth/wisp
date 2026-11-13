@@ -16,6 +16,7 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 - Choose a color for the dock and the launcher in Settings, under Appearance > Advanced. Turn on Custom dock color, then pick a preset, set hue, saturation, lightness and alpha, or type a hex value or red, green and blue numbers. Text turns light or dark to stay readable, and with Acrylic the color's alpha sets how much of the theme's acrylic shows through. Turning the switch off returns to the theme's colors. (#72, by @Kendoismebutmaybenot, fixes #60)
 - A dock app's right-click menu shows an arrow beside its name, opening New window, Run as administrator, Open file location and Properties. Pin to dock or Unpin from dock stays in the main menu. Close window or Close all windows shows when the app has windows, and End task shows when it is turned on for the taskbar in Windows Settings (System > For developers). Items that don't apply are hidden. (#73, by @Kendoismebutmaybenot)
 - File search also finds words inside file names, such as `report` in `bug-reporting.txt`. (#57, by @RayTrunk, part of #56)
+- When [Everything](https://www.voidtools.com/) is running, file search asks it instead of the Windows index, so it also finds files on other drives and in folders the index skips. Turn this off in Settings, under Files. (#57, by @RayTrunk, fixes #56)
 
 ### Fixes
 

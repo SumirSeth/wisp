@@ -29,6 +29,7 @@ pub struct Config {
     pub search_url: String,
     pub file_search: bool,
     pub file_search_exclude: Vec<String>,
+    pub file_search_everything: bool,
     pub position: String,
     pub dock: bool,
     pub dock_autohide: bool,
@@ -119,6 +120,7 @@ impl Config {
             search_url: string("search_url")?,
             file_search: boolean("file_search")?,
             file_search_exclude,
+            file_search_everything: boolean("file_search_everything")?,
             position,
             dock: boolean("dock")?,
             dock_autohide: boolean("dock_autohide")?,
@@ -290,6 +292,7 @@ fn validate_edit(key: &str, value: &Value) -> Result<(), String> {
         | "show_recent"
         | "file_search"
         | "file_search_exclude"
+        | "file_search_everything"
         | "position"
         | "dock"
         | "dock_autohide"

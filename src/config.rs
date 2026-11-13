@@ -76,6 +76,7 @@ pub struct Config {
     pub search_url: String,
     pub file_search: bool,
     pub file_search_exclude: Vec<String>,
+    pub file_search_everything: bool,
     pub window_list: WindowListMode,
 }
 

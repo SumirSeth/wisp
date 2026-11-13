@@ -1338,7 +1338,8 @@ impl Launcher {
             // results below the apps don't flicker on each keystroke.
             Some(query) if self.file_query.as_deref() != Some(query) => {
                 let exclude = Arc::from(self.config.file_search_exclude.as_slice());
-                self.file_search.search(query, limit, exclude);
+                self.file_search
+                    .search(query, limit, exclude, self.config.file_search_everything);
                 self.file_query = Some(query.to_string());
             }
             Some(_) => {}

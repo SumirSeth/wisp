@@ -1285,12 +1285,24 @@ impl Settings {
                 group(p)
                     .child(row(
                         "File search",
-                        "Search file names in the Windows Search index. Start a query with ? to search only files.",
+                        "Search file names. Start a query with ? to search only files.",
                         Switch::new("file-search")
                             .checked(self.config.file_search)
                             .accessibility_label("File search")
                             .on_change(cx.listener(|this, enabled: &bool, window, cx| {
                                 this.save("file_search", (*enabled).into(), window, cx);
+                            })),
+                        p,
+                    ))
+                    .child(divider(p))
+                    .child(row(
+                        "Use Everything",
+                        "When Everything is running, search every drive with it. Otherwise Wisp uses the Windows Search index.",
+                        Switch::new("file-search-everything")
+                            .checked(self.config.file_search_everything)
+                            .accessibility_label("Use Everything")
+                            .on_change(cx.listener(|this, enabled: &bool, window, cx| {
+                                this.save("file_search_everything", (*enabled).into(), window, cx);
                             })),
                         p,
                     ))

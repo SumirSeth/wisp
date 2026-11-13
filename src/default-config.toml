@@ -28,9 +28,12 @@ show_recent = true
 # Web search URL. Wisp replaces {query} with the encoded search text.
 search_url = "https://www.google.com/search?q={query}"
 
-# Search file names in the Windows Search index. Start a query with ? to
-# search files only.
+# Search file names. Start a query with ? to search files only.
 file_search = true
+
+# Search with Everything (voidtools) when it's running: every drive, and words
+# anywhere in names. Otherwise, and with false, use the Windows Search index.
+file_search_everything = true
 
 # Folder names that file search skips. It always skips files and folders
 # whose names start with a dot, such as .git.

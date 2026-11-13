@@ -1,8 +1,12 @@
-//! File search through the Windows Search index (`SystemIndex`), on a worker thread.
+//! File search on a worker thread, through Everything when it runs and the
+//! Windows Search index (`SystemIndex`) otherwise.
 //!
-//! A new query takes about 80–120 ms, most of it for matches inside names,
+//! An index query takes about 80–120 ms, most of it for matches inside names,
 //! so it runs off the UI thread. When the user types faster than queries
 //! finish, the worker skips to the latest query.
+
+#[path = "files/everything.rs"]
+mod everything;
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -20,6 +24,7 @@ use windows::core::{GUID, HSTRING, IUnknown, Interface, Result, w};
 
 use crate::indexer::{self, IconPixels};
 use crate::search::NameMatcher;
+use everything::Everything;
 
 /// The index has no constant for this OLE DB dialect GUID in the `windows` crate.
 const DBGUID_DEFAULT: GUID = GUID::from_u128(0xc8b521fb_5cf3_11ce_ade5_00aa0044773d);
@@ -57,6 +62,8 @@ struct Request {
     query: String,
     limit: usize,
     exclude: Arc<[String]>,
+    /// Ask Everything first, if it runs.
+    everything: bool,
 }
 
 pub struct FileSearch {
@@ -80,11 +87,13 @@ impl FileSearch {
     }
 
     /// Searches file names for `query`. `exclude` lists folder names to skip.
-    pub fn search(&self, query: &str, limit: usize, exclude: Arc<[String]>) {
+    /// With `everything`, asks Everything if it runs, and the index otherwise.
+    pub fn search(&self, query: &str, limit: usize, exclude: Arc<[String]>, everything: bool) {
         let _ = self.requests.send(Request {
             query: query.to_string(),
             limit,
             exclude,
+            everything,
         });
     }
 }
@@ -95,6 +104,7 @@ fn worker(requests: Receiver<Request>, results: Sender<FileResults>, icon_size: 
     }
     let profile = std::env::var("USERPROFILE").unwrap_or_default().to_lowercase();
     let mut index: Option<Index> = None;
+    let mut everything: Option<Everything> = None;
     let mut failed_at: Option<Instant> = None;
     let mut matcher = NameMatcher::new();
     let mut icons_sent = HashSet::new();
@@ -110,7 +120,22 @@ fn worker(requests: Receiver<Request>, results: Sender<FileResults>, icon_size: 
             }
         }
 
-        if index.is_none() && failed_at.is_none_or(|t| t.elapsed() > REOPEN_AFTER) {
+        let words = words(&request.query);
+        let mut passes = Vec::new();
+        let mut newer = None;
+        if request.everything && !words.is_empty() {
+            if everything.is_none() {
+                everything = Everything::new();
+            }
+            if let Some(rows) = everything
+                .as_mut()
+                .and_then(|e| e.query(&words, &request.exclude, CANDIDATES as u32))
+            {
+                passes.push(rows);
+            }
+        }
+
+        if passes.is_empty() && index.is_none() && failed_at.is_none_or(|t| t.elapsed() > REOPEN_AFTER) {
             match unsafe { Index::open() } {
                 Ok(opened) => index = Some(opened),
                 Err(e) => {
@@ -120,9 +145,9 @@ fn worker(requests: Receiver<Request>, results: Sender<FileResults>, icon_size: 
             }
         }
 
-        let mut passes = Vec::new();
-        let mut newer = None;
-        for (pass, sql) in sql(&request.query).iter().enumerate() {
+        // The index, unless Everything answered.
+        let queries = if passes.is_empty() { sql(&words) } else { Vec::new() };
+        for (pass, sql) in queries.iter().enumerate() {
             // The second pass is the slow one; skip it if a newer query is waiting.
             if pass > 0 {
                 match requests.try_recv() {
@@ -424,18 +449,22 @@ impl Index {
     }
 }
 
-/// Builds the queries for file names, each newest first: words that start a
-/// word in the name, then words inside the name that the first query misses,
-/// such as `report` in `bug-reporting.txt`. A second query rather than an `OR`,
-/// so newer matches inside names can't push the first ones out of the
-/// `TOP` rows. Returns no queries if the query has no searchable words.
-fn sql(query: &str) -> Vec<String> {
-    let words: Vec<String> = query
+/// The query's words, without quotes and wildcards, which would break out of
+/// the index's `CONTAINS` literal and change Everything's search.
+fn words(query: &str) -> Vec<String> {
+    query
         .split_whitespace()
-        // Quotes and wildcards would break out of the CONTAINS literal.
-        .map(|word| word.replace(['\'', '"', '*'], ""))
+        .map(|word| word.replace(['\'', '"', '*', '?'], ""))
         .filter(|word| !word.is_empty())
-        .collect();
+        .collect()
+}
+
+/// Builds the index queries for file names, each newest first: words that
+/// start a word in the name, then words inside the name that the first query
+/// misses, such as `report` in `bug-reporting.txt`. A second query rather than
+/// an `OR`, so newer matches inside names can't push the first ones out of the
+/// `TOP` rows. Returns no queries if there are no words.
+fn sql(words: &[String]) -> Vec<String> {
     if words.is_empty() {
         return Vec::new();
     }
@@ -475,7 +504,7 @@ mod tests {
         let exclude: Arc<[String]> = Arc::from(crate::config::Config::default().file_search_exclude);
         for query in ["readme", "setup", "read me", "zzqx-no-such-file-qxzz"] {
             let started = Instant::now();
-            search.search(query, 5, exclude.clone());
+            search.search(query, 5, exclude.clone(), false);
             // Skip icon-only messages left over from the previous query.
             let (results, hits) = loop {
                 let mut results = rx
@@ -498,8 +527,54 @@ mod tests {
         }
     }
 
+    /// Queries a running Everything, then ranks its rows as the worker does.
+    /// Needs Everything, so CI skips it:
+    /// `cargo test -- --ignored searches_with_everything`
+    #[test]
+    #[ignore]
+    fn searches_with_everything() {
+        let exclude: Arc<[String]> = Arc::from(crate::config::Config::default().file_search_exclude);
+        let profile = std::env::var("USERPROFILE").unwrap().to_lowercase();
+        let mut everything = Everything::new().expect("could not create the reply window");
+        let mut matcher = NameMatcher::new();
+        for query in [
+            "readme",
+            "setup",
+            "read me",
+            "wisp",
+            "everything.rs",
+            "zzqx-no-such-file-qxzz",
+        ] {
+            let started = Instant::now();
+            let rows = everything
+                .query(&words(query), &exclude, CANDIDATES as u32)
+                .expect("Everything is not running or did not answer");
+            let took = started.elapsed();
+            let count = rows.len();
+            for row in &rows {
+                assert!(
+                    !is_excluded(&row.path, &exclude),
+                    "excluded path returned: {}",
+                    row.path
+                );
+            }
+            let request = Request {
+                query: query.into(),
+                limit: 5,
+                exclude: exclude.clone(),
+                everything: true,
+            };
+            let hits = rank(vec![rows], &request, &profile, &mut matcher);
+            println!("{query}: {count} rows in {took:?}");
+            for hit in &hits {
+                println!("  {} {}", if hit.is_folder { "dir " } else { "file" }, hit.path);
+            }
+        }
+    }
+
     #[test]
     fn sql_escapes_query_text() {
+        let sql = |query: &str| sql(&words(query));
         assert!(sql("  ").is_empty());
         assert!(sql("'\"*").is_empty());
         let q = sql("it's \"x\" a*b");
@@ -523,6 +598,7 @@ mod tests {
             query: "setup".into(),
             limit: 5,
             exclude: Arc::from(Vec::new()),
+            everything: false,
         };
         // Both are the newest row of their query; the word start wins.
         let passes = vec![vec![row("setup.exe")], vec![row("rsetup.exe")]];
@@ -568,6 +644,7 @@ mod tests {
             query: "resume".into(),
             limit: 5,
             exclude: Arc::from(Vec::new()),
+            everything: false,
         };
         let hits = rank(vec![rows], &request, r"c:\users\me", &mut NameMatcher::new());
         assert_eq!(hits[0].path, r"C:\Users\me\Downloads\Resume.pdf");

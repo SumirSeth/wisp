@@ -170,7 +170,8 @@ Open **Settings** from Wisp's tray icon, or edit `%APPDATA%\wisp\config.toml`. T
 | `backdrop` | `"acrylic"` | `"acrylic"`, `"mica"` or `"solid"` |
 | `max_results` | `8` | Results visible at once |
 | `show_recent` | `true` | Shows recent apps when the box is empty |
-| `file_search` | `true` | Searches files in the Windows Search index |
+| `file_search` | `true` | Searches file names |
+| `file_search_everything` | `true` | Searches with [Everything](https://www.voidtools.com/) when it's running, on every drive. Otherwise Wisp uses the Windows Search index |
 | `file_search_exclude` | `["node_modules", …]` | Folder names file search skips |
 | `search_url` | Google | Web search URL. `{query}` is replaced by your search. |
 
@@ -198,7 +199,7 @@ The dock grows into the launcher in 155 ms. A hidden dock uses almost no CPU. [`
 - **Blur:** Windows turns off blur for inactive windows. The dock is never active, so it uses an older blur API that stays on.
 - **Drawing:** Direct2D draws in software. At this size it is fast and saves about 30 MB.
 - **Apps:** Wisp reads `shell:AppsFolder`, the same list Start uses.
-- **Files:** Wisp queries the Windows Search index on a worker thread.
+- **Files:** Wisp asks Everything over window messages when it's running, and the Windows Search index otherwise, on a worker thread.
 
 ## Build
 
