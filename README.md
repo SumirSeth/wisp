@@ -112,6 +112,8 @@ Type to search, then press <kbd>Enter</kbd>.
 | `quit` | Quit Wisp |
 | Anything else | Search the web |
 
+Find apps by their program name too: `cmd`, `taskmgr` or `regedit` work whatever the language of Windows.
+
 Apps you opened recently rank higher. With the box empty, the launcher shows your recent apps.
 
 | Key | To |

@@ -337,17 +337,36 @@ impl Searcher {
         let mut scored: Vec<_> = apps
             .iter()
             .filter_map(|app| {
-                let (score, highlights) = self.names.score(&pattern, &app.name)?;
-                let prefix = if app.name.to_lowercase().starts_with(&lower) {
-                    40
-                } else {
-                    0
-                };
-                Some((score + prefix + history.boost(&app.id, now), app, highlights))
+                let name = app.name.to_lowercase();
+                let mut best = self.names.score(&pattern, &app.name).map(|(score, highlights)| {
+                    (
+                        name == lower,
+                        score + if name.starts_with(&lower) { 40 } else { 0 },
+                        highlights,
+                    )
+                });
+                // Aliases are literal prefixes only: no fuzzy path/extension matches.
+                for alias in &app.aliases {
+                    if !alias.starts_with(&lower) {
+                        continue;
+                    }
+                    if let Some((score, _)) = self.names.score(&pattern, alias) {
+                        let candidate = (alias == &lower, score + 40, Vec::new());
+                        if best.as_ref().is_none_or(|b| (candidate.0, candidate.1) > (b.0, b.1)) {
+                            best = Some(candidate);
+                        }
+                    }
+                }
+                let (exact, score, highlights) = best?;
+                Some((exact, score + history.boost(&app.id, now), app, highlights))
             })
             .collect();
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.name.len().cmp(&b.1.name.len())));
-        for (_, app, highlights) in scored.into_iter().take(MAX_APP_RESULTS) {
+        scored.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then(b.1.cmp(&a.1))
+                .then(a.2.name.len().cmp(&b.2.name.len()))
+        });
+        for (_, _, app, highlights) in scored.into_iter().take(MAX_APP_RESULTS) {
             results.push(app_result(app, highlights));
         }
 
@@ -468,10 +487,39 @@ mod tests {
 
     fn app(name: &str) -> AppEntry {
         AppEntry {
+            aliases: Vec::new(),
             name: name.into(),
             id: name.into(),
             path: None,
         }
+    }
+
+    #[test]
+    fn ranks_literal_aliases_without_path_or_extension_noise() {
+        let mut cmd = app("Ukazni Poziv");
+        cmd.aliases = vec!["cmd".into()];
+        let mut task = app("Upravitelj opravil");
+        task.aliases = vec!["taskmgr".into()];
+        let mut calc = app("Racunalo");
+        calc.aliases = vec!["calc".into()];
+        let apps = [app("cmd helper"), cmd, task, calc];
+        let mut searcher = Searcher::new();
+        let mut titles = |query: &str| -> Vec<String> {
+            searcher
+                .search(query, &apps, &History::default(), &Config::default())
+                .into_iter()
+                .filter(|r| r.kind == Kind::App)
+                .map(|r| r.title)
+                .collect()
+        };
+        assert_eq!(titles("CMD")[0], "Ukazni Poziv");
+        assert_eq!(titles("task"), ["Upravitelj opravil"]);
+        assert_eq!(titles("mgr"), Vec::<String>::new());
+        assert_eq!(titles("exe"), Vec::<String>::new());
+        assert_eq!(titles("system32"), Vec::<String>::new());
+        assert!(!titles("c").contains(&"Upravitelj opravil".into()));
+        let results = searcher.search("cmd", &apps, &History::default(), &Config::default());
+        assert!(results[0].highlights.is_empty());
     }
 
     #[test]
