@@ -17,6 +17,8 @@ use windows::core::{HSTRING, Interface, PWSTR, Result};
 #[derive(Debug, Clone)]
 pub struct AppEntry {
     pub name: String,
+    /// Lowercase program names, computed once by the indexer.
+    pub aliases: Vec<String>,
     /// Windows shell parsing name in `shell:AppsFolder`: a path or an AppUserModelID.
     pub id: String,
     /// File path for desktop apps, if Windows can resolve it.
@@ -128,11 +130,165 @@ unsafe fn enumerate_apps() -> Result<Vec<(AppEntry, IShellItem)>> {
             if !is_launchable(&name, &id) || !seen.insert(id.clone()) {
                 continue;
             }
-            let path = resolve_path(&id);
-            apps.push((AppEntry { name, id, path }, item));
+            let path = display_name(&item, SIGDN_FILESYSPATH).or_else(|| resolve_path(&id));
+            let target = path
+                .as_deref()
+                .and_then(shortcut_target)
+                .or_else(|| shell_target(&item));
+            let aliases = app_aliases(&id, path.as_deref(), target.as_deref());
+            apps.push((
+                AppEntry {
+                    name,
+                    id,
+                    path,
+                    aliases,
+                },
+                item,
+            ));
+        }
+        // AppsFolder may omit the shortcuts inside Windows Tools (formerly
+        // Administrative Tools). Include only installed shortcuts, never commands.
+        for folder in [FOLDERID_AdminTools, FOLDERID_CommonAdminTools] {
+            if let Some(path) = known_folder_path(&folder) {
+                add_tool_shortcuts(std::path::Path::new(&path), &mut apps, &mut seen);
+            }
         }
         apps.sort_by_key(|(app, _)| app.name.to_lowercase());
         Ok(apps)
+    }
+}
+
+/// Only filenames of actual executable/console targets become keywords. In
+/// particular, a localized .lnk filename and directories are never aliases.
+fn app_aliases(id: &str, path: Option<&str>, shortcut_target: Option<&str>) -> Vec<String> {
+    let mut aliases = Vec::new();
+    let target = shortcut_target.or(path).unwrap_or(id);
+    let file = target.rsplit(['\\', '/']).next().unwrap_or(target);
+    if let Some((stem, ext)) = file.rsplit_once('.')
+        && !stem.is_empty()
+        && (ext.eq_ignore_ascii_case("exe") || ext.eq_ignore_ascii_case("msc"))
+    {
+        aliases.push(stem.to_lowercase());
+    }
+    // Inbox Store apps have opaque AUMIDs rather than executable paths. Match
+    // the complete package family, not a prefix that could match another app.
+    const INBOX: &[(&str, &str)] = &[
+        ("Microsoft.WindowsCalculator_8wekyb3d8bbwe", "calc"),
+        ("Microsoft.WindowsTerminal_8wekyb3d8bbwe", "wt"),
+        ("Microsoft.Paint_8wekyb3d8bbwe", "mspaint"),
+        ("Microsoft.WindowsNotepad_8wekyb3d8bbwe", "notepad"),
+    ];
+    if let Some((family, _)) = id.split_once('!') {
+        for &(package, alias) in INBOX {
+            if family.eq_ignore_ascii_case(package) && !aliases.iter().any(|a| a == alias) {
+                aliases.push(alias.into());
+            }
+        }
+    }
+    aliases
+}
+
+/// AppsFolder can expose an opaque desktop AUMID; ask its property store for
+/// the saved link target rather than guessing a program from that identifier.
+unsafe fn shell_target(item: &IShellItem) -> Option<String> {
+    const TARGET: windows::Win32::Foundation::PROPERTYKEY = windows::Win32::Foundation::PROPERTYKEY {
+        fmtid: windows::core::GUID::from_u128(0xb9b4b3fc_2b51_4a42_b5d8_324146afcf25),
+        pid: 2, // System.Link.TargetParsingPath
+    };
+    unsafe {
+        let item: IShellItem2 = item.cast().ok()?;
+        let ptr = item.GetString(&TARGET).ok()?;
+        let target = ptr.to_string().ok().filter(|s| !s.is_empty());
+        CoTaskMemFree(Some(ptr.0 as _));
+        target
+    }
+}
+
+/// Load the saved target only: no Resolve call, network search or UI.
+fn shortcut_target(path: &str) -> Option<String> {
+    if !path.to_ascii_lowercase().ends_with(".lnk") {
+        return None;
+    }
+    unsafe {
+        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
+        let persist: IPersistFile = link.cast().ok()?;
+        persist.Load(&HSTRING::from(path), STGM_READ).ok()?;
+        let mut buffer = [0u16; 32768];
+        link.GetPath(&mut buffer, std::ptr::null_mut(), SLGP_RAWPATH.0 as u32)
+            .ok()?;
+        let end = buffer.iter().position(|&c| c == 0)?;
+        if end == 0 {
+            return None;
+        }
+        let target = String::from_utf16_lossy(&buffer[..end]);
+        // MMC shortcuts save the console in their arguments, not GetPath.
+        if target.rsplit(['\\', '/']).next()?.eq_ignore_ascii_case("mmc.exe") {
+            buffer.fill(0);
+            if link.GetArguments(&mut buffer).is_ok() {
+                let end = buffer.iter().position(|&c| c == 0)?;
+                let arguments = String::from_utf16_lossy(&buffer[..end]);
+                if let Some(console) = console_target(&arguments) {
+                    return Some(console.into());
+                }
+            }
+        }
+        Some(target)
+    }
+}
+
+/// MMC's first argument is a console path, optionally quoted; flags are not
+/// keywords. This reads saved shortcut data and never executes the arguments.
+fn console_target(arguments: &str) -> Option<&str> {
+    let arguments = arguments.trim();
+    let first = if let Some(quoted) = arguments.strip_prefix('"') {
+        quoted.split_once('"')?.0
+    } else {
+        arguments.split_whitespace().next()?
+    };
+    first.to_ascii_lowercase().ends_with(".msc").then_some(first)
+}
+
+unsafe fn add_tool_shortcuts(
+    folder: &std::path::Path,
+    apps: &mut Vec<(AppEntry, IShellItem)>,
+    seen: &mut HashSet<String>,
+) {
+    let Ok(entries) = std::fs::read_dir(folder) else { return };
+    for entry in entries.flatten() {
+        let Ok(kind) = entry.file_type() else { continue };
+        let path = entry.path();
+        if kind.is_dir() {
+            unsafe { add_tool_shortcuts(&path, apps, seen) };
+            continue;
+        }
+        let id = path.to_string_lossy().into_owned();
+        if !id.to_ascii_lowercase().ends_with(".lnk") || !seen.insert(id.clone()) {
+            continue;
+        }
+        let Some(target) = shortcut_target(&id) else { continue };
+        let aliases = app_aliases(&id, Some(&id), Some(&target));
+        if aliases.is_empty() || apps.iter().any(|(app, _)| app.aliases == aliases) {
+            continue;
+        }
+        unsafe {
+            let Ok(item) = SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(&id), None) else {
+                continue;
+            };
+            let Some(name) = display_name(&item, SIGDN_NORMALDISPLAY) else {
+                continue;
+            };
+            if is_launchable(&name, &id) {
+                apps.push((
+                    AppEntry {
+                        name,
+                        aliases,
+                        path: Some(id.clone()),
+                        id,
+                    },
+                    item,
+                ));
+            }
+        }
     }
 }
 
@@ -166,13 +322,17 @@ fn resolve_path(id: &str) -> Option<String> {
     let rest = id.strip_prefix('{')?;
     let close = rest.find('}')?;
     let guid = unsafe { CLSIDFromString(&HSTRING::from(&id[..close + 2])).ok()? };
-    let folder = unsafe {
-        let ptr: PWSTR = SHGetKnownFolderPath(&guid, KF_FLAG_DEFAULT, None).ok()?;
+    let folder = known_folder_path(&guid)?;
+    Some(format!("{folder}{}", &rest[close + 1..]))
+}
+
+fn known_folder_path(guid: &windows::core::GUID) -> Option<String> {
+    unsafe {
+        let ptr: PWSTR = SHGetKnownFolderPath(guid, KF_FLAG_DEFAULT, None).ok()?;
         let folder = ptr.to_string().ok();
         CoTaskMemFree(Some(ptr.0 as _));
-        folder?
-    };
-    Some(format!("{folder}{}", &rest[close + 1..]))
+        folder
+    }
 }
 
 pub(crate) unsafe fn load_icon(item: &IShellItem, size: i32) -> Option<IconPixels> {
@@ -245,5 +405,63 @@ unsafe fn bitmap_pixels(bitmap: HBITMAP) -> Option<IconPixels> {
             height: height as u32,
             bgra,
         })
+    }
+}
+
+#[cfg(test)]
+mod alias_tests {
+    use super::{app_aliases, console_target};
+
+    #[test]
+    fn derives_mmc_console_stems_from_saved_arguments() {
+        for args in [
+            r"C:\Windows\System32\devmgmt.msc /s",
+            r#""C:\Windows Tools\devmgmt.msc" /s"#,
+        ] {
+            let target = console_target(args).unwrap();
+            assert_eq!(app_aliases("localized.lnk", None, Some(target)), ["devmgmt"]);
+        }
+        for args in ["", "/s", "tool.exe", "tool.msc.exe", "\"unterminated.msc"] {
+            assert!(console_target(args).is_none());
+        }
+    }
+
+    #[test]
+    fn derives_only_program_stems_from_paths_and_link_targets() {
+        for stem in [
+            "cmd", "taskmgr", "regedit", "mspaint", "notepad", "control", "msconfig", "mmc", "explorer", "calc",
+        ] {
+            let path = format!(r"C:\Windows\System32\{stem}.EXE");
+            assert_eq!(app_aliases(&path, Some(&path), None), [stem]);
+            assert_eq!(app_aliases("localized.lnk", Some("localized.lnk"), Some(&path)), [stem]);
+        }
+        assert_eq!(
+            app_aliases("localized.lnk", None, Some(r"C:\Windows\System32\devmgmt.msc")),
+            ["devmgmt"]
+        );
+        for path in [
+            r"C:\cmd\manual.txt",
+            r"C:\cmd\localized.lnk",
+            "https://example.com",
+            "Unknown.Package!App",
+        ] {
+            assert!(app_aliases(path, Some(path), None).is_empty());
+        }
+    }
+
+    #[test]
+    fn maps_only_known_inbox_package_families() {
+        for (family, alias) in [
+            ("Microsoft.WindowsCalculator", "calc"),
+            ("Microsoft.WindowsTerminal", "wt"),
+            ("Microsoft.Paint", "mspaint"),
+            ("Microsoft.WindowsNotepad", "notepad"),
+        ] {
+            let id = format!("{family}_8wekyb3d8bbwe!App");
+            assert_eq!(app_aliases(&id, None, None), [alias]);
+            assert_eq!(app_aliases(&id.to_uppercase(), None, None), [alias]);
+        }
+        assert!(app_aliases("Microsoft.WindowsCalculator_fake!App", None, None).is_empty());
+        assert!(app_aliases("Microsoft.WindowsCalculator_8wekyb3d8bbwe.extra!App", None, None).is_empty());
     }
 }

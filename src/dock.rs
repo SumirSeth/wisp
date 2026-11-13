@@ -921,6 +921,7 @@ impl State {
                 .unwrap_or_else(|| {
                     let id = aumid.filter(|s| !s.is_empty()).unwrap_or_else(|| window.exe.clone());
                     AppEntry {
+                        aliases: Vec::new(),
                         name: open_windows::program_name(&window.exe).into(),
                         id,
                         path: (!window.exe.is_empty()).then(|| window.exe.clone()),
@@ -1003,6 +1004,7 @@ impl State {
         self.items = logic::pinned_first(
             self.pinned.iter().map(|pin| Item {
                 app: AppEntry {
+                    aliases: Vec::new(),
                     id: pin.id.clone(),
                     name: pin.name.clone(),
                     path: pin.path.clone(),
@@ -2555,6 +2557,7 @@ impl State {
             self.pinned.remove(at);
         } else if let Some(item) = self.items.iter().find(|item| item.app.id.eq_ignore_ascii_case(id)) {
             self.pinned.push(AppEntry {
+                aliases: Vec::new(),
                 id: item.app.id.clone(),
                 name: item.app.name.clone(),
                 path: item.app.path.clone(),
@@ -2585,6 +2588,7 @@ fn load_pins() -> Vec<AppEntry> {
     pins::load(&crate::util::data_dir().join("dock-pins.toml"))
         .into_iter()
         .map(|pin| AppEntry {
+            aliases: Vec::new(),
             id: pin.id,
             name: pin.name,
             path: pin.path,

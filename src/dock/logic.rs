@@ -1279,11 +1279,13 @@ mod tests {
     fn matches_full_paths_and_store_ids() {
         let apps = vec![
             AppEntry {
+                aliases: Vec::new(),
                 id: "{folder}\\a.exe".into(),
                 path: Some(r"C:\Apps\a.exe".into()),
                 name: "A".into(),
             },
             AppEntry {
+                aliases: Vec::new(),
                 id: "Package!App".into(),
                 path: None,
                 name: "Store".into(),
@@ -1310,11 +1312,13 @@ mod tests {
         assert_eq!(package_family(r"C:\Program Files\WindowsApps\NoPublisher\a.exe"), None);
         let apps = vec![
             AppEntry {
+                aliases: Vec::new(),
                 id: r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\cmd.exe".into(),
                 path: Some(r"C:\Windows\System32\cmd.exe".into()),
                 name: "Command Prompt".into(),
             },
             AppEntry {
+                aliases: Vec::new(),
                 id: "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App".into(),
                 path: None,
                 name: "Terminal".into(),
@@ -1328,6 +1332,7 @@ mod tests {
     #[test]
     fn a_package_with_several_apps_matches_only_by_id() {
         let python = |app: &str| AppEntry {
+            aliases: Vec::new(),
             id: format!("PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0!{app}"),
             path: None,
             name: app.into(),
@@ -1345,11 +1350,13 @@ mod tests {
     fn an_aumid_pin_keeps_its_hidden_app_identity() {
         let path = r"C:\Program Files\WindowsApps\Package_1.0_x64__publisher\app.exe";
         let mut pins = vec![AppEntry {
+            aliases: Vec::new(),
             id: "Package_publisher!Hidden".into(),
             path: Some(path.into()),
             name: "Hidden app".into(),
         }];
         let apps = vec![AppEntry {
+            aliases: Vec::new(),
             id: "Package_publisher!Visible".into(),
             path: None,
             name: "Visible app".into(),
@@ -1363,16 +1370,19 @@ mod tests {
     fn old_pins_into_a_package_folder_move_to_the_app_id() {
         let terminal = r"C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1.24.12741.0_x64__8wekyb3d8bbwe\WindowsTerminal.exe";
         let notepad = AppEntry {
+            aliases: Vec::new(),
             id: r"C:\Windows\notepad.exe".into(),
             path: Some(r"C:\Windows\notepad.exe".into()),
             name: "Notepad".into(),
         };
         let apps = vec![AppEntry {
+            aliases: Vec::new(),
             id: "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App".into(),
             path: None,
             name: "Terminal".into(),
         }];
         let old = AppEntry {
+            aliases: Vec::new(),
             id: terminal.into(),
             path: Some(terminal.into()),
             name: "WindowsTerminal".into(),
