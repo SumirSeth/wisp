@@ -104,7 +104,7 @@ Type to search, then press <kbd>Enter</kbd>.
 | `wifi off` · `bt` · `vol 40` · `mute` | Change a setting. <kbd>Tab</kbd> lists networks, devices or outputs. |
 | `play` · `pause` · `next` | Control media |
 | `w code` | Switch to an open window |
-| `lock` · `sleep` · `restart` · `shut down` | Lock or power off. Some ask for a second <kbd>Enter</kbd>. |
+| `lock` · `sleep` · `hibernate` · `restart` · `shut down` | Lock or power off. Hibernate appears when Windows allows it. Some ask for a second <kbd>Enter</kbd>. |
 | `time tokyo` · `date` | Copy a time or the date |
 | `dark mode` · `display` · … | Open that Settings page |
 | `now` · `sound` | Open live panels for status and audio |
