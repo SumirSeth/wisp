@@ -7,6 +7,8 @@ mod calc;
 mod commands;
 #[path = "../src/config.rs"]
 mod config;
+#[path = "../src/deferred.rs"]
+mod deferred;
 #[path = "../src/dock.rs"]
 mod dock;
 #[path = "../src/drag.rs"]

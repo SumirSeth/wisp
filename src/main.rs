@@ -6,6 +6,7 @@ mod calc;
 mod channel;
 mod commands;
 mod config;
+mod deferred;
 mod dock;
 mod drag;
 mod editor;
@@ -13,6 +14,7 @@ mod files;
 mod history;
 mod hotkey;
 mod indexer;
+mod panic_log;
 mod win_key;
 // Settings also uses package-manager detection and update instructions.
 #[allow(dead_code)]
@@ -31,6 +33,7 @@ mod update_notice;
 mod util;
 
 fn main() {
+    panic_log::install();
     if taskbar::dispatch_watchdog() {
         return;
     }

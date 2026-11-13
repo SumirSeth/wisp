@@ -77,9 +77,12 @@ const DEFER_FILES: u8 = 4;
 const DEFER_HIDE: u8 = 2;
 const DEFER_COMMANDS: u8 = 8;
 
+type PendingMessages = crate::deferred::Queue<(u32, usize), (HWND, u32, WPARAM, LPARAM)>;
+
 thread_local! {
     static LAUNCHER: RefCell<Option<Launcher>> = const { RefCell::new(None) };
     static DEFERRED: Cell<u8> = const { Cell::new(0) };
+    static PENDING_MESSAGES: RefCell<PendingMessages> = RefCell::new(crate::deferred::Queue::new());
     static DRAGGING: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -90,6 +93,7 @@ fn with_launcher<R>(f: impl FnOnce(&mut Launcher) -> R) -> Option<R> {
     let result = LAUNCHER.with(|cell| cell.try_borrow_mut().ok().and_then(|mut l| l.as_mut().map(f)));
     if result.is_some() {
         run_deferred();
+        replay_pending_messages();
     }
     result
 }
@@ -609,6 +613,14 @@ impl Launcher {
     }
 
     fn reload_config_if_changed(&mut self) {
+        // show() also checks config, so protect ownership changes on that path.
+        if self
+            .dock
+            .as_ref()
+            .is_some_and(|dock| dock.defer_owner_message("reload_owner", WM_APP_RELOAD, WPARAM(0), LPARAM(0)))
+        {
+            return;
+        }
         let _span = util::perf::Span::new("config");
         let mtime = Config::modified();
         if mtime == self.config_mtime {
@@ -2507,7 +2519,95 @@ fn run_drag(hwnd: HWND, payload: Payload) {
     DRAGGING.with(|d| d.set(false));
 }
 
+fn replay_pending_messages() {
+    loop {
+        let next = PENDING_MESSAGES.with(|q| q.borrow_mut().pop());
+        let Some((hwnd, msg, wp, lp)) = next else {
+            break;
+        };
+        unsafe {
+            let _ = PostMessageW(Some(hwnd), msg, wp, lp);
+        }
+    }
+}
+
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // Reload can replace/drop Dock, and quit destroys it. A standalone dock menu
+    // borrows State without borrowing Launcher, so delay ownership changes too.
+    if matches!(msg, WM_APP_RELOAD | WM_APP_QUIT)
+        && LAUNCHER.with(|cell| {
+            cell.try_borrow().ok().is_some_and(|launcher| {
+                launcher.as_ref().and_then(|l| l.dock.as_ref()).is_some_and(|dock| {
+                    dock.defer_owner_message(
+                        if msg == WM_APP_RELOAD {
+                            "reload_owner"
+                        } else {
+                            "quit_owner"
+                        },
+                        msg,
+                        wparam,
+                        lparam,
+                    )
+                })
+            })
+        })
+    {
+        return LRESULT(0);
+    }
+    let busy = LAUNCHER.with(|cell| cell.try_borrow_mut().is_err());
+    if busy
+        && (Dock::owns_message(msg, wparam)
+            || dock::retain_message(msg)
+            || matches!(
+                msg,
+                WM_HOTKEY
+                    | WM_APP_SHOW
+                    | WM_APP_QUIT
+                    | WM_APP_RELOAD
+                    | WM_APP_INDEX
+                    | WM_APP_FILES
+                    | WM_APP_COMMANDS
+                    | WM_APP_FRAME
+                    | WM_CLOSE
+                    | dock::WM_SHOW_NOW
+                    | dock::WM_SHOW_LAUNCHER
+                    | dock::WM_DOCK_SHOW_TASKBAR
+                    | taskbar::WM_TASKBAR_SHOW
+                    | taskbar::WM_RECOVERY_DONE
+            )
+            || msg == TASKBAR_CREATED.load(Ordering::Relaxed))
+    {
+        // These handlers never consume the ephemeral broadcast/DPI payload.
+        let lp = if matches!(msg, WM_DPICHANGED | WM_SETTINGCHANGE | WM_POWERBROADCAST | WM_INPUT) {
+            LPARAM(0)
+        } else {
+            lparam
+        };
+        let deferred_msg = if msg == WM_INPUT { dock::WM_DOCK_WAKE } else { msg };
+        PENDING_MESSAGES.with(|q| {
+            let mut q = q.borrow_mut();
+            let key = (deferred_msg, wparam.0);
+            let value = (hwnd, deferred_msg, wparam, lp);
+            if msg == WM_HOTKEY {
+                q.append(key, value);
+            } else {
+                q.push(key, value);
+            }
+        });
+        // Our WM_CLOSE handler hides Wisp; the default would destroy it.
+        if msg == WM_CLOSE {
+            return LRESULT(0);
+        }
+        return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+    }
+    let result = unsafe { wndproc_inner(hwnd, msg, wparam, lparam) };
+    if !busy {
+        replay_pending_messages();
+    }
+    result
+}
+
+unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // The dock's app menu lands here when the dock shares the launcher's window.
     if DRAGGING.with(Cell::get)
         && matches!(
