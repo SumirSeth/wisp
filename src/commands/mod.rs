@@ -639,7 +639,11 @@ fn media_items(words: &[&str], state: Option<&Option<media::State>>) -> Vec<Resu
 }
 
 fn power_items(query: &str) -> Vec<ResultItem> {
-    power_items_with_capability(query, power::can_hibernate())
+    let asks_hibernate = Power::Hibernate
+        .keywords()
+        .iter()
+        .any(|keyword| keyword.starts_with(query));
+    power_items_with_capability(query, asks_hibernate && power::can_hibernate())
 }
 
 fn power_items_with_capability(query: &str, can_hibernate: bool) -> Vec<ResultItem> {
