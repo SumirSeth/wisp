@@ -7,6 +7,29 @@ pub use status_options::{STATUS_ITEMS, StatusItem, StatusPlacement};
 use crate::config::WindowListMode;
 use crate::indexer::AppEntry;
 
+/// The fastest pointer the edge hold follows, in physical pixels a second.
+/// A faster step is a jump, not a glide: a pen or touch tap, Remote Desktop,
+/// or an app moving the pointer.
+const MAX_GLIDE_SPEED: f64 = 10_000.0;
+/// An older sample is from before a pause, not from the same motion.
+const MAX_SAMPLE_GAP: std::time::Duration = std::time::Duration::from_millis(250);
+/// The fast poll's interval: samples closer together still allow this much travel.
+const MIN_SAMPLE_GAP: std::time::Duration = std::time::Duration::from_millis(15);
+
+/// Whether the pointer could have glided from `previous` to `current` in
+/// `elapsed`, rather than jumped there.
+pub fn glided(
+    previous: windows::Win32::Foundation::POINT,
+    current: windows::Win32::Foundation::POINT,
+    elapsed: std::time::Duration,
+) -> bool {
+    if elapsed > MAX_SAMPLE_GAP {
+        return false;
+    }
+    let distance = f64::from(current.x - previous.x).hypot(f64::from(current.y - previous.y));
+    distance <= MAX_GLIDE_SPEED * elapsed.max(MIN_SAMPLE_GAP).as_secs_f64()
+}
+
 /// Hold one downward crossing of a shared monitor edge inside the dock's span.
 /// All coordinates are physical pixels; right and bottom edges are exclusive.
 /// This only decides geometry and never reads or changes the actual pointer.
@@ -52,7 +75,8 @@ pub fn at_held_edge(
 
 #[cfg(test)]
 mod edge_tests {
-    use super::{at_held_edge, bottom_edge_hold};
+    use super::{at_held_edge, bottom_edge_hold, glided};
+    use std::time::Duration;
     use windows::Win32::Foundation::{POINT, RECT};
 
     const UPPER: RECT = RECT {
@@ -88,6 +112,25 @@ mod edge_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn jumps_and_samples_from_before_a_pause_are_not_glides() {
+        let ms = Duration::from_millis;
+        // A fast glide, up to 4000 px/s in testing, over one or two polls.
+        assert!(glided(point(1280, 1380), point(1280, 1500), ms(30)));
+        assert!(glided(point(1280, 1420), point(1280, 1450), ms(15)));
+        assert!(glided(point(1280, 1100), point(1280, 1500), ms(100)));
+        // Timer polls can come early: the shortest gap still allows a fast step.
+        assert!(glided(point(1280, 1400), point(1280, 1500), ms(5)));
+        // A tap on the lower screen while the pointer was high on the upper one.
+        assert!(!glided(point(1280, 600), point(1280, 2280), ms(15)));
+        assert!(!glided(point(1280, 600), point(1280, 2280), ms(100)));
+        assert!(!glided(point(1280, 1300), point(1280, 2280), ms(30)));
+        // A sideways jump that also crosses.
+        assert!(!glided(point(100, 1430), point(1280, 1450), ms(15)));
+        // A sample from before an idle pause.
+        assert!(!glided(point(1280, 1438), point(1280, 1442), ms(400)));
     }
 
     #[test]

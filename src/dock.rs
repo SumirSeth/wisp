@@ -438,7 +438,10 @@ struct State {
     last_cursor: POINT,
     still_polls: u8,
     /// Separate from idle polling: valid only since the last eligible poll.
-    edge_previous: Option<POINT>,
+    edge_previous: Option<(POINT, Instant)>,
+    /// Where the pointer revealed the dock: it stays on that screen while it
+    /// shows, even if the pointer carries on to the screen below.
+    reveal_at: Option<POINT>,
     /// Consumed crossing, retained while the pointer rests at this shared edge.
     edge_held: Option<(RECT, std::ops::Range<i32>)>,
     /// Windows reports the next pointer movement, while the pointer rests in
@@ -718,6 +721,7 @@ impl Dock {
             last_cursor: POINT::default(),
             still_polls: 0,
             edge_previous: None,
+            reveal_at: None,
             edge_held: None,
             listening: false,
             held: false,
@@ -1568,6 +1572,7 @@ impl State {
         self.radio_worker.hide();
         self.edge_previous = None;
         self.edge_held = None;
+        self.reveal_at = None;
     }
 
     fn apply_apps(&mut self, apps: &[AppEntry], icons: &HashMap<String, Arc<IconPixels>>) {
@@ -1685,9 +1690,11 @@ impl State {
             self.last_cursor = cursor;
             let monitor = cursor_monitor(cursor);
             let at_edge = monitor.is_some_and(|m| cursor.y >= m.bottom - 2);
+            self.reveal_at = None;
             let near_edge = monitor.is_some_and(|m| cursor.y >= m.bottom - (m.bottom - m.top) / 3);
             if !dragging && at_edge && !fullscreen_foreground(self.hwnd) {
                 self.listen(false);
+                self.reveal_at = Some(cursor);
                 self.reveal();
                 self.start_poll(POLL_MS);
             } else if !near_edge {
@@ -1785,14 +1792,15 @@ impl State {
             self.edge_held = None;
             return;
         }
-        let previous = self.edge_previous.replace(*cursor);
+        let previous = self.edge_previous.replace((*cursor, Instant::now()));
         // Test the latch before resetting it: the second push can land well
         // below the edge in a single poll and must still pass through freely.
         let already_held = self.edge_held.is_some();
         if !self.revealed
             && !already_held
-            && let Some(previous) = previous
+            && let Some((previous, sampled)) = previous
             && cursor.y > previous.y
+            && logic::glided(previous, *cursor, sampled.elapsed())
             && let Some(upper) = cursor_monitor(previous)
             && let Some(lower) = cursor_monitor(*cursor)
             && upper.bottom == lower.top
@@ -1809,7 +1817,7 @@ impl State {
                     && unsafe { SetCursorPos(held.x, held.y) }.is_ok()
                 {
                     *cursor = held;
-                    self.edge_previous = Some(held);
+                    self.edge_previous = Some((held, Instant::now()));
                     self.edge_held = Some((upper, span));
                 }
             }
@@ -2024,7 +2032,9 @@ impl State {
             // The dock appears on the screen whose bottom edge the pointer
             // touched, or stays on the primary screen.
             let mut cursor = POINT::default();
-            if self.autohide {
+            if let Some(point) = self.reveal_at.filter(|_| self.autohide && self.revealed) {
+                cursor = point;
+            } else if self.autohide {
                 let _ = GetCursorPos(&mut cursor);
             }
             let monitor = if self.dragging() {
