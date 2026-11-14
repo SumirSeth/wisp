@@ -1610,20 +1610,19 @@ impl State {
         crate::util::perf::event("slide_frame");
         let tick = Instant::now();
         let elapsed = self.slide.map_or(0.0, |s| s.elapsed().as_secs_f64() * 1000.0);
-        let mut rect = RECT::default();
         unsafe {
-            let _ = GetWindowRect(self.hwnd, &mut rect);
-            let offset = self.slide_offset(rect.bottom - rect.top);
+            // `left`, `width` and the height are known from `place`.
+            let height = logic::height(logic::layout_scale(self.app_icon_size));
+            let offset = self.slide_offset((height * self.dpi as f32 / 96.0).round() as i32);
             let _ = SetWindowPos(
                 self.hwnd,
                 None,
-                rect.left,
+                self.left,
                 self.top + offset,
                 0,
                 0,
                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
             );
-            self.publish_rects();
             if self
                 .slide
                 .is_some_and(|start| start.elapsed().as_secs_f32() * 1000.0 / crate::util::perf::slowdown() >= SLIDE_MS)
@@ -1633,6 +1632,8 @@ impl State {
                 if !self.revealed {
                     let _ = ShowWindow(self.hwnd, SW_HIDE);
                 }
+                // Once per slide, where the icons came to rest.
+                self.publish_rects();
             }
         }
         if crate::util::perf::hook_on("WISP_FRAME_TIMING") {
@@ -1798,31 +1799,22 @@ impl State {
 
     /// A part's rectangle on screen where the dock rests, in physical pixels.
     fn part_rect(&self, part: logic::Part) -> Option<RECT> {
-        let scale = self.dpi as f32 / 96.0;
-        let left = self
-            .row_layout()
-            .part_left(part, logic::layout_scale(self.app_icon_size))?;
-        let px = |dip: f32| (dip * scale).round() as i32;
-        let rect = self.surface_rect;
-        let x = |dip| match rect {
-            Some(rect) => {
-                rect.left + (px(dip) as f32 * (rect.right - rect.left) as f32 / self.width.max(1) as f32).round() as i32
-            }
-            None => self.left + px(dip),
-        };
         let layout_scale = logic::layout_scale(self.app_icon_size);
-        let height = logic::height(layout_scale);
-        let top = rect.map_or(self.top + self.slide_offset(px(height)), |r| r.bottom - px(height));
-        Some(RECT {
-            left: x(left),
-            top,
-            right: x(left + self.row_layout().part_width(part, layout_scale)),
-            bottom: top + px(height),
-        })
+        let row = self.row_layout();
+        let left = row.part_left(part, layout_scale)?;
+        Some(self.span_rect(left, row.part_width(part, layout_scale)))
     }
 
     /// An app slot's rectangle on screen where the dock rests, in physical pixels.
     fn item_rect(&self, slot: usize) -> RECT {
+        let layout_scale = logic::layout_scale(self.app_icon_size);
+        self.span_rect(self.row_layout().left(slot, layout_scale), logic::slot(layout_scale))
+    }
+
+    /// A span of the dock's row on screen, from its left edge and width in
+    /// DIPs, in physical pixels. Inside the launcher, the row is scaled to
+    /// the launcher's current rect.
+    fn span_rect(&self, left: f32, width: f32) -> RECT {
         let scale = self.dpi as f32 / 96.0;
         let px = |dip: f32| (dip * scale).round() as i32;
         let rect = self.surface_rect;
@@ -1832,14 +1824,12 @@ impl State {
             }
             None => self.left + px(dip),
         };
-        let layout_scale = logic::layout_scale(self.app_icon_size);
-        let height = logic::height(layout_scale);
-        let left = self.row_layout().left(slot, layout_scale);
+        let height = logic::height(logic::layout_scale(self.app_icon_size));
         let top = rect.map_or(self.top + self.slide_offset(px(height)), |r| r.bottom - px(height));
         RECT {
             left: x(left),
             top,
-            right: x(left + logic::slot(layout_scale)),
+            right: x(left + width),
             bottom: top + px(height),
         }
     }
