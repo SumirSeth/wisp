@@ -40,12 +40,12 @@ use crate::messages::WM_APP_FRAME;
 use crate::messages::WM_APP_INDEX;
 use crate::messages::WM_APP_QUIT;
 /// wisp-settings posts this message after it changes the config.
+#[path = "app/capture.rs"]
+mod capture;
+/// Drives the scripted capture of the dock and the launcher.
+use crate::messages::WM_APP_COMMANDS;
 use crate::messages::WM_APP_RELOAD;
 use crate::messages::WM_APP_SHOW;
-/// Drives the scripted capture of the dock and the launcher.
-const REEL_TIMER: usize = 96;
-const REEL_MS: u32 = 50;
-use crate::messages::WM_APP_COMMANDS;
 const CLASS_NAME: PCWSTR = crate::channel::LAUNCHER_CLASS;
 const HOTKEY_ID: i32 = 1;
 const UPDATE_TIMER: usize = 5;
@@ -307,48 +307,7 @@ pub fn run() -> Result<()> {
                 SetTimer(Some(l.hwnd), UPDATE_TIMER, 120_000, None);
                 l.read_update_notice();
             }
-            if crate::util::perf::hook_on("WISP_CAPTURE") {
-                if !matches!(
-                    crate::util::perf::hook("WISP_CAPTURE_SCENARIO").as_deref(),
-                    Some("hidden" | "reel")
-                ) && let Some(dock) = &mut l.dock
-                {
-                    dock.hold(
-                        None,
-                        crate::util::perf::hook("WISP_CAPTURE_DOCK_PART").as_deref(),
-                        crate::util::perf::hook("DOCK_DEMO_DPI").and_then(|s| s.parse().ok()),
-                    );
-                }
-                if let Some(query) = crate::util::perf::hook("WISP_CAPTURE_QUERY") {
-                    l.editor.insert(&query);
-                }
-                SetTimer(
-                    Some(l.hwnd),
-                    99,
-                    crate::util::perf::hook("WISP_CAPTURE_DURATION_MS")
-                        .and_then(|s| s.parse().ok())
-                        .unwrap_or(3500),
-                    None,
-                );
-                #[cfg(feature = "perf-trace")]
-                if let Some(scenario) = crate::util::perf::hook("WISP_PERF_SCENARIO") {
-                    if scenario.ends_with("hidden")
-                        && let Some(dock) = &mut l.dock
-                    {
-                        dock.hide();
-                        dock.show();
-                    }
-                    if !scenario.starts_with("idle") {
-                        SetTimer(Some(l.hwnd), 97, 250, None);
-                    }
-                }
-                if crate::util::perf::hook("WISP_CAPTURE_SCENARIO").as_deref() == Some("reel") {
-                    // The app icons load during the first 4 s.
-                    SetTimer(Some(l.hwnd), REEL_TIMER, 4000, None);
-                } else if crate::util::perf::hook_on("WISP_CAPTURE_SCENARIO") {
-                    SetTimer(Some(l.hwnd), 98, 45, None);
-                }
-            }
+            capture::start(l);
             if let Some(error) = config_error {
                 tray::notify(l.hwnd, "Wisp config", &error, true);
             }
@@ -532,7 +491,7 @@ impl Launcher {
         }
         // Windows needs the tray icon before it can show notifications.
         tray::add(self.hwnd, self.tray_icon, &self.tooltip());
-        if !crate::util::perf::hook_on("WISP_CAPTURE") {
+        if !capture::active() {
             self.sync_win_key();
             self.register_hotkey(true);
         }
@@ -608,7 +567,7 @@ impl Launcher {
     fn sync_win_key(&mut self) {
         if !self.config.win_key {
             self.win_key_hook = None;
-        } else if self.win_key_hook.is_none() && !crate::util::perf::hook_on("WISP_CAPTURE") {
+        } else if self.win_key_hook.is_none() && !capture::active() {
             match crate::win_key::Hook::install(self.hwnd, WM_HOTKEY) {
                 Ok(hook) => self.win_key_hook = Some(hook),
                 Err(error) => tray::notify(self.hwnd, "Could not enable Win key", &error.to_string(), true),
@@ -886,7 +845,7 @@ impl Launcher {
         let _span = util::perf::Span::new("show");
         util::perf::input("show_to_content");
         self.reload_config_if_changed();
-        if !crate::util::perf::hook_on("WISP_CAPTURE") {
+        if !capture::active() {
             self.register_hotkey(false);
         }
         self.commands.refresh();
@@ -951,15 +910,8 @@ impl Launcher {
         }
         self.set_collapsed_style(false);
         unsafe {
-            let _ = ShowWindow(
-                self.hwnd,
-                if crate::util::perf::hook_on("WISP_CAPTURE") {
-                    SW_SHOWNOACTIVATE
-                } else {
-                    SW_SHOW
-                },
-            );
-            if !crate::util::perf::hook_on("WISP_CAPTURE") {
+            let _ = ShowWindow(self.hwnd, if capture::active() { SW_SHOWNOACTIVATE } else { SW_SHOW });
+            if !capture::active() {
                 let _ = SetForegroundWindow(self.hwnd);
                 let _ = SetFocus(Some(self.hwnd));
             }
@@ -1201,11 +1153,8 @@ impl Launcher {
     }
 
     fn morph_progress(&self, morph: &Morph) -> f32 {
-        if crate::util::perf::hook_on("WISP_CAPTURE")
-            && let Some(value) = crate::util::perf::hook("WISP_CAPTURE_MORPH")
-            && let Ok(value) = value.parse::<f32>()
-        {
-            return value.clamp(0.0, 1.0);
+        if let Some(value) = capture::fixed_morph() {
+            return value;
         }
         (morph.start.elapsed().as_secs_f32() * 1000.0
             / crate::util::perf::slowdown()
@@ -1248,14 +1197,8 @@ impl Launcher {
         let opening = morph.opening;
         let from = morph.from;
         let to = morph.to;
-        if crate::util::perf::hook_on("WISP_CAPTURE")
-            && crate::util::perf::hook("WISP_CAPTURE_SCENARIO").as_deref() == Some("typing")
-            && opening
-            && self.editor.text() != "typed"
-        {
-            self.editor.insert("typed");
-            self.update_results();
-            eprintln!("during animation query={} morph=true", self.editor.text());
+        if opening {
+            capture::type_during_morph(self);
         }
         let rect = crate::morph::bounds(from, self.morph.as_ref().map_or(to, |m| m.to), t);
         self.outline = Some(rect);
@@ -1415,12 +1358,7 @@ impl Launcher {
         self.results.extend(self.file_results.iter().cloned());
         self.results.extend(base[web..].iter().cloned());
         self.base_results = base;
-        if crate::util::perf::hook_on("WISP_CAPTURE")
-            && let Some(rows) = crate::util::perf::hook("WISP_CAPTURE_ROWS")
-            && let Ok(rows) = rows.parse::<usize>()
-        {
-            self.results.truncate(rows);
-        }
+        capture::limit_rows(&mut self.results);
     }
 
     /// File icons are cached per program or shortcut, so a long session of
@@ -2731,112 +2669,7 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
         WM_APP_SHOW => {
             with_launcher(Launcher::show);
         }
-        #[cfg(feature = "perf-trace")]
-        WM_TIMER if wparam.0 == 97 && crate::util::perf::hook_on("WISP_CAPTURE") => {
-            with_launcher(|l| {
-                thread_local! { static STEP: Cell<usize> = const { Cell::new(0) }; }
-                let step = STEP.with(|s| {
-                    let n = s.get();
-                    s.set(n + 1);
-                    n
-                });
-                let scenario = crate::util::perf::hook("WISP_PERF_SCENARIO").unwrap_or_default();
-                if scenario == "typing" {
-                    if !l.visible {
-                        l.show();
-                    }
-                    util::perf::input("key_to_content");
-                    l.on_char(if step.is_multiple_of(6) { 8 } else { 101 });
-                    l.paint();
-                } else if scenario == "slide" {
-                    if let Some(dock) = &mut l.dock {
-                        dock.capture_slide();
-                    }
-                } else if !scenario.starts_with("idle") {
-                    if l.visible {
-                        l.hide();
-                    } else {
-                        if scenario == "hidden"
-                            && let Some(dock) = &mut l.dock
-                        {
-                            dock.hide();
-                        }
-                        util::perf::input("hotkey_to_content");
-                        l.show();
-                    }
-                }
-            });
-        }
-        WM_TIMER if wparam.0 == 98 && crate::util::perf::hook_on("WISP_CAPTURE") => {
-            with_launcher(|l| {
-                unsafe {
-                    let _ = KillTimer(Some(l.hwnd), 98);
-                }
-                let scenario = crate::util::perf::hook("WISP_CAPTURE_SCENARIO").unwrap_or_default();
-                eprintln!(
-                    "scenario={scenario} visible={} morph={} return_to_dock={}",
-                    l.visible,
-                    l.morph.is_some(),
-                    l.morphed
-                );
-                if scenario == "slide" {
-                    if let Some(dock) = &mut l.dock {
-                        dock.capture_slide();
-                    }
-                } else if scenario == "typing" {
-                    eprintln!("retained query={}", l.editor.text());
-                } else {
-                    l.hide();
-                    eprintln!(
-                        "dismiss visible={} morph={} hwnd_visible={}",
-                        l.visible,
-                        l.morph.is_some(),
-                        unsafe { IsWindowVisible(l.hwnd).as_bool() }
-                    );
-                }
-            });
-        }
-        WM_TIMER if wparam.0 == REEL_TIMER && crate::util::perf::hook_on("WISP_CAPTURE") => {
-            with_launcher(|l| {
-                thread_local! { static STEP: Cell<u32> = const { Cell::new(0) }; }
-                let step = STEP.with(|s| {
-                    s.set(s.get() + 1);
-                    s.get()
-                });
-                if step == 1 {
-                    let interval = (REEL_MS as f32 * crate::util::perf::slowdown()) as u32;
-                    unsafe {
-                        SetTimer(Some(l.hwnd), REEL_TIMER, interval, None);
-                    }
-                }
-                // Steps of REEL_MS: the hidden dock slides in, grows into the
-                // launcher, takes a query, then shrinks back into the dock.
-                match step {
-                    1 => {
-                        if let Some(dock) = &mut l.dock {
-                            dock.capture_reveal();
-                        }
-                    }
-                    19 => l.show(),
-                    // The whole query at once: partial queries can list
-                    // apps by their paths on this PC.
-                    29 => {
-                        for unit in b"note" {
-                            l.on_char((*unit).into());
-                        }
-                        l.paint();
-                    }
-                    56 => l.hide(),
-                    81 => unsafe {
-                        let _ = DestroyWindow(hwnd);
-                    },
-                    _ => {}
-                }
-            });
-        }
-        WM_TIMER if wparam.0 == 99 && crate::util::perf::hook_on("WISP_CAPTURE") => unsafe {
-            let _ = DestroyWindow(hwnd);
-        },
+        WM_TIMER if capture::owns_timer(wparam.0) => capture::on_timer(hwnd, wparam.0),
         WM_APP_QUIT => unsafe {
             let _ = DestroyWindow(hwnd);
         },
