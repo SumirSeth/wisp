@@ -71,17 +71,11 @@ const BOTTOM_MARGIN: f32 = 4.0;
 
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 
-// Preserve index updates and hide requests during reentrant message handling.
-const DEFER_INDEX: u8 = 1;
-const DEFER_FILES: u8 = 4;
-const DEFER_HIDE: u8 = 2;
-const DEFER_COMMANDS: u8 = 8;
-
+/// Messages that arrived while the launcher was borrowed, posted again once it's free.
 type PendingMessages = crate::deferred::Queue<(u32, usize), (HWND, u32, WPARAM, LPARAM)>;
 
 thread_local! {
     static LAUNCHER: RefCell<Option<Launcher>> = const { RefCell::new(None) };
-    static DEFERRED: Cell<u8> = const { Cell::new(0) };
     static PENDING_MESSAGES: RefCell<PendingMessages> = RefCell::new(crate::deferred::Queue::new());
     static DRAGGING: Cell<bool> = const { Cell::new(false) };
     static PACER: RefCell<Option<Pacer>> = const { RefCell::new(None) };
@@ -121,54 +115,21 @@ fn sync_frames() {
 }
 
 /// Returns `None` if the launcher is already borrowed. Windows can send
-/// reentrant messages during `ShowWindow` or a modal `ShellExecuteEx` call.
-/// Runs deferred work after the outer handler releases the borrow.
+/// reentrant messages during `ShowWindow` or a modal `ShellExecuteEx` call;
+/// `wndproc` queues those in `PENDING_MESSAGES` and they are posted again
+/// once the outer handler releases the borrow.
 fn with_launcher<R>(f: impl FnOnce(&mut Launcher) -> R) -> Option<R> {
     let result = LAUNCHER.with(|cell| cell.try_borrow_mut().ok().and_then(|mut l| l.as_mut().map(f)));
     if result.is_some() {
-        run_deferred();
         replay_pending_messages();
     }
     result
 }
 
-/// Defers `work` if a reentrant call cannot borrow the launcher.
-fn with_launcher_or_defer(work: u8, f: impl FnOnce(&mut Launcher)) {
+/// Runs `f`, or posts the message again once the launcher is free.
+fn with_launcher_or_requeue(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, f: impl FnOnce(&mut Launcher)) {
     if with_launcher(f).is_none() {
-        DEFERRED.with(|d| d.set(d.get() | work));
-    }
-}
-
-fn run_deferred() {
-    loop {
-        let work = DEFERRED.with(|d| d.replace(0));
-        if work == 0 {
-            return;
-        }
-        let ran = LAUNCHER.with(|cell| {
-            let Ok(mut launcher) = cell.try_borrow_mut() else {
-                return false;
-            };
-            if let Some(l) = launcher.as_mut() {
-                if work & DEFER_INDEX != 0 {
-                    l.drain_index_events();
-                }
-                if work & DEFER_FILES != 0 {
-                    l.drain_file_results();
-                }
-                if work & DEFER_COMMANDS != 0 {
-                    l.drain_command_events();
-                }
-                if work & DEFER_HIDE != 0 {
-                    l.hide();
-                }
-            }
-            true
-        });
-        if !ran {
-            DEFERRED.with(|d| d.set(d.get() | work));
-            return;
-        }
+        PENDING_MESSAGES.with(|q| q.borrow_mut().push((msg, wparam.0), (hwnd, msg, wparam, lparam)));
     }
 }
 
@@ -2904,10 +2865,12 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
             // Also inside a modal loop, where the main loop doesn't run.
             sync_frames();
         }
-        WM_APP_INDEX => with_launcher_or_defer(DEFER_INDEX, Launcher::drain_index_events),
-        WM_APP_FILES => with_launcher_or_defer(DEFER_FILES, Launcher::drain_file_results),
-        WM_APP_COMMANDS => with_launcher_or_defer(DEFER_COMMANDS, Launcher::drain_command_events),
-        WM_ACTIVATE if loword(wparam.0) == WA_INACTIVE => with_launcher_or_defer(DEFER_HIDE, Launcher::hide),
+        WM_APP_INDEX => with_launcher_or_requeue(hwnd, msg, wparam, lparam, Launcher::drain_index_events),
+        WM_APP_FILES => with_launcher_or_requeue(hwnd, msg, wparam, lparam, Launcher::drain_file_results),
+        WM_APP_COMMANDS => with_launcher_or_requeue(hwnd, msg, wparam, lparam, Launcher::drain_command_events),
+        WM_ACTIVATE if loword(wparam.0) == WA_INACTIVE => {
+            with_launcher_or_requeue(hwnd, msg, wparam, lparam, Launcher::hide)
+        }
         WM_DPICHANGED => {
             with_launcher(|l| {
                 if let Some(dock) = &l.dock {
