@@ -60,7 +60,7 @@ pub fn notify_update(hwnd: HWND, version: &str) {
     notify(
         hwnd,
         "Wisp update",
-        &format!("Wisp {version} is available. Click to update."),
+        &format!("Wisp {version} is available. Click to see what's new and update."),
         false,
     );
     UPDATE_BALLOON.set(true);
