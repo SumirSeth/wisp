@@ -454,6 +454,11 @@ struct State {
     left: i32,
     width: i32,
     surface_rect: Option<RECT>,
+    /// The dock draws on the launcher's window, through the launcher.
+    shared: bool,
+    /// A shared dock changed in a way that should show at once; the launcher
+    /// draws it as soon as the dock's state is free.
+    paint_requested: bool,
     /// Hosts the notification area while the taskbar is hidden.
     tray_host: Option<TrayHost>,
     tray: Vec<tray::Shown>,
@@ -719,6 +724,8 @@ impl Dock {
             left: 0,
             width: 0,
             surface_rect: None,
+            shared: false,
+            paint_requested: false,
             tray_host: None,
             tray: Vec::new(),
             inline: Vec::new(),
@@ -781,6 +788,7 @@ impl Dock {
             }
         };
         state.borrow_mut().hwnd = hwnd;
+        state.borrow_mut().shared = shared;
         let mut dock = Self {
             hwnd,
             shared,
@@ -922,6 +930,15 @@ impl Dock {
 
     pub fn shared(&self) -> bool {
         self.shared
+    }
+
+    /// Whether a shared dock asked to be drawn at once. Clears the request.
+    pub fn take_paint_request(&self) -> bool {
+        self.shared
+            && self
+                .state
+                .try_borrow_mut()
+                .is_ok_and(|mut s| std::mem::take(&mut s.paint_requested))
     }
 
     pub fn dispatch(&self, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -1306,6 +1323,14 @@ impl Drop for Dock {
 impl State {
     /// Paint directly: UpdateWindow would reenter a wndproc whose state is borrowed.
     fn paint_now(&mut self) {
+        if self.shared {
+            // The launcher owns this window's render target; never make a second one.
+            self.paint_requested = true;
+            unsafe {
+                let _ = InvalidateRect(Some(self.hwnd), None, false);
+            }
+            return;
+        }
         match self.paint(None) {
             Ok(()) => unsafe {
                 let _ = ValidateRect(Some(self.hwnd), None);

@@ -119,7 +119,15 @@ fn sync_frames() {
 /// `wndproc` queues those in `PENDING_MESSAGES` and they are posted again
 /// once the outer handler releases the borrow.
 fn with_launcher<R>(f: impl FnOnce(&mut Launcher) -> R) -> Option<R> {
-    let result = LAUNCHER.with(|cell| cell.try_borrow_mut().ok().and_then(|mut l| l.as_mut().map(f)));
+    let result = LAUNCHER.with(|cell| {
+        cell.try_borrow_mut().ok().and_then(|mut l| {
+            l.as_mut().map(|l| {
+                let result = f(l);
+                l.paint_dock_if_asked();
+                result
+            })
+        })
+    });
     if result.is_some() {
         replay_pending_messages();
     }
@@ -1970,6 +1978,17 @@ impl Launcher {
     fn invalidate(&self) {
         unsafe {
             let _ = InvalidateRect(Some(self.hwnd), None, false);
+        }
+    }
+
+    /// A dock on this window asked to be drawn at once, for example after it
+    /// resized: draw now rather than at the next WM_PAINT.
+    fn paint_dock_if_asked(&mut self) {
+        if self.dock.as_ref().is_some_and(Dock::take_paint_request) {
+            self.paint();
+            unsafe {
+                let _ = ValidateRect(Some(self.hwnd), None);
+            }
         }
     }
 
