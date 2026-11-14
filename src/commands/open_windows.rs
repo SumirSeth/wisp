@@ -109,6 +109,7 @@ pub fn focus(hwnd: isize) -> Result<(), String> {
             return Ok(());
         }
         dismiss_shell_flyout(GetForegroundWindow());
+        new_press();
         let timer = SetTimer(None, 0, 20, Some(focus_tick));
         if timer == 0 {
             return Err("Could not schedule window activation.".into());
@@ -132,6 +133,15 @@ struct FocusRequest {
     timer: usize,
     started: std::time::Instant,
     generation: u64,
+}
+
+/// Whether a mouse button went down since the last call: the user
+/// clicked somewhere, maybe in another window.
+fn new_press() -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON};
+    [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON]
+        .iter()
+        .any(|vk| unsafe { GetAsyncKeyState(vk.0 as i32) } & 1 != 0)
 }
 thread_local! {
     static FOCUS_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -165,7 +175,9 @@ unsafe extern "system" fn focus_tick(_: HWND, _: u32, timer: usize, _: u32) {
     let done = pid != request.pid
         || !unsafe { IsWindow(Some(target)) }.as_bool()
         || unsafe { GetForegroundWindow() } == target
-        || request.started.elapsed() >= std::time::Duration::from_millis(600);
+        || request.started.elapsed() >= std::time::Duration::from_millis(600)
+        // The user moved on, maybe to another window: don't take it back.
+        || new_press();
     if !done {
         unsafe {
             let _ = SetForegroundWindow(target);

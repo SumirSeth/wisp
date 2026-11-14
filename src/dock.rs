@@ -119,7 +119,13 @@ const QUIET_POLL_MS: u32 = 500;
 const DESKTOP_PILL_MS: u32 = 1100;
 /// Wheel input right after a switch is the same flick, not another request.
 const DESKTOP_PAUSE: Duration = Duration::from_millis(300);
-thread_local! { static EVENT_TARGET: Cell<HWND> = const { Cell::new(HWND(std::ptr::null_mut())) }; }
+thread_local! {
+    static EVENT_TARGET: Cell<HWND> = const { Cell::new(HWND(std::ptr::null_mut())) };
+    /// The hook on the foreground app's window moves, and that app's process.
+    static FOREGROUND_HOOK: Cell<(HWINEVENTHOOK, u32)> = const { Cell::new((HWINEVENTHOOK(std::ptr::null_mut()), 0)) };
+    /// Whether the foreground window covered its screen at the last move.
+    static FOREGROUND_FULLSCREEN: Cell<bool> = const { Cell::new(false) };
+}
 
 struct Item {
     app: AppEntry,
@@ -343,9 +349,9 @@ struct WindowId {
     read: Instant,
 }
 
-/// How long a window's app ID is trusted. Some apps set it after their
-/// window appears.
-const WINDOW_ID_TTL: Duration = Duration::from_secs(10);
+/// How long a window's app ID is trusted. Some apps, such as browsers for
+/// their web apps, set it after their window appears.
+const WINDOW_ID_TTL: Duration = Duration::from_secs(2);
 
 /// Fires [`CLOCK_TIMER`] just after the next minute starts.
 fn arm_clock(hwnd: HWND) {
@@ -857,6 +863,7 @@ impl Dock {
         EVENT_TARGET.with(|target| target.set(hwnd));
         crate::commands::audio::notify_level_changes(hwnd, WM_DOCK_STATUS);
         arm_clock(hwnd);
+        track_foreground();
         for (first, last) in [
             (EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE),
             (EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND),
@@ -1279,6 +1286,7 @@ impl Drop for Dock {
             for hook in self.hooks.drain(..) {
                 let _ = UnhookWinEvent(hook);
             }
+            untrack_foreground();
             let _ = KillTimer(Some(self.hwnd), REFRESH_TIMER);
             let _ = KillTimer(Some(self.hwnd), POLL_TIMER);
             let _ = KillTimer(Some(self.hwnd), SLIDE_TIMER);
@@ -3226,7 +3234,9 @@ unsafe extern "system" fn window_event(
     _: u32,
     _: u32,
 ) {
-    if event != EVENT_SYSTEM_FOREGROUND {
+    if event == EVENT_SYSTEM_FOREGROUND {
+        track_foreground();
+    } else {
         if !matches!(
             event,
             EVENT_OBJECT_DESTROY
@@ -3251,6 +3261,76 @@ unsafe extern "system" fn window_event(
             let _ = PostMessageW(Some(hwnd), WM_REFRESH, WPARAM(REFRESH_WINDOWS), LPARAM(0));
         }
     });
+}
+
+/// Follows the foreground app's window moves, and only that app's: a video
+/// that goes fullscreen (F11) moves its window without a foreground change.
+/// Every other app's moves stay unhooked.
+fn track_foreground() {
+    unsafe {
+        let mut pid = 0;
+        GetWindowThreadProcessId(GetForegroundWindow(), Some(&mut pid));
+        let pid = if pid == std::process::id() { 0 } else { pid };
+        let (hook, hooked) = FOREGROUND_HOOK.with(Cell::get);
+        if pid != hooked || hook.is_invalid() != (pid == 0) {
+            if !hook.is_invalid() {
+                let _ = UnhookWinEvent(hook);
+            }
+            let hook = if pid == 0 {
+                HWINEVENTHOOK::default()
+            } else {
+                SetWinEventHook(
+                    EVENT_OBJECT_LOCATIONCHANGE,
+                    EVENT_OBJECT_LOCATIONCHANGE,
+                    None,
+                    Some(foreground_moved),
+                    pid,
+                    0,
+                    WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+                )
+            };
+            FOREGROUND_HOOK.with(|cell| cell.set((hook, pid)));
+        }
+        let target = EVENT_TARGET.with(Cell::get);
+        if !target.is_invalid() {
+            FOREGROUND_FULLSCREEN.with(|cell| cell.set(fullscreen_foreground(target)));
+        }
+    }
+}
+
+fn untrack_foreground() {
+    let (hook, _) = FOREGROUND_HOOK.with(|cell| cell.replace((HWINEVENTHOOK::default(), 0)));
+    if !hook.is_invalid() {
+        unsafe {
+            let _ = UnhookWinEvent(hook);
+        }
+    }
+}
+
+/// Refreshes the dock only when the foreground window starts or stops
+/// covering its screen, not on every move of it.
+unsafe extern "system" fn foreground_moved(
+    _: HWINEVENTHOOK,
+    _: u32,
+    hwnd: HWND,
+    object: i32,
+    child: i32,
+    _: u32,
+    _: u32,
+) {
+    if object != OBJID_WINDOW.0 || child != 0 || hwnd != unsafe { GetForegroundWindow() } {
+        return;
+    }
+    let target = EVENT_TARGET.with(Cell::get);
+    if target.is_invalid() {
+        return;
+    }
+    let fullscreen = fullscreen_foreground(target);
+    if FOREGROUND_FULLSCREEN.with(|cell| cell.replace(fullscreen)) != fullscreen {
+        unsafe {
+            let _ = PostMessageW(Some(target), WM_REFRESH, WPARAM(REFRESH_WINDOWS), LPARAM(0));
+        }
+    }
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -3430,7 +3510,12 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT
                     return LRESULT(0);
                 }
                 WM_CAPTURECHANGED => {
-                    s.finish_press(false);
+                    // A message held while the state was busy can arrive after
+                    // a newer press took the capture again: only end a press
+                    // that really lost it.
+                    if GetCapture() != hwnd {
+                        s.finish_press(false);
+                    }
                     return LRESULT(0);
                 }
                 WM_LBUTTONDOWN => {
