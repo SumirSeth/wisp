@@ -758,7 +758,13 @@ impl Launcher {
                     Err(failure) => self.taskbar_failed(&(&failure).into()),
                 },
                 Outcome::Peeked(Err(failure)) => eprintln!("could not show the taskbar: {failure:?}"),
-                Outcome::Peeked(Ok(())) => {}
+                // Auto-hide keeps a shown taskbar collapsed until it has the focus.
+                // Only this thread, which took the click, may give it the focus.
+                Outcome::Peeked(Ok(())) => unsafe {
+                    if let Ok(bar) = FindWindowW(w!("Shell_TrayWnd"), None) {
+                        let _ = SetForegroundWindow(bar);
+                    }
+                },
                 Outcome::PeekTick(Ok(false)) => {}
                 Outcome::PeekTick(result) => {
                     if let Err(failure) = result {
@@ -1171,6 +1177,8 @@ impl Launcher {
         // motion, then restore the live material once the geometry settles.
         self.palette =
             crate::theme::apply_moving_backdrop(self.hwnd, self.dark, self.config.backdrop, self.config.dock_tint());
+        // The window no longer has the material `apply_theme` last set.
+        self.material = None;
         self.morph.as_mut().unwrap().start = Instant::now();
         request_frames();
         self.outline = Some(from);
