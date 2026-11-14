@@ -1026,10 +1026,7 @@ impl Dock {
     /// Pauses placement without hiding the shared surface.
     pub fn suspend(&mut self) -> RECT {
         self.update(Some("suspend"), move |s| {
-            s.finish_press(false);
-            s.close_flyout();
-            s.hide_tip();
-            s.hide_windows();
+            s.retract();
             let mut rect = RECT::default();
             unsafe {
                 let _ = GetWindowRect(s.hwnd, &mut rect);
@@ -1042,9 +1039,7 @@ impl Dock {
                 let _ = KillTimer(Some(s.hwnd), POLL_TIMER);
             }
             s.listen(false);
-            s.stop_slide();
             s.suspended = true;
-            s.radio_worker.hide();
             rect
         })
         // While busy, return the current native rectangle; placement catches up after the menu.
@@ -1277,14 +1272,9 @@ impl Dock {
     /// Hides the dock until `show`, such as while the launcher is open.
     pub fn hide(&mut self) {
         self.update(Some("hide"), move |s| {
-            s.finish_press(false);
-            s.close_flyout();
-            s.hide_tip();
-            s.hide_windows();
+            s.retract();
             s.visible = false;
-            s.stop_slide();
             s.revealed = false;
-            s.radio_worker.hide();
             s.listen(false);
             unsafe {
                 let _ = KillTimer(Some(s.hwnd), POLL_TIMER);
@@ -1542,11 +1532,8 @@ impl State {
             self.refresh_window_titles();
         }
         if self.fullscreen {
-            self.finish_press(false);
-            self.hide_windows();
-            self.stop_slide();
+            self.retract();
             self.revealed = false;
-            self.radio_worker.hide();
         }
         unsafe {
             let was_shown = IsWindowVisible(self.hwnd).as_bool();
@@ -1571,6 +1558,18 @@ impl State {
                 let _ = InvalidateRect(Some(self.hwnd), None, false);
             }
         }
+    }
+
+    /// Ends whatever the dock is doing for the user, before it goes out of
+    /// sight: a press, the flyout, the tooltip, the window list, a slide and
+    /// the radio reads.
+    fn retract(&mut self) {
+        self.finish_press(false);
+        self.close_flyout();
+        self.hide_tip();
+        self.hide_windows();
+        self.stop_slide();
+        self.radio_worker.hide();
     }
 
     fn apply_apps(&mut self, apps: &[AppEntry], icons: &HashMap<String, Arc<IconPixels>>) {
@@ -1661,13 +1660,8 @@ impl State {
         }
         let hidden = !self.revealed && self.slide.is_none();
         if !hidden && fullscreen_foreground(self.hwnd) {
-            self.finish_press(false);
-            self.stop_slide();
+            self.retract();
             self.revealed = false;
-            self.radio_worker.hide();
-            self.close_flyout();
-            self.hide_tip();
-            self.hide_windows();
             unsafe {
                 let _ = ShowWindow(self.hwnd, SW_HIDE);
             }
@@ -3603,11 +3597,8 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT
                     return LRESULT(0);
                 }
                 WM_CLOSE => {
-                    s.finish_press(false);
-                    s.hide_windows();
-                    s.stop_slide();
+                    s.retract();
                     s.visible = false;
-                    s.radio_worker.hide();
                     let _ = ShowWindow(hwnd, SW_HIDE);
                     return LRESULT(0);
                 }
