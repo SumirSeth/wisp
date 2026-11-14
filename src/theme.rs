@@ -524,3 +524,65 @@ mod tests {
         }
     }
 }
+
+/// The material inputs whose changes require DWM calls.
+#[derive(Clone, Copy, PartialEq)]
+pub struct MaterialKey(pub bool, pub crate::config::Backdrop, pub Option<Tint>, pub bool);
+
+impl MaterialKey {
+    pub fn new(dark: bool, backdrop: crate::config::Backdrop, tint: Option<Tint>) -> Self {
+        Self(dark, backdrop, tint, transparency_available())
+    }
+}
+
+/// Classify the borrowed broadcast payload before any modal-loop deferral.
+pub unsafe fn filter_broadcast(
+    msg: u32,
+    wp: windows::Win32::Foundation::WPARAM,
+    lp: windows::Win32::Foundation::LPARAM,
+) -> Option<u32> {
+    use windows::Win32::UI::WindowsAndMessaging::*;
+    if msg == WM_SETTINGCHANGE {
+        let immersive = if lp.0 == 0 {
+            false
+        } else {
+            unsafe {
+                windows::core::PCWSTR(lp.0 as _)
+                    .to_string()
+                    .is_ok_and(|name| name == "ImmersiveColorSet")
+            }
+        };
+        setting_message(wp.0, immersive)
+    } else if msg == WM_POWERBROADCAST && wp.0 != 10 {
+        // PBT_APMPOWERSTATUSCHANGE includes battery-saver transitions.
+        None
+    } else {
+        Some(msg)
+    }
+}
+
+fn setting_message(action: usize, immersive: bool) -> Option<u32> {
+    use windows::Win32::UI::WindowsAndMessaging::*;
+    if immersive {
+        Some(WM_THEMECHANGED)
+    } else if action == SPI_SETWORKAREA.0 as usize {
+        Some(WM_SETTINGCHANGE)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod broadcast_tests {
+    use super::*;
+    use windows::Win32::UI::WindowsAndMessaging::*;
+    #[test]
+    fn only_theme_and_work_area_settings_trigger_work() {
+        assert_eq!(setting_message(0, false), None);
+        assert_eq!(
+            setting_message(SPI_SETWORKAREA.0 as usize, false),
+            Some(WM_SETTINGCHANGE)
+        );
+        assert_eq!(setting_message(0, true), Some(WM_THEMECHANGED));
+    }
+}

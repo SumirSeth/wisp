@@ -568,7 +568,11 @@ impl TaskbarHider {
                 EVENT_OBJECT_SHOW,
                 None,
                 Some(show_event),
-                0,
+                snapshot
+                    .bars
+                    .iter()
+                    .find(|bar| bar.class == "Shell_TrayWnd")
+                    .map_or(0, |bar| bar.pid),
                 0,
                 WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
             )
@@ -592,6 +596,33 @@ impl TaskbarHider {
 
     /// Forward every owner message; registered shell broadcasts are recognized here.
     pub fn on_message(&mut self, msg: u32) -> Result<bool> {
+        if self.taskbar_created != 0 && msg == self.taskbar_created {
+            // Explorer's new process needs its own hook; never retain the old PID.
+            let current = bars()?;
+            let pid = current
+                .iter()
+                .find(|bar| bar.class == "Shell_TrayWnd")
+                .map(|bar| bar.pid)
+                .ok_or_else(|| failure("Primary taskbar was not found"))?;
+            let hook = unsafe {
+                SetWinEventHook(
+                    EVENT_OBJECT_SHOW,
+                    EVENT_OBJECT_SHOW,
+                    None,
+                    Some(show_event),
+                    pid,
+                    0,
+                    WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+                )
+            };
+            if hook.is_invalid() {
+                return Err(Error::from_thread());
+            }
+            unsafe {
+                let _ = UnhookWinEvent(self.hook);
+            }
+            self.hook = hook;
+        }
         if msg == WM_RECOVERY_DONE {
             self.restore()?;
             return Ok(true);
