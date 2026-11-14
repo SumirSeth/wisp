@@ -7,7 +7,7 @@ use windows::core::{HSTRING, PCWSTR};
 
 use crate::util::copy_wide;
 
-pub const WM_TRAY: u32 = WM_APP + 1;
+pub use crate::messages::WM_TRAY;
 const ICON_ID: u32 = 1;
 
 pub const CMD_OPEN: u32 = 1;

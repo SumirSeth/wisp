@@ -22,11 +22,11 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{Error, HRESULT, Result, w};
 
 /// Windows sends app bar notifications with this message.
-const WM_APPBAR: u32 = WM_APP + 40;
+use crate::messages::WM_APPBAR;
 /// Asks the space's thread to check the space is still kept.
-const WM_CHECK: u32 = WM_APP + 41;
+use crate::messages::WM_CHECK;
 /// Updates the reserved height as the dock's icon size changes.
-const WM_SET_HEIGHT: u32 = WM_APP + 42;
+use crate::messages::WM_SET_HEIGHT;
 /// Windows sends no message when it works the work area out again without
 /// the space, so the space's thread also checks on a timer.
 const CHECK_TIMER: usize = 1;

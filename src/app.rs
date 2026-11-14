@@ -35,17 +35,17 @@ use crate::taskbar::{self, TaskbarHider};
 use crate::theme::Palette;
 use crate::{hotkey, launch, system, tray, util};
 
-const WM_APP_FRAME: u32 = WM_APP + 8;
-const WM_APP_INDEX: u32 = WM_APP + 2;
-const WM_APP_FILES: u32 = WM_APP + 5;
-const WM_APP_SHOW: u32 = WM_APP + 3;
-const WM_APP_QUIT: u32 = WM_APP + 4;
+use crate::messages::WM_APP_FILES;
+use crate::messages::WM_APP_FRAME;
+use crate::messages::WM_APP_INDEX;
+use crate::messages::WM_APP_QUIT;
 /// wisp-settings posts this message after it changes the config.
-const WM_APP_RELOAD: u32 = WM_APP + 6;
+use crate::messages::WM_APP_RELOAD;
+use crate::messages::WM_APP_SHOW;
 /// Drives the scripted capture of the dock and the launcher.
 const REEL_TIMER: usize = 96;
 const REEL_MS: u32 = 50;
-const WM_APP_COMMANDS: u32 = WM_APP + 7;
+use crate::messages::WM_APP_COMMANDS;
 const CLASS_NAME: PCWSTR = crate::channel::LAUNCHER_CLASS;
 const HOTKEY_ID: i32 = 1;
 const UPDATE_TIMER: usize = 5;
@@ -1134,13 +1134,6 @@ impl Launcher {
                 SWP_NOACTIVATE,
             );
         }
-        crate::theme::shape(
-            self.hwnd,
-            width,
-            height,
-            crate::morph::radius(if self.unified() { self.morph_opacity() } else { 1.0 }),
-            self.dpi,
-        );
         self.renderer.resize(width.max(1) as u32, height.max(1) as u32);
         if self.morph.is_some()
             && let Some(dock) = &mut self.dock

@@ -405,13 +405,6 @@ pub fn paint_background(
     }
 }
 
-/// Leave corner coverage to DWM. An integer GDI region disables DWM's
-/// antialiased window corners and cuts off Direct2D's edge coverage.
-pub fn shape(hwnd: windows::Win32::Foundation::HWND, _width: i32, _height: i32, _radius: f32, _dpi: u32) {
-    unsafe {
-        let _ = windows::Win32::Graphics::Gdi::SetWindowRgn(hwnd, None, false);
-    }
-}
 #[cfg(test)]
 mod tests {
     use super::*;
