@@ -49,13 +49,63 @@ struct Formats {
     row: IDWriteTextFormat,
 }
 
-pub struct Renderer {
+/// The factories, fonts and text formats every dock window draws with. The
+/// dock and its popups share one set on the UI thread.
+struct Shared {
     factory: ID2D1Factory,
     dw: IDWriteFactory,
-    formats: Formats,
     text_font: PCWSTR,
     display_font: PCWSTR,
     icon_font: PCWSTR,
+    /// By font scale: the dock's icon size sets one, the popups use 1.
+    formats: std::cell::RefCell<HashMap<u32, std::rc::Rc<Formats>>>,
+}
+
+impl Shared {
+    fn get() -> Result<std::rc::Rc<Shared>> {
+        thread_local! {
+            static SHARED: std::cell::OnceCell<std::rc::Rc<Shared>> = const { std::cell::OnceCell::new() };
+        }
+        SHARED.with(|cell| {
+            if let Some(shared) = cell.get() {
+                return Ok(shared.clone());
+            }
+            let shared = unsafe {
+                let factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
+                let dw: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
+                let fonts = crate::render::Fonts::installed(&dw);
+                std::rc::Rc::new(Shared {
+                    factory,
+                    dw,
+                    text_font: fonts.text,
+                    display_font: fonts.display,
+                    icon_font: fonts.icons,
+                    formats: Default::default(),
+                })
+            };
+            Ok(cell.get_or_init(|| shared).clone())
+        })
+    }
+
+    fn formats(&self, scale: f32) -> Result<std::rc::Rc<Formats>> {
+        if let Some(formats) = self.formats.borrow().get(&scale.to_bits()) {
+            return Ok(formats.clone());
+        }
+        let formats = std::rc::Rc::new(create_formats(
+            &self.dw,
+            self.text_font,
+            self.display_font,
+            self.icon_font,
+            scale,
+        )?);
+        self.formats.borrow_mut().insert(scale.to_bits(), formats.clone());
+        Ok(formats)
+    }
+}
+
+pub struct Renderer {
+    shared: std::rc::Rc<Shared>,
+    formats: std::rc::Rc<Formats>,
     format_scale: f32,
     target: Option<Target>,
     shared_target: Option<Target>,
@@ -170,19 +220,13 @@ impl Frame<'_> {
 
 impl Renderer {
     pub fn new() -> Result<Self> {
-        unsafe {
-            let factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
-            let dw: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
-            let fonts = crate::render::Fonts::installed(&dw);
-            let formats = create_formats(&dw, fonts.text, fonts.display, fonts.icons, 1.0)?;
+        {
+            let shared = Shared::get()?;
+            let formats = shared.formats(1.0)?;
             Ok(Self {
-                factory,
+                shared,
                 formats,
-                text_font: fonts.text,
-                display_font: fonts.display,
-                icon_font: fonts.icons,
                 format_scale: 1.0,
-                dw,
                 target: None,
                 shared_target: None,
                 percent_width: None,
@@ -198,7 +242,10 @@ impl Renderer {
         }
         let wide: Vec<u16> = "100%".encode_utf16().collect();
         let width = unsafe {
-            let layout = self.dw.CreateTextLayout(&wide, &self.formats.small, 10000.0, 1000.0)?;
+            let layout = self
+                .shared
+                .dw
+                .CreateTextLayout(&wide, &self.formats.small, 10000.0, 1000.0)?;
             let mut metrics = DWRITE_TEXT_METRICS::default();
             layout.GetMetrics(&mut metrics)?;
             (metrics.widthIncludingTrailingWhitespace / scale).ceil()
@@ -232,7 +279,7 @@ impl Renderer {
 
     fn update_formats(&mut self, scale: f32) -> Result<()> {
         if self.format_scale != scale {
-            self.formats = create_formats(&self.dw, self.text_font, self.display_font, self.icon_font, scale)?;
+            self.formats = self.shared.formats(scale)?;
             self.format_scale = scale;
             self.percent_width = None;
         }
@@ -263,7 +310,7 @@ impl Renderer {
     pub fn measure_tip(&self, tip: &str, max: f32) -> Result<(f32, f32)> {
         let wide: Vec<u16> = tip.encode_utf16().collect();
         unsafe {
-            let layout = self.dw.CreateTextLayout(&wide, &self.formats.tip, max, 1000.0)?;
+            let layout = self.shared.dw.CreateTextLayout(&wide, &self.formats.tip, max, 1000.0)?;
             let mut metrics = DWRITE_TEXT_METRICS::default();
             layout.GetMetrics(&mut metrics)?;
             Ok((
@@ -323,6 +370,7 @@ impl Renderer {
             let wide: Vec<u16> = row.encode_utf16().collect();
             unsafe {
                 let layout = self
+                    .shared
                     .dw
                     .CreateTextLayout(&wide, &self.formats.row, logic::LIST_TEXT_MAX, 1000.0)?;
                 let mut metrics = DWRITE_TEXT_METRICS::default();
@@ -411,7 +459,7 @@ impl Renderer {
                 height: client.bottom.max(1) as u32,
             };
             if self.target.is_none() {
-                let rt = self.factory.CreateHwndRenderTarget(
+                let rt = self.shared.factory.CreateHwndRenderTarget(
                     &D2D1_RENDER_TARGET_PROPERTIES {
                         r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
                         pixelFormat: D2D1_PIXEL_FORMAT {
