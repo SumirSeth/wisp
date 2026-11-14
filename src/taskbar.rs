@@ -395,7 +395,7 @@ unsafe extern "system" fn show_event(_: HWINEVENTHOOK, _: u32, hwnd: HWND, objec
 
 struct Watchdog {
     disarm: Handle,
-    child: Child,
+    child: Option<Child>,
 }
 
 impl Watchdog {
@@ -462,14 +462,25 @@ impl Watchdog {
             ));
         }
         println!("watchdog ready pid={}", child.id());
-        Ok(Self { disarm, child })
+        Ok(Self {
+            disarm,
+            child: Some(child),
+        })
     }
 
     fn disarm(&mut self) -> Result<()> {
         unsafe {
             SetEvent(self.disarm.0)?;
         }
-        self.child.wait().map_err(|e| failure(&e.to_string()))?;
+        if let Some(mut child) = self.child.take() {
+            // The event is already signalled; reaping must never block message dispatch.
+            std::thread::Builder::new()
+                .name("watchdog reap".into())
+                .spawn(move || {
+                    let _ = child.wait();
+                })
+                .map_err(|e| failure(&e.to_string()))?;
+        }
         Ok(())
     }
 }
