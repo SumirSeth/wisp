@@ -826,25 +826,16 @@ impl Dock {
 
     /// Call after index or icon batches.
     pub fn set_apps(&mut self, apps: &[AppEntry], icons: &HashMap<String, Arc<IconPixels>>) {
+        // Usually the state is free: update it from the borrowed lists, and
+        // copy them only when the change has to wait for a menu to close.
+        self.state.drain();
+        if let Ok(mut s) = self.state.try_borrow_mut() {
+            s.apply_apps(apps, icons);
+            return;
+        }
         let apps = apps.to_vec();
         let icons = icons.clone();
-        self.update(Some("set_apps"), move |s| {
-            let mut changed = s.apps != apps;
-            if changed {
-                s.apps = apps;
-                s.app_matches.clear();
-                s.migrate_pins();
-            }
-            for (id, pixels) in &icons {
-                if !s.icons.contains_key(id) {
-                    s.icons.insert(id.clone(), pixels.clone());
-                    changed = true;
-                }
-            }
-            if changed {
-                s.refresh();
-            }
-        });
+        self.update(Some("set_apps"), move |s| s.apply_apps(&apps, &icons));
     }
 
     pub fn configure(&mut self, config: &DockConfig) {
@@ -1305,6 +1296,24 @@ impl State {
             } else {
                 let _ = InvalidateRect(Some(self.hwnd), None, false);
             }
+        }
+    }
+
+    fn apply_apps(&mut self, apps: &[AppEntry], icons: &HashMap<String, Arc<IconPixels>>) {
+        let mut changed = self.apps != apps;
+        if changed {
+            self.apps = apps.to_vec();
+            self.app_matches.clear();
+            self.migrate_pins();
+        }
+        for (id, pixels) in icons {
+            if !self.icons.contains_key(id) {
+                self.icons.insert(id.clone(), pixels.clone());
+                changed = true;
+            }
+        }
+        if changed {
+            self.refresh();
         }
     }
 
