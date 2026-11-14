@@ -144,6 +144,7 @@ struct State {
     /// The user's dock color, kept so system theme changes reapply it.
     tint: Option<Tint>,
     dark: bool,
+    material: Option<crate::theme::MaterialKey>,
     window_list_mode: WindowListMode,
     app_icon_size: f32,
     renderer: render::Renderer,
@@ -219,6 +220,7 @@ struct State {
     /// its rows and their windows, and the row under the pointer.
     windows: HWND,
     windows_renderer: render::Renderer,
+    name_hook: HWINEVENTHOOK,
     windows_slot: Option<usize>,
     windows_rows: Vec<String>,
     windows_targets: Vec<isize>,
@@ -312,6 +314,8 @@ pub struct Dock {
     shared: bool,
     state: Box<StateCell>,
     hooks: Vec<HWINEVENTHOOK>,
+    autohide: Cell<bool>,
+    app_icon_size: Cell<f32>,
 }
 
 impl Dock {
@@ -341,6 +345,7 @@ impl Dock {
             backdrop: Backdrop::Acrylic,
             tint: None,
             dark: true,
+            material: None,
             window_list_mode: WindowListMode::default(),
             app_icon_size: logic::DEFAULT_APP_ICON_SIZE,
             renderer: render::Renderer::new()?,
@@ -401,6 +406,7 @@ impl Dock {
             tip_text: String::new(),
             windows: HWND::default(),
             windows_renderer: render::Renderer::new()?,
+            name_hook: HWINEVENTHOOK::default(),
             windows_slot: None,
             windows_rows: Vec::new(),
             windows_targets: Vec::new(),
@@ -449,6 +455,8 @@ impl Dock {
             shared,
             state,
             hooks: Vec::new(),
+            autohide: Cell::new(true),
+            app_icon_size: Cell::new(logic::DEFAULT_APP_ICON_SIZE),
         };
         // The flyout and tooltips are owned by the dock, so they stay above it.
         let popup = WNDCLASSEXW {
@@ -502,9 +510,7 @@ impl Dock {
         }
         EVENT_TARGET.with(|target| target.set(hwnd));
         for (first, last) in [
-            (EVENT_OBJECT_CREATE, EVENT_OBJECT_HIDE),
-            (EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_NAMECHANGE),
-            (EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE),
+            (EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE),
             (EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND),
             // Windows on other desktops are cloaked, so switching desktops changes the apps.
             (EVENT_OBJECT_CLOAKED, EVENT_OBJECT_UNCLOAKED),
@@ -778,6 +784,8 @@ impl Dock {
     }
 
     pub fn set_app_icon_size(&mut self, size: u32) {
+        self.app_icon_size
+            .set((size as f32).clamp(logic::MIN_APP_ICON_SIZE, logic::MAX_APP_ICON_SIZE));
         self.update(Some("set_app_icon_size"), move |s| {
             let size = (size as f32).clamp(logic::MIN_APP_ICON_SIZE, logic::MAX_APP_ICON_SIZE);
             s.finish_press(false);
@@ -911,6 +919,7 @@ impl Dock {
 
     /// Keeps the dock visible on the primary screen, or lets it auto-hide.
     pub fn set_autohide(&mut self, autohide: bool) {
+        self.autohide.set(autohide);
         self.update(Some("set_autohide"), move |s| {
             if s.autohide == autohide {
                 return;
@@ -928,18 +937,13 @@ impl Dock {
 
     /// Whether the dock stays on screen instead of auto-hiding.
     pub fn stays_visible(&self) -> bool {
-        // Conservatively reserve space until the menu releases the latest setting.
-        self.state.try_borrow().map(|s| !s.autohide).unwrap_or(true)
+        !self.autohide.get()
     }
 
     /// The room a dock that stays visible keeps at the bottom of the primary
     /// screen, in DIPs: its height and the margins above and below it.
     pub fn reserved_height(&self) -> f32 {
-        // Use the default reservation until the pending size can be applied.
-        let Ok(s) = self.state.try_borrow() else {
-            return DEFAULT_RESERVED_HEIGHT;
-        };
-        let scale = logic::layout_scale(s.app_icon_size);
+        let scale = logic::layout_scale(self.app_icon_size.get());
         logic::height(scale) + 2.0 * logic::margin(scale)
     }
 
@@ -969,6 +973,7 @@ impl Drop for Dock {
         if let Ok(mut s) = self.state.try_borrow_mut() {
             s.finish_press(false);
             s.listen(false);
+            s.hide_windows();
         }
         unsafe {
             for hook in self.hooks.drain(..) {
@@ -1003,6 +1008,21 @@ impl Drop for Dock {
 }
 
 impl State {
+    /// Paint directly: UpdateWindow would reenter a wndproc whose state is borrowed.
+    fn paint_now(&mut self) {
+        match self.paint(None) {
+            Ok(()) => unsafe {
+                let _ = ValidateRect(Some(self.hwnd), None);
+            },
+            Err(error) => {
+                eprintln!("Dock redraw: {error}");
+                unsafe {
+                    let _ = InvalidateRect(Some(self.hwnd), None, false);
+                }
+            }
+        }
+    }
+
     fn paint(&mut self, rt: Option<&windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget>) -> Result<()> {
         let hwnd = self.hwnd;
         let parts = self.parts();
@@ -1053,6 +1073,11 @@ impl State {
     }
 
     fn apply_material(&mut self, dark: bool, backdrop: Backdrop, tint: Option<Tint>) {
+        let key = crate::theme::MaterialKey::new(dark, backdrop, tint);
+        if self.material == Some(key) {
+            return;
+        }
+        self.material = Some(key);
         self.backdrop = backdrop;
         self.tint = tint;
         self.dark = dark;
@@ -1156,15 +1181,14 @@ impl State {
             self.radio_worker.hide();
         }
         unsafe {
-            let _ = ShowWindow(
-                self.hwnd,
-                if self.visible && (self.revealed || self.slide.is_some()) && !self.fullscreen {
-                    SW_SHOWNOACTIVATE
-                } else {
-                    SW_HIDE
-                },
-            );
-            let _ = InvalidateRect(Some(self.hwnd), None, false);
+            let was_shown = IsWindowVisible(self.hwnd).as_bool();
+            let shown = self.visible && (self.revealed || self.slide.is_some()) && !self.fullscreen;
+            let _ = ShowWindow(self.hwnd, if shown { SW_SHOWNOACTIVATE } else { SW_HIDE });
+            if shown && !was_shown {
+                self.paint_now();
+            } else {
+                let _ = InvalidateRect(Some(self.hwnd), None, false);
+            }
         }
     }
 
@@ -1611,7 +1635,14 @@ impl State {
             self.width = width;
             let y = self.top + self.slide_offset(height);
             crate::theme::shape(self.hwnd, width, height, 8.0 * layout_scale, self.dpi);
-            let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), x, y, width, height, SWP_NOACTIVATE);
+            let mut old = RECT::default();
+            let known = GetWindowRect(self.hwnd, &mut old).is_ok();
+            let resized = !known || old.right - old.left != width || old.bottom - old.top != height;
+            let flags = SWP_NOACTIVATE | if resized { SWP_NOCOPYBITS } else { SWP_NOSIZE };
+            let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), x, y, width, height, flags);
+            if resized {
+                self.paint_now();
+            }
         }
         if previous != (self.dpi, self.left, self.top, self.width, self.scroll, self.capacity) {
             self.hide_windows();
@@ -1932,6 +1963,12 @@ impl State {
 
     /// Hides the window list and forgets its windows.
     fn hide_windows(&mut self) {
+        if !self.name_hook.is_invalid() {
+            unsafe {
+                let _ = UnhookWinEvent(self.name_hook);
+            }
+            self.name_hook = HWINEVENTHOOK::default();
+        }
         self.windows_slot = None;
         self.windows_hover = None;
         self.windows_rows.clear();
@@ -1991,6 +2028,19 @@ impl State {
             return;
         }
         self.windows_hover = None;
+        if self.name_hook.is_invalid() {
+            self.name_hook = unsafe {
+                SetWinEventHook(
+                    EVENT_OBJECT_NAMECHANGE,
+                    EVENT_OBJECT_NAMECHANGE,
+                    None,
+                    Some(window_event),
+                    0,
+                    0,
+                    WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+                )
+            };
+        }
         self.layout_windows(slot, rows, targets);
     }
 
@@ -2862,7 +2912,11 @@ fn cursor_monitor(cursor: POINT) -> Option<RECT> {
 fn fullscreen_foreground(dock: HWND) -> bool {
     unsafe {
         let hwnd = GetForegroundWindow();
-        if hwnd.is_invalid() || hwnd == dock || IsIconic(hwnd).as_bool() {
+        if hwnd.is_invalid()
+            || hwnd == dock
+            || IsIconic(hwnd).as_bool()
+            || MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) != MonitorFromWindow(dock, MONITOR_DEFAULTTONEAREST)
+        {
             return false;
         }
         let mut class = [0u16; 128];
@@ -2907,12 +2961,10 @@ unsafe extern "system" fn window_event(
     if event != EVENT_SYSTEM_FOREGROUND {
         if !matches!(
             event,
-            EVENT_OBJECT_CREATE
-                | EVENT_OBJECT_DESTROY
+            EVENT_OBJECT_DESTROY
                 | EVENT_OBJECT_SHOW
                 | EVENT_OBJECT_HIDE
                 | EVENT_OBJECT_NAMECHANGE
-                | EVENT_OBJECT_LOCATIONCHANGE
                 | EVENT_OBJECT_CLOAKED
                 | EVENT_OBJECT_UNCLOAKED
         ) || object != OBJID_WINDOW.0
@@ -2935,6 +2987,12 @@ unsafe extern "system" fn window_event(
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
+        let Some(filtered) = crate::theme::filter_broadcast(msg, wp, lp) else {
+            return DefWindowProcW(hwnd, msg, wp, lp);
+        };
+        if filtered != msg {
+            return wndproc(hwnd, filtered, wp, LPARAM(0));
+        }
         let pointer = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const StateCell;
         if let Some(cell) = pointer.as_ref() {
             if cell.try_borrow_mut().is_err() {
@@ -2985,7 +3043,7 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT
             && let Ok(mut s) = (*pointer).try_borrow_mut()
         {
             match msg {
-                WM_SETTINGCHANGE | WM_POWERBROADCAST | WM_THEMECHANGED => {
+                WM_POWERBROADCAST | WM_THEMECHANGED => {
                     let dark = s.dark;
                     let (backdrop, tint) = (s.backdrop, s.tint);
                     s.apply_material(dark, backdrop, tint);

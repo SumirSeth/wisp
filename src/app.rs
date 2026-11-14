@@ -249,6 +249,7 @@ pub fn run() -> Result<()> {
             tray_icon: small_icon,
             palette: Palette::new(true, true),
             dark: true,
+            material: None,
             renderer,
             dpi: system_dpi,
             position: (0, 0),
@@ -411,6 +412,7 @@ struct Launcher {
     tray_icon: HICON,
     palette: Palette,
     dark: bool,
+    material: Option<crate::theme::MaterialKey>,
     renderer: Renderer,
     dpi: u32,
     /// Screen coordinates of the launcher's left edge and its top edge, or its
@@ -835,11 +837,16 @@ impl Launcher {
         };
         self.dark = dark;
         let tint = self.config.dock_tint();
-        // Use the dock's persistent material and color in either launcher placement.
-        self.palette = crate::theme::apply_backdrop(self.hwnd, dark, self.config.backdrop, true, tint);
+        let key = crate::theme::MaterialKey::new(dark, self.config.backdrop, tint);
         if let Some(dock) = &mut self.dock {
             dock.apply_theme(dark, self.config.backdrop, tint);
         }
+        if self.material == Some(key) {
+            return;
+        }
+        self.material = Some(key);
+        // Use the dock's persistent material and color in either launcher placement.
+        self.palette = crate::theme::apply_backdrop(self.hwnd, dark, self.config.backdrop, true, tint);
         self.invalidate();
     }
 
@@ -2532,6 +2539,12 @@ fn replay_pending_messages() {
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let Some(filtered) = (unsafe { crate::theme::filter_broadcast(msg, wparam, lparam) }) else {
+        return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+    };
+    if filtered != msg {
+        return unsafe { wndproc(hwnd, filtered, wparam, LPARAM(0)) };
+    }
     // Reload can replace/drop Dock, and quit destroys it. A standalone dock menu
     // borrows State without borrowing Launcher, so delay ownership changes too.
     if matches!(msg, WM_APP_RELOAD | WM_APP_QUIT)
@@ -2954,7 +2967,6 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
             }
             with_launcher(|l| {
                 l.on_taskbar_message(msg);
-                l.apply_theme();
             });
         }
         WM_DISPLAYCHANGE | taskbar::WM_TASKBAR_SHOW | taskbar::WM_RECOVERY_DONE => {

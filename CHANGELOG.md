@@ -19,6 +19,10 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ### Fixes
 
+- Fullscreen apps on another screen no longer hide the dock, and dragging windows no longer makes it refresh. (#PR)
+
+- The dock redraws at once after changing icon size or turning autohide off. (#PR)
+
 - Wisp no longer quits, and the dock no longer gets stuck, when the dock changes while one of its menus is open. A crash now leaves a note in `wisp.log`. (#PR, fixes #91)
 
 - Hibernate from the launcher when the PC supports hibernation and has a hibernation file. (#87, fixes #83)
