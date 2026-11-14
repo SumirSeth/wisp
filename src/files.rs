@@ -13,6 +13,7 @@ mod everything;
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
 use std::time::{Duration, Instant};
 
@@ -87,6 +88,13 @@ struct Stop;
 
 pub struct FileSearch {
     messages: Sender<Message>,
+    forget: Arc<AtomicBool>,
+}
+
+/// Icons cached for one file (programs, shortcuts), not for a whole file type.
+pub fn is_per_file_icon(key: &str) -> bool {
+    key.strip_prefix("file:")
+        .is_some_and(|rest| !rest.starts_with('.') && rest != "<folder>")
 }
 
 impl FileSearch {
@@ -94,6 +102,8 @@ impl FileSearch {
     pub fn spawn(hwnd: HWND, notify_msg: u32, results: Sender<FileResults>, icon_size: i32) -> FileSearch {
         let (messages, rx) = channel();
         let replies = messages.clone();
+        let forget = Arc::new(AtomicBool::new(false));
+        let worker_forget = forget.clone();
         let hwnd = hwnd.0 as isize;
         std::thread::Builder::new()
             .name("file search".into())
@@ -106,11 +116,17 @@ impl FileSearch {
                     notify,
                     icon_size,
                     icons_sent: HashSet::new(),
+                    forget: worker_forget,
                 };
                 worker(rx, replies, output)
             })
             .expect("could not start file search thread");
-        FileSearch { messages }
+        FileSearch { messages, forget }
+    }
+
+    /// The UI dropped its per-file icons: send them again when they're needed.
+    pub fn forget_file_icons(&self) {
+        self.forget.store(true, Ordering::Release);
     }
 
     /// Searches file names for `query`. `exclude` lists folder names to skip.
@@ -345,12 +361,16 @@ struct Output<F: Fn()> {
     notify: F,
     icon_size: i32,
     icons_sent: HashSet<String>,
+    forget: Arc<AtomicBool>,
 }
 
 impl<F: Fn()> Output<F> {
     /// Sends `hits`, then the icons the UI doesn't have yet. False once the UI
     /// is gone.
     fn send(&mut self, query: &str, hits: Vec<FileHit>) -> bool {
+        if self.forget.swap(false, Ordering::AcqRel) {
+            self.icons_sent.retain(|key| !is_per_file_icon(key));
+        }
         let missing: Vec<(String, String)> = hits
             .iter()
             .filter(|hit| !self.icons_sent.contains(&hit.icon_key))
@@ -680,6 +700,14 @@ fn sql(words: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn per_file_icons_are_programs_and_shortcuts_not_types() {
+        assert!(is_per_file_icon(r"file:c:\tools\app.exe"));
+        assert!(!is_per_file_icon("file:.pdf"));
+        assert!(!is_per_file_icon("file:<folder>"));
+        assert!(!is_per_file_icon("Microsoft.WindowsTerminal_8wekyb3d8bbwe!App"));
+    }
 
     /// Queries the real Windows Search index through the worker thread.
     /// Needs the Windows Search service, so CI skips it:
