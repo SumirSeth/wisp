@@ -54,19 +54,19 @@ use crate::indexer::{AppEntry, IconPixels};
 use crate::theme::{Palette, Tint};
 use crate::tray_host::{self, Action, TrayHost};
 
-pub const WM_SHOW_LAUNCHER: u32 = WM_APP + 20;
-pub(crate) const WM_DOCK_WAKE: u32 = WM_APP + 28;
-pub(crate) const WM_DOCK_DRAIN: u32 = WM_APP + 27;
-const WM_ARTWORK: u32 = WM_APP + 29;
-const WM_REFRESH: u32 = WM_APP + 21;
-/// The tray host's icons changed.
-const WM_TRAY_CHANGED: u32 = WM_APP + 22;
+use crate::messages::WM_ARTWORK;
+use crate::messages::WM_CLOSE_FLYOUT;
+pub(crate) use crate::messages::WM_DOCK_DRAIN;
 /// Asks the owner to show the Windows taskbar for a moment, for icons the
 /// dock lacks.
-pub const WM_DOCK_SHOW_TASKBAR: u32 = WM_APP + 23;
-pub const WM_SHOW_NOW: u32 = WM_APP + 25;
-const WM_RADIOS: u32 = WM_APP + 26;
-const WM_CLOSE_FLYOUT: u32 = WM_APP + 24;
+pub use crate::messages::WM_DOCK_SHOW_TASKBAR;
+pub(crate) use crate::messages::WM_DOCK_WAKE;
+use crate::messages::WM_RADIOS;
+use crate::messages::WM_REFRESH;
+pub use crate::messages::WM_SHOW_LAUNCHER;
+pub use crate::messages::WM_SHOW_NOW;
+/// The tray host's icons changed.
+use crate::messages::WM_TRAY_CHANGED;
 /// Shows a notification icon's tooltip after a short hover.
 const TIP_TIMER: usize = 104;
 const TIP_MS: u32 = 450;
@@ -346,6 +346,7 @@ impl From<&crate::config::Config> for DockConfig {
 pub struct Dock {
     hwnd: HWND,
     shared: bool,
+    popups: Vec<HWND>,
     state: Box<StateCell>,
     hooks: Vec<HWINEVENTHOOK>,
     autohide: Cell<bool>,
@@ -488,6 +489,7 @@ impl Dock {
         let mut dock = Self {
             hwnd,
             shared,
+            popups: Vec::new(),
             state,
             hooks: Vec::new(),
             autohide: Cell::new(true),
@@ -534,6 +536,7 @@ impl Dock {
                     Some((&raw mut *dock.state).cast()),
                 )?
             };
+            dock.popups.push(window);
             let mut s = dock.state.borrow_mut();
             if s.flyout.is_invalid() {
                 s.flyout = window;
@@ -987,18 +990,16 @@ impl Drop for Dock {
             let _ = KillTimer(Some(self.hwnd), WINDOWS_TIMER);
             let _ = KillTimer(Some(self.hwnd), WINDOWS_HIDE_TIMER);
             // Remove the pointer before synchronous destruction can reenter the wndproc.
-            let s = self.state.borrow();
-            for hwnd in [s.flyout, s.tip, s.windows, self.hwnd] {
+            for hwnd in self.popups.iter().copied().chain(std::iter::once(self.hwnd)) {
                 if !hwnd.is_invalid() {
                     SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                 }
             }
-            drop(s);
             // Destroys the owned flyout, tooltip and window list too.
             if self.shared {
-                let _ = DestroyWindow(self.state.borrow().flyout);
-                let _ = DestroyWindow(self.state.borrow().tip);
-                let _ = DestroyWindow(self.state.borrow().windows);
+                for hwnd in &self.popups {
+                    let _ = DestroyWindow(*hwnd);
+                }
             } else {
                 let _ = DestroyWindow(self.hwnd);
             }
@@ -1184,6 +1185,17 @@ impl State {
             let shown = self.visible && (self.revealed || self.slide.is_some()) && !self.fullscreen;
             let _ = ShowWindow(self.hwnd, if shown { SW_SHOWNOACTIVATE } else { SW_HIDE });
             if shown && !was_shown {
+                // Layout no longer reorders the dock; come back above other
+                // topmost windows only when it appears.
+                let _ = SetWindowPos(
+                    self.hwnd,
+                    Some(HWND_TOPMOST),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
                 self.paint_now();
             } else {
                 let _ = InvalidateRect(Some(self.hwnd), None, false);
@@ -1634,12 +1646,13 @@ impl State {
             self.left = x;
             self.width = width;
             let y = self.top + self.slide_offset(height);
-            crate::theme::shape(self.hwnd, width, height, 8.0 * layout_scale, self.dpi);
             let mut old = RECT::default();
             let known = GetWindowRect(self.hwnd, &mut old).is_ok();
             let resized = !known || old.right - old.left != width || old.bottom - old.top != height;
-            let flags = SWP_NOACTIVATE | if resized { SWP_NOCOPYBITS } else { SWP_NOSIZE };
-            let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), x, y, width, height, flags);
+            let flags = SWP_NOACTIVATE | SWP_NOZORDER | if resized { SWP_NOCOPYBITS } else { SWP_NOSIZE };
+            if resized || old.left != x || old.top != y {
+                let _ = SetWindowPos(self.hwnd, None, x, y, width, height, flags);
+            }
             if resized {
                 self.paint_now();
             }
@@ -2785,7 +2798,7 @@ impl State {
                 let names: Vec<_> = self.order.iter().map(|section| section.name()).collect();
                 match crate::config::Config::save_order(&names) {
                     Ok(()) => unsafe {
-                        let _ = PostMessageW(Some(self.owner), WM_APP + 6, WPARAM(0), LPARAM(0));
+                        let _ = PostMessageW(Some(self.owner), crate::messages::WM_APP_RELOAD, WPARAM(0), LPARAM(0));
                     },
                     Err(error) => {
                         eprintln!("Dock order: {error}");
@@ -2993,6 +3006,21 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         if filtered != msg {
             return wndproc(hwnd, filtered, wp, LPARAM(0));
         }
+        if msg == WM_NCACTIVATE {
+            return DefWindowProcW(hwnd, msg, WPARAM(1), LPARAM(-1));
+        }
+        if msg == WM_MOUSEACTIVATE {
+            return LRESULT(MA_NOACTIVATE as isize);
+        }
+        if msg == WM_NCCALCSIZE && wp.0 != 0 {
+            return LRESULT(0);
+        }
+        if msg == WM_NCHITTEST {
+            return LRESULT(HTCLIENT as isize);
+        }
+        if msg == WM_ERASEBKGND {
+            return LRESULT(1);
+        }
         let pointer = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const StateCell;
         if let Some(cell) = pointer.as_ref() {
             if cell.try_borrow_mut().is_err() {
@@ -3022,21 +3050,6 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT
         if msg == WM_NCCREATE {
             let create = &*(lp.0 as *const CREATESTRUCTW);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, create.lpCreateParams as isize);
-        }
-        if msg == WM_NCACTIVATE {
-            return DefWindowProcW(hwnd, msg, WPARAM(1), LPARAM(-1));
-        }
-        if msg == WM_MOUSEACTIVATE {
-            return LRESULT(MA_NOACTIVATE as isize);
-        }
-        if msg == WM_NCCALCSIZE && wp.0 != 0 {
-            return LRESULT(0);
-        }
-        if msg == WM_NCHITTEST {
-            return LRESULT(HTCLIENT as isize);
-        }
-        if msg == WM_ERASEBKGND {
-            return LRESULT(1);
         }
         let pointer = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const StateCell;
         if !pointer.is_null()
@@ -3093,6 +3106,7 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT
                     return LRESULT(0);
                 }
                 WM_TIMER if wp.0 == WINDOWS_TIMER => {
+                    s.prefetch_jump_list();
                     s.show_windows();
                     return LRESULT(0);
                 }
@@ -3156,7 +3170,6 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT
                     let hover_part = s.hit_part(lp);
                     if s.hover != hover || s.hover_part != hover_part {
                         s.hover = hover;
-                        s.prefetch_jump_list();
                         s.animate_hover();
                         s.hover_part = hover_part;
                         let _ = InvalidateRect(Some(hwnd), None, false);
@@ -3541,6 +3554,16 @@ unsafe fn popup_wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
         }
         drop(s);
         DefWindowProcW(hwnd, msg, wp, lp)
+    }
+}
+
+impl Drop for State {
+    fn drop(&mut self) {
+        if !self.name_hook.is_invalid() {
+            unsafe {
+                let _ = UnhookWinEvent(self.name_hook);
+            }
+        }
     }
 }
 

@@ -1,6 +1,7 @@
 //! Small shared update state. TOML keeps JSON and network code out of Wisp.
 use std::{io::Write, path::Path};
 
+/// Shared with the settings app, so it's defined here; listed in `messages`.
 pub const MESSAGE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 9;
 
 #[derive(Default)]

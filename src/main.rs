@@ -20,6 +20,7 @@ mod win_key;
 #[allow(dead_code)]
 mod install;
 mod launch;
+mod messages;
 mod morph;
 mod render;
 mod search;

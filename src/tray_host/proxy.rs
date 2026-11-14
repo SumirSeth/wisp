@@ -22,7 +22,7 @@ use super::{OwnedIcon, Shared, lock};
 pub const PROXY_PROP: PCWSTR = w!("Wisp.TrayProxy");
 const CONTROL_CLASS: PCWSTR = w!("Wisp.TrayHost");
 const TRAY_CLASS: PCWSTR = w!("Shell_TrayWnd");
-pub(super) const WM_OUTRANK: u32 = WM_APP + 1;
+pub(super) use crate::messages::WM_OUTRANK;
 /// Checks Explorer, our FindWindow ordering and icon owners.
 const CHECK_TIMER: usize = 1;
 const CHECK_MS: u32 = 1000;

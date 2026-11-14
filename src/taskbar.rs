@@ -20,8 +20,8 @@ use windows::core::{BOOL, Error, HSTRING, Result, w};
 mod state;
 use state::Rect;
 
-pub const WM_TASKBAR_SHOW: u32 = WM_APP + 40;
-pub const WM_RECOVERY_DONE: u32 = WM_APP + 41;
+pub use crate::messages::WM_RECOVERY_DONE;
+pub use crate::messages::WM_TASKBAR_SHOW;
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 static TARGET: AtomicUsize = AtomicUsize::new(0);
