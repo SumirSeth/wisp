@@ -1309,6 +1309,13 @@ impl Drop for Dock {
 impl State {
     /// Paint directly: UpdateWindow would reenter a wndproc whose state is borrowed.
     fn paint_now(&mut self) {
+        if self.suspended {
+            // A shared dock's window is the open launcher's: let it paint.
+            unsafe {
+                let _ = InvalidateRect(Some(self.hwnd), None, false);
+            }
+            return;
+        }
         match self.paint(None) {
             Ok(()) => unsafe {
                 let _ = ValidateRect(Some(self.hwnd), None);
