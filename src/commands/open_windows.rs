@@ -93,40 +93,90 @@ pub fn process_path(pid: u32) -> String {
 /// Brings the window to the front, restoring it if minimized. Works while the
 /// launcher is the foreground window.
 pub fn focus(hwnd: isize) -> Result<(), String> {
-    let hwnd = HWND(hwnd as _);
+    cancel_focus();
+    let target = HWND(hwnd as _);
     unsafe {
-        if !IsWindow(Some(hwnd)).as_bool() {
+        if !IsWindow(Some(target)).as_bool() {
             return Err("The window was closed.".into());
         }
-        if IsIconic(hwnd).as_bool() {
-            let _ = ShowWindow(hwnd, SW_RESTORE);
+        let mut pid = 0;
+        GetWindowThreadProcessId(target, Some(&mut pid));
+        if IsIconic(target).as_bool() {
+            ShowWindowAsync(target, SW_RESTORE).ok().map_err(|e| e.message())?;
         }
-        if GetForegroundWindow() == hwnd {
+        let _ = SetForegroundWindow(target);
+        if GetForegroundWindow() == target {
             return Ok(());
         }
-        if SetForegroundWindow(hwnd).as_bool() && wait_for_foreground(hwnd) {
-            return Ok(());
+        dismiss_shell_flyout(GetForegroundWindow());
+        let timer = SetTimer(None, 0, 20, Some(focus_tick));
+        if timer == 0 {
+            return Err("Could not schedule window activation.".into());
         }
-        // A shell flyout such as the Action Center holds the foreground from
-        // an AppContainer, where Windows refuses both a plain activation and
-        // thread-input attachment. Escape closes it, as the taskbar's own
-        // click does, and then the app can come forward.
-        let foreground = GetForegroundWindow();
-        if !dismiss_shell_flyout(foreground) {
-            return Err("Windows did not switch to the window.".into());
-        }
-        for _ in 0..20 {
-            if GetForegroundWindow() != foreground {
-                break;
+        PENDING_FOCUS.with(|pending| {
+            *pending.borrow_mut() = Some(FocusRequest {
+                hwnd,
+                pid,
+                timer,
+                started: std::time::Instant::now(),
+                generation: FOCUS_GENERATION.with(|g| g.get()),
+            })
+        });
+    }
+    Ok(())
+}
+
+struct FocusRequest {
+    hwnd: isize,
+    pid: u32,
+    timer: usize,
+    started: std::time::Instant,
+    generation: u64,
+}
+thread_local! {
+    static FOCUS_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static PENDING_FOCUS: std::cell::RefCell<Option<FocusRequest>> = const { std::cell::RefCell::new(None) };
+}
+fn cancel_focus() {
+    FOCUS_GENERATION.with(|g| g.set(g.get().wrapping_add(1)));
+    PENDING_FOCUS.with(|pending| {
+        if let Some(request) = pending.borrow_mut().take() {
+            unsafe {
+                let _ = KillTimer(None, request.timer);
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        let _ = SetForegroundWindow(hwnd);
-        if wait_for_foreground(hwnd) {
-            Ok(())
+    });
+}
+unsafe extern "system" fn focus_tick(_: HWND, _: u32, timer: usize, _: u32) {
+    let request = PENDING_FOCUS.with(|pending| {
+        let mut pending = pending.borrow_mut();
+        if pending.as_ref().is_some_and(|r| r.timer == timer) {
+            pending.take()
         } else {
-            Err("Windows did not switch to the window.".into())
+            None
         }
+    });
+    let Some(request) = request else { return };
+    let target = HWND(request.hwnd as _);
+    let mut pid = 0;
+    unsafe {
+        GetWindowThreadProcessId(target, Some(&mut pid));
+    }
+    let done = pid != request.pid
+        || !unsafe { IsWindow(Some(target)) }.as_bool()
+        || unsafe { GetForegroundWindow() } == target
+        || request.started.elapsed() >= std::time::Duration::from_millis(600);
+    if !done {
+        unsafe {
+            let _ = SetForegroundWindow(target);
+        }
+    }
+    if done || FOCUS_GENERATION.with(|g| g.get()) != request.generation {
+        unsafe {
+            let _ = KillTimer(None, timer);
+        }
+    } else {
+        PENDING_FOCUS.with(|pending| *pending.borrow_mut() = Some(request));
     }
 }
 
@@ -142,22 +192,9 @@ pub fn minimize(hwnd: isize) -> Result<(), String> {
         if !IsWindow(Some(hwnd)).as_bool() {
             return Err("The window was closed.".into());
         }
-        let _ = ShowWindow(hwnd, SW_MINIMIZE);
+        cancel_focus();
+        ShowWindowAsync(hwnd, SW_MINIMIZE).ok().map_err(|e| e.message())?;
         Ok(())
-    }
-}
-
-/// Waits briefly for a requested activation to land; Windows reports it a
-/// moment after the call while the flyout closes.
-fn wait_for_foreground(hwnd: HWND) -> bool {
-    unsafe {
-        for _ in 0..20 {
-            if GetForegroundWindow() == hwnd {
-                return true;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        GetForegroundWindow() == hwnd
     }
 }
 
