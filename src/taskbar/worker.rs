@@ -160,14 +160,25 @@ impl TaskbarWorker {
     pub fn shutdown(self) -> Result<()> {
         let (reply, answer) = channel();
         self.send(Job::Restore(reply));
-        match answer.recv_timeout(Duration::from_secs(5)) {
-            Ok(result) => result,
-            // The watchdog restores the taskbar if Wisp ends first.
-            Err(_) => Err(Error::new(
-                windows::Win32::Foundation::E_FAIL,
-                "The taskbar thread did not answer",
-            )),
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            match answer.recv_timeout(Duration::from_millis(10)) {
+                Ok(result) => return result,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            // Restoring the work area broadcasts WM_SETTINGCHANGE and waits for
+            // every window, ours too: answer sent messages while waiting.
+            unsafe {
+                let mut msg = MSG::default();
+                let _ = PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE);
+            }
         }
+        // The watchdog restores the taskbar if Wisp ends first.
+        Err(Error::new(
+            windows::Win32::Foundation::E_FAIL,
+            "The taskbar thread did not answer",
+        ))
     }
 }
 
