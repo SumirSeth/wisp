@@ -308,6 +308,35 @@ pub(crate) fn retain_message(msg: u32) -> bool {
     )
 }
 
+/// Dock settings prepared before entering the state mutation.
+#[derive(Clone, Copy)]
+pub struct DockConfig {
+    placement: logic::StatusPlacement,
+    order: [logic::Section; 9],
+    size: f32,
+    mode: WindowListMode,
+    search: bool,
+    autohide: bool,
+}
+impl From<&crate::config::Config> for DockConfig {
+    fn from(config: &crate::config::Config) -> Self {
+        let placement = logic::StatusPlacement::new(&config.dock_status_group, &config.dock_status_icons);
+        let order = logic::section_order(config.dock_order.iter().map(String::as_str));
+        let size = (config.dock_icon_size as f32).clamp(logic::MIN_APP_ICON_SIZE, logic::MAX_APP_ICON_SIZE);
+        let mode = config.window_list;
+        let search = config.dock_search_button;
+        let autohide = config.dock_autohide;
+        Self {
+            placement,
+            order,
+            size,
+            mode,
+            search,
+            autohide,
+        }
+    }
+}
+
 /// Own on the launcher's message-loop thread. Never borrows Launcher from its wndproc.
 pub struct Dock {
     hwnd: HWND,
@@ -717,86 +746,77 @@ impl Dock {
         let apps = apps.to_vec();
         let icons = icons.clone();
         self.update(Some("set_apps"), move |s| {
-            s.apps = apps;
-            s.migrate_pins();
-            for (id, pixels) in &icons {
-                s.icons.entry(id.clone()).or_insert_with(|| pixels.clone());
+            let mut changed = s.apps != apps;
+            if changed {
+                s.apps = apps;
+                s.migrate_pins();
             }
-            s.refresh();
+            for (id, pixels) in &icons {
+                if !s.icons.contains_key(id) {
+                    s.icons.insert(id.clone(), pixels.clone());
+                    changed = true;
+                }
+            }
+            if changed {
+                s.refresh();
+            }
         });
     }
 
-    pub fn set_status_placement(&mut self, group: &[String], icons: &[String]) {
-        let group = group.to_vec();
-        let icons = icons.to_vec();
-        self.update(Some("set_status_placement"), move |s| {
-            let placement = logic::StatusPlacement::new(&group, &icons);
-            if s.status_placement == placement {
+    pub fn configure(&mut self, config: &DockConfig) {
+        let DockConfig {
+            placement,
+            order,
+            size,
+            mode,
+            search,
+            autohide,
+        } = *config;
+        self.app_icon_size.set(size);
+        self.autohide.set(autohide);
+        self.update(Some("configure"), move |s| {
+            if s.status_placement == placement
+                && s.order == order
+                && s.app_icon_size == size
+                && s.window_list_mode == mode
+                && s.search_button == search
+                && s.autohide == autohide
+            {
                 return;
             }
             s.finish_press(false);
-            s.radio_worker.hide();
-            s.radios = status::Radios::default();
+            s.hide_tip();
+            s.hide_windows();
+            s.hover = None;
+            s.hover_part = None;
+            if s.status_placement != placement {
+                s.radio_worker.hide();
+                s.radios = status::Radios::default();
+            }
             s.status_placement = placement;
-            s.hide_tip();
-            s.hide_windows();
-            s.hover = None;
-            s.hover_part = None;
-            s.update_status();
-            s.place();
-            unsafe {
-                let _ = InvalidateRect(Some(s.hwnd), None, false);
+            s.order = order;
+            s.app_icon_size = size;
+            s.window_list_mode = mode;
+            s.search_button = search;
+            s.autohide = autohide;
+            s.away = 0;
+            if !autohide && s.visible && !s.suspended {
+                s.revealed = true;
             }
-        });
-    }
-
-    pub fn set_order(&mut self, names: &[String]) {
-        let names = names.to_vec();
-        self.update(Some("set_order"), move |s| {
-            s.finish_press(false);
-            s.order = logic::section_order(names.iter().map(String::as_str));
-            s.hide_tip();
-            s.hide_windows();
-            s.hover = None;
-            s.hover_part = None;
-            s.place();
-            unsafe {
-                let _ = InvalidateRect(Some(s.hwnd), None, false);
-            }
+            s.refresh();
         });
     }
 
     pub fn reload_pins(&mut self) {
         self.update(Some("reload_pins"), move |s| {
             s.finish_press(false);
-            s.pinned = load_pins();
-            s.migrate_pins();
-            s.update_pins();
-        });
-    }
-
-    pub fn set_window_list_mode(&mut self, mode: WindowListMode) {
-        self.update(Some("set_window_list_mode"), move |s| {
-            s.finish_press(false);
-            s.window_list_mode = mode;
-            s.hide_windows();
-        });
-    }
-
-    pub fn set_app_icon_size(&mut self, size: u32) {
-        self.app_icon_size
-            .set((size as f32).clamp(logic::MIN_APP_ICON_SIZE, logic::MAX_APP_ICON_SIZE));
-        self.update(Some("set_app_icon_size"), move |s| {
-            let size = (size as f32).clamp(logic::MIN_APP_ICON_SIZE, logic::MAX_APP_ICON_SIZE);
-            s.finish_press(false);
-            if s.app_icon_size == size {
+            let pins = load_pins();
+            if pins == s.pinned {
                 return;
             }
-            s.app_icon_size = size;
-            s.place();
-            unsafe {
-                let _ = InvalidateRect(Some(s.hwnd), None, false);
-            }
+            s.pinned = pins;
+            s.migrate_pins();
+            s.update_pins();
         });
     }
 
@@ -851,6 +871,9 @@ impl Dock {
     /// bottom edge of a screen.
     pub fn show(&mut self) {
         self.update(Some("show"), move |s| {
+            if s.visible && !s.suspended {
+                return;
+            }
             s.suspended = false;
             s.visible = true;
             // A dock that stays visible comes back in place, without sliding.
@@ -898,43 +921,6 @@ impl Dock {
             s.sync_tray();
         });
     }
-    /// Shows or hides the search button, the first slot of the dock.
-    pub fn set_search_button(&mut self, shown: bool) {
-        self.update(Some("set_search_button"), move |s| {
-            if s.search_button == shown {
-                return;
-            }
-            s.search_button = shown;
-            s.finish_press(false);
-            s.hide_tip();
-            s.hide_windows();
-            s.hover = None;
-            s.hover_part = None;
-            s.place();
-            unsafe {
-                let _ = InvalidateRect(Some(s.hwnd), None, false);
-            }
-        });
-    }
-
-    /// Keeps the dock visible on the primary screen, or lets it auto-hide.
-    pub fn set_autohide(&mut self, autohide: bool) {
-        self.autohide.set(autohide);
-        self.update(Some("set_autohide"), move |s| {
-            if s.autohide == autohide {
-                return;
-            }
-            s.autohide = autohide;
-            if !autohide && s.visible && !s.suspended && !s.revealed {
-                s.reveal();
-            } else {
-                // Move to the primary screen, or start the hide countdown.
-                s.away = 0;
-                s.place();
-            }
-        });
-    }
-
     /// Whether the dock stays on screen instead of auto-hiding.
     pub fn stays_visible(&self) -> bool {
         !self.autohide.get()
@@ -1095,7 +1081,7 @@ impl State {
         if self.dragging() {
             return;
         }
-        if self.suspended {
+        if self.suspended || !self.visible {
             return;
         }
         // Other apps' windows change constantly. A hidden dock skips the window

@@ -14,7 +14,7 @@ use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 use windows::core::{HSTRING, Interface, PWSTR, Result};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AppEntry {
     pub name: String,
     /// Lowercase program names, computed once by the indexer.

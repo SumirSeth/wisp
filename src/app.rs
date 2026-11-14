@@ -686,15 +686,10 @@ impl Launcher {
         }
         if let Some(dock) = &mut self.dock {
             dock.pace_frames();
-            dock.set_status_placement(&self.config.dock_status_group, &self.config.dock_status_icons);
             dock.set_apps(&self.apps, &self.icons);
-            dock.set_window_list_mode(self.config.window_list);
-            dock.set_app_icon_size(self.config.dock_icon_size as u32);
-            dock.set_order(&self.config.dock_order);
-            dock.set_search_button(self.config.dock_search_button);
+            dock.configure(&dock::DockConfig::from(&self.config));
             // Notification icons need a home while the taskbar is hidden.
             dock.set_tray(self.taskbar.as_ref().is_some_and(TaskbarHider::is_active));
-            dock.set_autohide(self.config.dock_autohide);
             if self.visible { dock.hide() } else { dock.show() }
         }
         self.sync_reserve();
