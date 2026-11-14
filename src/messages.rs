@@ -31,6 +31,8 @@ pub const WM_RADIOS: u32 = WM_APP + 26;
 pub const WM_DOCK_DRAIN: u32 = WM_APP + 27;
 pub const WM_DOCK_WAKE: u32 = WM_APP + 28;
 pub const WM_ARTWORK: u32 = WM_APP + 29;
+/// The volume, mute or default output device changed.
+pub const WM_DOCK_STATUS: u32 = WM_APP + 30;
 pub const WM_TASKBAR_SHOW: u32 = WM_APP + 40;
 pub const WM_RECOVERY_DONE: u32 = WM_APP + 41;
 /// The dock space's app bar callback.
@@ -65,6 +67,7 @@ mod tests {
             WM_DOCK_DRAIN,
             WM_DOCK_WAKE,
             WM_ARTWORK,
+            WM_DOCK_STATUS,
             WM_TASKBAR_SHOW,
             WM_RECOVERY_DONE,
             WM_APPBAR,

@@ -10,10 +10,15 @@
 use windows::{
     Win32::{
         Devices::FunctionDiscovery::PKEY_Device_FriendlyName,
-        Media::Audio::{Endpoints::IAudioEndpointVolume, *},
+        Foundation::{HWND, LPARAM, WPARAM},
+        Media::Audio::{
+            Endpoints::{IAudioEndpointVolume, IAudioEndpointVolumeCallback, IAudioEndpointVolumeCallback_Impl},
+            *,
+        },
         System::Com::{
             CLSCTX_ALL, CoCreateInstance, CoTaskMemFree, STGM_READ, StructuredStorage::PropVariantToStringAlloc,
         },
+        UI::WindowsAndMessaging::PostMessageW,
     },
     core::{GUID, HRESULT, HSTRING, IUnknown, IUnknown_Vtbl, PCWSTR, interface},
 };
@@ -97,6 +102,36 @@ pub fn state() -> Option<State> {
     }
 }
 
+/// Where to post a message when the volume, mute or default output changes.
+static LEVEL_TARGET: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static LEVEL_MESSAGE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Posts `msg` to `hwnd` whenever the level [`level`] reads may have changed:
+/// volume keys, other apps, or a new default device. Call on the thread that
+/// calls [`level`].
+pub fn notify_level_changes(hwnd: HWND, msg: u32) {
+    use std::sync::atomic::Ordering;
+    LEVEL_MESSAGE.store(msg, Ordering::Release);
+    LEVEL_TARGET.store(hwnd.0 as usize, Ordering::Release);
+    // Registers the callbacks on the current endpoint.
+    let _ = level();
+}
+
+fn post_level_change() {
+    use std::sync::atomic::Ordering;
+    let hwnd = LEVEL_TARGET.load(Ordering::Acquire);
+    if hwnd != 0 {
+        unsafe {
+            let _ = PostMessageW(
+                Some(HWND(hwnd as _)),
+                LEVEL_MESSAGE.load(Ordering::Acquire),
+                WPARAM(0),
+                LPARAM(0),
+            );
+        }
+    }
+}
+
 /// The volume (0 to 100) and mute, without the device name that `state` reads,
 /// for frequent polling. `None` if there is no output device.
 pub fn level() -> Option<(u32, bool)> {
@@ -130,6 +165,8 @@ struct LevelReader {
     callback: IMMNotificationClient,
     dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
     volume: Option<IAudioEndpointVolume>,
+    /// Told about volume and mute changes on `volume`.
+    changed: IAudioEndpointVolumeCallback,
 }
 
 impl LevelReader {
@@ -145,6 +182,7 @@ impl LevelReader {
             callback,
             dirty,
             volume: None,
+            changed: VolumeChanged.into(),
         })
     }
 
@@ -152,11 +190,17 @@ impl LevelReader {
         use std::sync::atomic::Ordering;
         unsafe {
             if self.dirty.swap(false, Ordering::AcqRel) {
+                if let Some(old) = self.volume.take() {
+                    let _ = old.UnregisterControlChangeNotify(&self.changed);
+                }
                 self.volume = self
                     .enumerator
                     .GetDefaultAudioEndpoint(eRender, eConsole)
-                    .and_then(|device| device.Activate(CLSCTX_ALL, None))
+                    .and_then(|device| device.Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None))
                     .ok();
+                if let Some(volume) = &self.volume {
+                    let _ = volume.RegisterControlChangeNotify(&self.changed);
+                }
             }
             let Some(volume) = self.volume.as_ref() else {
                 // Retry transient service/activation failures just as the uncached path did.
@@ -178,6 +222,9 @@ impl Drop for LevelReader {
     fn drop(&mut self) {
         unsafe {
             let _ = self.enumerator.UnregisterEndpointNotificationCallback(&self.callback);
+            if let Some(volume) = &self.volume {
+                let _ = volume.UnregisterControlChangeNotify(&self.changed);
+            }
         }
     }
 }
@@ -188,6 +235,17 @@ struct DeviceChanged(std::sync::Arc<std::sync::atomic::AtomicBool>);
 impl DeviceChanged_Impl {
     fn changed(&self) -> windows::core::Result<()> {
         self.0.store(true, std::sync::atomic::Ordering::Release);
+        post_level_change();
+        Ok(())
+    }
+}
+
+#[windows::core::implement(IAudioEndpointVolumeCallback)]
+struct VolumeChanged;
+
+impl IAudioEndpointVolumeCallback_Impl for VolumeChanged_Impl {
+    fn OnNotify(&self, _: *mut AUDIO_VOLUME_NOTIFICATION_DATA) -> windows::core::Result<()> {
+        post_level_change();
         Ok(())
     }
 }
