@@ -473,6 +473,11 @@ struct Scope {
     query: String,
 }
 
+/// The release notes of a version on GitHub.
+fn release_notes(version: &str) -> String {
+    format!("https://github.com/SumirSeth/wisp/releases/tag/v{version}")
+}
+
 impl Launcher {
     fn start(&mut self) {
         self.sync_shell();
@@ -1301,6 +1306,17 @@ impl Launcher {
                 )
                 .glyph("\u{E777}")
                 .verb("Update"),
+            );
+            self.base_results.insert(
+                1,
+                ResultItem::new(
+                    Kind::Command,
+                    format!("What's new in Wisp {version}"),
+                    "Open the release notes",
+                    Action::Open(release_notes(version)),
+                )
+                .glyph("\u{E946}")
+                .verb("Open"),
             );
         }
         if let Some(armed) = &self.armed {
