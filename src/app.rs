@@ -84,6 +84,40 @@ thread_local! {
     static DEFERRED: Cell<u8> = const { Cell::new(0) };
     static PENDING_MESSAGES: RefCell<PendingMessages> = RefCell::new(crate::deferred::Queue::new());
     static DRAGGING: Cell<bool> = const { Cell::new(false) };
+    static PACER: RefCell<Option<Pacer>> = const { RefCell::new(None) };
+}
+
+/// The frame pacing thread posts WM_APP_FRAME once per display refresh
+/// while `active`, and only one at a time: `pending` is cleared as each
+/// frame is handled, also inside a menu's or a drag's modal loop.
+struct Pacer {
+    active: Arc<AtomicBool>,
+    pending: Arc<AtomicBool>,
+    thread: std::thread::Thread,
+}
+
+/// Starts frames for an animation that just began.
+fn request_frames() {
+    PACER.with(|pacer| {
+        if let Some(pacer) = pacer.borrow().as_ref() {
+            pacer.active.store(true, Ordering::Release);
+            pacer.thread.unpark();
+        }
+    });
+}
+
+/// Keeps frames coming while anything animates, and stops them after.
+fn sync_frames() {
+    let animating =
+        with_launcher(|l| l.morph.is_some() || l.dock.as_ref().is_some_and(Dock::animating)).unwrap_or(false);
+    PACER.with(|pacer| {
+        if let Some(pacer) = pacer.borrow().as_ref() {
+            pacer.active.store(animating, Ordering::Release);
+            if animating {
+                pacer.thread.unpark();
+            }
+        }
+    });
 }
 
 /// Returns `None` if the launcher is already borrowed. Windows can send
@@ -377,23 +411,23 @@ pub fn run() -> Result<()> {
                 }
             }
         });
+        PACER.with(|pacer| {
+            *pacer.borrow_mut() = Some(Pacer {
+                active: active.clone(),
+                pending: pending.clone(),
+                thread: pacing.thread().clone(),
+            })
+        });
         let mut msg = MSG::default();
         loop {
-            let animating =
-                with_launcher(|l| l.morph.is_some() || l.dock.as_ref().is_some_and(Dock::animating)).unwrap_or(false);
-            active.store(animating, Ordering::Release);
-            if animating {
-                pacing.thread().unpark();
-            }
+            sync_frames();
             if GetMessageW(&mut msg, None, 0, 0).0 <= 0 {
                 break;
-            }
-            if msg.message == WM_APP_FRAME {
-                pending.store(false, Ordering::Release);
             }
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+        PACER.with(|pacer| pacer.borrow_mut().take());
         alive.store(false, Ordering::Release);
         pacing.thread().unpark();
         let _ = pacing.join();
@@ -1228,6 +1262,7 @@ impl Launcher {
         self.palette =
             crate::theme::apply_moving_backdrop(self.hwnd, self.dark, self.config.backdrop, self.config.dock_tint());
         self.morph.as_mut().unwrap().start = Instant::now();
+        request_frames();
         self.outline = Some(from);
         self.set_bounds(from);
     }
@@ -2855,12 +2890,19 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
             });
         }
         WM_APP_FRAME => {
+            PACER.with(|pacer| {
+                if let Some(pacer) = pacer.borrow().as_ref() {
+                    pacer.pending.store(false, Ordering::Release);
+                }
+            });
             with_launcher(|l| {
                 l.step_morph();
                 if let Some(dock) = &mut l.dock {
                     dock.frame();
                 }
             });
+            // Also inside a modal loop, where the main loop doesn't run.
+            sync_frames();
         }
         WM_APP_INDEX => with_launcher_or_defer(DEFER_INDEX, Launcher::drain_index_events),
         WM_APP_FILES => with_launcher_or_defer(DEFER_FILES, Launcher::drain_file_results),
