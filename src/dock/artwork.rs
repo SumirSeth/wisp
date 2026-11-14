@@ -1,6 +1,7 @@
 //! Shell artwork stays on one COM worker; both successes and failures are cached by size.
 use crate::indexer::IconPixels;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
@@ -14,6 +15,8 @@ pub struct Artwork {
     cache: HashMap<Key, Option<Arc<IconPixels>>>,
     pending: HashSet<Key>,
     worker: Option<Worker>,
+    /// Set while a WM_ARTWORK is on its way, so a batch of icons costs one relayout.
+    posted: Arc<AtomicBool>,
 }
 impl Artwork {
     pub fn request(&mut self, hwnd: HWND, id: &str, path: &str, size: i32) -> Option<Arc<IconPixels>> {
@@ -28,6 +31,7 @@ impl Artwork {
             let (send, requests) = mpsc::channel::<(Key, String)>();
             let (replies, receive) = mpsc::channel();
             let window = hwnd.0 as usize;
+            let posted = self.posted.clone();
             if std::thread::Builder::new()
                 .name("dock icons".into())
                 .spawn(move || {
@@ -40,8 +44,10 @@ impl Artwork {
                         if replies.send((key, pixels)).is_err() {
                             break;
                         }
-                        unsafe {
-                            let _ = PostMessageW(Some(HWND(window as _)), super::WM_ARTWORK, WPARAM(0), LPARAM(0));
+                        if !posted.swap(true, Ordering::AcqRel) {
+                            unsafe {
+                                let _ = PostMessageW(Some(HWND(window as _)), super::WM_ARTWORK, WPARAM(0), LPARAM(0));
+                            }
                         }
                     }
                     if initialized {
@@ -67,6 +73,8 @@ impl Artwork {
     }
     pub fn drain(&mut self) {
         if let Some((_, replies)) = &self.worker {
+            // Clear first: a reply landing after the loop posts a new message.
+            self.posted.store(false, Ordering::Release);
             while let Ok((key, pixels)) = replies.try_recv() {
                 self.pending.remove(&key);
                 // Keep a bounded set of sizes when repeatedly switching monitors.

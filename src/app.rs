@@ -24,7 +24,7 @@ use crate::config::{Config, Position, Theme};
 use crate::dock::space::DockSpace;
 use crate::dock::{self, Dock};
 use crate::drag::{self, Payload};
-use crate::files::{FileResults, FileSearch};
+use crate::files::{self, FileResults, FileSearch};
 use crate::history::History;
 use crate::indexer::{AppEntry, IconPixels, IndexEvent, Indexer};
 use crate::render::{Frame, Renderer, SurfaceFrame, layout};
@@ -945,9 +945,7 @@ impl Launcher {
             return;
         }
         let opacity = self.morph_opacity();
-        if trim_icons(&mut self.icons, &self.apps) {
-            self.renderer.clear_icons();
-        }
+        self.trim_file_icons();
         self.visible = false;
         self.radios.close();
         if self.morphed && self.unified() && !self.taskbar.as_ref().is_some_and(TaskbarHider::is_peeking) {
@@ -1396,6 +1394,21 @@ impl Launcher {
         {
             self.results.truncate(rows);
         }
+    }
+
+    /// File icons are cached per program or shortcut, so a long session of
+    /// searches keeps adding them. Past a limit, drop them while hidden; the
+    /// next search loads the ones it shows again.
+    fn trim_file_icons(&mut self) {
+        const MAX_PER_FILE_ICONS: usize = 512;
+        if self.icons.keys().filter(|key| files::is_per_file_icon(key)).count() <= MAX_PER_FILE_ICONS {
+            return;
+        }
+        self.icons.retain(|key, _| !files::is_per_file_icon(key));
+        self.renderer.clear_icons();
+        self.file_search.forget_file_icons();
+        // Search again on the next open, so the shown files get their icons back.
+        self.file_query = None;
     }
 
     fn drain_file_results(&mut self) {
@@ -3084,34 +3097,5 @@ mod tests {
         assert!(!mouse_moved(&mut last, (800, 600)));
         assert_eq!(last, Some((800, 600)));
         assert!(mouse_moved(&mut last, (801, 600)));
-    }
-}
-
-/// Keep indexed app artwork; discard accumulated file-search artwork on hide.
-fn trim_icons<T>(icons: &mut HashMap<String, T>, apps: &[AppEntry]) -> bool {
-    if icons.len() <= apps.len() + 512 {
-        return false;
-    }
-    let ids: std::collections::HashSet<&str> = apps.iter().map(|app| app.id.as_str()).collect();
-    icons.retain(|key, _| ids.contains(key.as_str()));
-    true
-}
-#[cfg(test)]
-mod icon_cache_tests {
-    use super::*;
-    #[test]
-    fn trimming_preserves_indexed_apps_and_limits_transient_artwork() {
-        let apps = vec![AppEntry {
-            id: "app".into(),
-            name: "App".into(),
-            aliases: vec![],
-            path: None,
-        }];
-        let mut icons = HashMap::from([("app".into(), ())]);
-        assert!(!trim_icons(&mut icons, &apps));
-        icons.extend((0..513).map(|i| (format!("file:{i}"), ())));
-        assert!(trim_icons(&mut icons, &apps));
-        assert_eq!(icons.len(), 1);
-        assert!(icons.contains_key("app"));
     }
 }
