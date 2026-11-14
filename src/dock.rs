@@ -329,6 +329,14 @@ fn chevron_track(hwnd: HWND, owner: HWND) {
     }
 }
 
+/// The dock's popup windows, stored in each one's extra window bytes.
+#[derive(Clone, Copy)]
+enum Popup {
+    Flyout = 1,
+    Tip = 2,
+    Windows = 3,
+}
+
 struct WindowId {
     exe: String,
     aumid: Option<String>,
@@ -805,20 +813,24 @@ impl Dock {
             hInstance: instance.into(),
             lpszClassName: w!("Wisp.DockPopup"),
             hCursor: class.hCursor,
+            // Which popup a window is: see `Popup`.
+            cbWndExtra: size_of::<isize>() as i32,
             ..Default::default()
         };
         if unsafe { RegisterClassExW(&popup) } == 0 && unsafe { GetLastError() } != ERROR_CLASS_ALREADY_EXISTS {
             return Err(Error::from_thread());
         }
-        for (style, title) in [
+        for (kind, style, title) in [
             // The flyout takes focus, for Esc and closing on a click elsewhere.
-            (WS_EX_TOOLWINDOW | WS_EX_TOPMOST, w!("Notification area")),
+            (Popup::Flyout, WS_EX_TOOLWINDOW | WS_EX_TOPMOST, w!("Notification area")),
             (
+                Popup::Tip,
                 WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
                 w!("Wisp Dock tooltip"),
             ),
             // The window list takes clicks, but not the focus.
             (
+                Popup::Windows,
                 WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
                 w!("Wisp Dock windows"),
             ),
@@ -840,13 +852,14 @@ impl Dock {
                 )?
             };
             dock.popups.push(window);
+            unsafe {
+                SetWindowLongPtrW(window, WINDOW_LONG_PTR_INDEX(0), kind as isize);
+            }
             let mut s = dock.state.borrow_mut();
-            if s.flyout.is_invalid() {
-                s.flyout = window;
-            } else if s.tip.is_invalid() {
-                s.tip = window;
-            } else {
-                s.windows = window;
+            match kind {
+                Popup::Flyout => s.flyout = window,
+                Popup::Tip => s.tip = window,
+                Popup::Windows => s.windows = window,
             }
         }
         EVENT_TARGET.with(|target| target.set(hwnd));
@@ -3651,7 +3664,9 @@ unsafe fn popup_wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
         let Some(cell) = pointer.as_ref() else {
             return DefWindowProcW(hwnd, msg, wp, lp);
         };
-        let tip = cell.try_borrow().is_ok_and(|s| s.tip == hwnd);
+        // Known without the state, which may be busy.
+        let kind = GetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX(0));
+        let tip = kind == Popup::Tip as isize;
         if tip {
             // The tooltip never takes the pointer or the focus.
             match msg {
@@ -3662,7 +3677,7 @@ unsafe fn popup_wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
         } else if msg == WM_NCHITTEST {
             return LRESULT(HTCLIENT as isize);
         }
-        let windows = cell.try_borrow().is_ok_and(|s| s.windows == hwnd);
+        let windows = kind == Popup::Windows as isize;
         if windows {
             match msg {
                 // Clicks land here, but the list never takes the focus.
