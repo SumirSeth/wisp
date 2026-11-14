@@ -38,6 +38,8 @@ const CANDIDATES: usize = 100;
 const EVERYTHING_CANDIDATES: u32 = 500;
 /// Longest path or name read from the index, in UTF-16 units.
 const MAX_CHARS: usize = 1024;
+/// How long typing must pause before the slow index pass starts.
+const PAUSE_BEFORE_SLOW_PASS: Duration = Duration::from_millis(80);
 /// How long to wait before trying to reopen an index that failed to open.
 const REOPEN_AFTER: Duration = Duration::from_secs(30);
 /// Folders under the user profile that hold the user's own files.
@@ -138,6 +140,7 @@ fn worker(messages: Receiver<Message>, replies: Sender<Message>, mut output: Out
     let profile = std::env::var("USERPROFILE").unwrap_or_default().to_lowercase();
     let mut index: Option<Index> = None;
     let mut everything: Option<Everything> = None;
+    let mut spawn_failed_at: Option<Instant> = None;
     let mut failed_at: Option<Instant> = None;
     let mut matcher = NameMatcher::new();
 
@@ -156,7 +159,14 @@ fn worker(messages: Receiver<Message>, replies: Sender<Message>, mut output: Out
         }
 
         if request.everything {
-            match ask_everything(&mut everything, &replies, &messages, &request, &words) {
+            match ask_everything(
+                &mut everything,
+                &mut spawn_failed_at,
+                &replies,
+                &messages,
+                &request,
+                &words,
+            ) {
                 // No rows can mean Everything doesn't cover the drive; the index may.
                 Waited::Rows(rows) if !rows.is_empty() => {
                     let hits = rank(&[rows], &request, &profile, &mut matcher);
@@ -202,7 +212,8 @@ fn worker(messages: Receiver<Message>, replies: Sender<Message>, mut output: Out
                 if shown.len() >= request.limit {
                     break;
                 }
-                match newer(&messages) {
+                // The slow pass can't be interrupted, so it waits until typing pauses.
+                match newer_within(&messages, PAUSE_BEFORE_SLOW_PASS) {
                     Ok(None) => {}
                     Ok(newest) => {
                         next = newest;
@@ -253,6 +264,19 @@ fn next_request(messages: &Receiver<Message>) -> Option<Request> {
     }
 }
 
+/// The latest query that arrives within `wait`, if any.
+fn newer_within(messages: &Receiver<Message>, wait: Duration) -> std::result::Result<Option<Request>, Stop> {
+    let deadline = Instant::now() + wait;
+    loop {
+        match messages.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(Message::Search(request)) => return newer(messages).map(|newest| Some(newest.unwrap_or(request))),
+            Ok(Message::Everything(..)) => {}
+            Ok(Message::Stop) | Err(RecvTimeoutError::Disconnected) => return Err(Stop),
+            Err(RecvTimeoutError::Timeout) => return Ok(None),
+        }
+    }
+}
+
 /// The latest query that's already waiting, if any.
 fn newer(messages: &Receiver<Message>) -> std::result::Result<Option<Request>, Stop> {
     let mut newest = None;
@@ -277,16 +301,18 @@ enum Waited {
 /// Asks Everything and waits for its reply, or for a newer query.
 fn ask_everything(
     everything: &mut Option<Everything>,
+    spawn_failed_at: &mut Option<Instant>,
     replies: &Sender<Message>,
     messages: &Receiver<Message>,
     request: &Request,
     words: &[String],
 ) -> Waited {
-    if everything.is_none() {
+    if everything.is_none() && spawn_failed_at.is_none_or(|t| t.elapsed() > REOPEN_AFTER) {
         let replies = replies.clone();
         *everything = Everything::spawn(move |id, bytes| {
             let _ = replies.send(Message::Everything(id, bytes));
         });
+        *spawn_failed_at = everything.is_none().then(Instant::now);
     }
     let Some(everything) = everything.as_mut() else {
         return Waited::Nothing;
@@ -389,6 +415,7 @@ fn fetch(index: &mut Option<Index>, sql: &str) -> Vec<Row> {
 /// `passes` holds the rows of each query, each newest first.
 fn rank(passes: &[Vec<Row>], request: &Request, profile: &str, matcher: &mut NameMatcher) -> Vec<FileHit> {
     let pattern = Pattern::parse(&request.query, CaseMatching::Ignore, Normalization::Smart);
+    let word_count = request.query.split_whitespace().count();
     let mut scored: Vec<(i64, FileHit)> = passes
         .iter()
         .flat_map(|rows| {
@@ -400,7 +427,7 @@ fn rank(passes: &[Vec<Row>], request: &Request, profile: &str, matcher: &mut Nam
         })
         .filter(|(_, row)| !is_excluded(&row.path, &request.exclude))
         .filter_map(|(position, row)| {
-            let (name_score, highlights) = matcher.score(&pattern, &row.name)?;
+            let (name_score, highlights) = matcher.score_words(&pattern, &row.name, word_count)?;
             let recency = (CANDIDATES - position.min(CANDIDATES)) as i64 / 4;
             let (in_user_folder, depth) = location(&row.path, profile);
             let score = name_score as i64 + recency + if in_user_folder { 40 } else { 0 } - 4 * depth.min(10) as i64;
@@ -714,7 +741,8 @@ mod tests {
                 everything: true,
             };
             let started = Instant::now();
-            let Waited::Rows(rows) = ask_everything(&mut everything, &replies, &messages, &request, &words(query))
+            let Waited::Rows(rows) =
+                ask_everything(&mut everything, &mut None, &replies, &messages, &request, &words(query))
             else {
                 panic!("Everything is not running or did not answer");
             };
@@ -742,12 +770,25 @@ mod tests {
             everything: true,
         };
         replies.send(Message::Search(request("newer"))).unwrap();
-        let waited = ask_everything(&mut everything, &replies, &messages, &request("setup"), &words("setup"));
+        let waited = ask_everything(
+            &mut everything,
+            &mut None,
+            &replies,
+            &messages,
+            &request("setup"),
+            &words("setup"),
+        );
         assert!(matches!(waited, Waited::Newer(newer) if newer.query == "newer"));
         std::thread::sleep(Duration::from_millis(300));
         assert!(messages.try_recv().is_err(), "a late reply got through");
-        let Waited::Rows(rows) = ask_everything(&mut everything, &replies, &messages, &request("wisp"), &words("wisp"))
-        else {
+        let Waited::Rows(rows) = ask_everything(
+            &mut everything,
+            &mut None,
+            &replies,
+            &messages,
+            &request("wisp"),
+            &words("wisp"),
+        ) else {
             panic!("Everything stopped answering after a cancelled query");
         };
         assert!(!rows.is_empty());

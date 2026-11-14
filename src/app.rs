@@ -637,7 +637,7 @@ impl Launcher {
         self.sync_win_key();
         self.register_hotkey(true);
         // Search files again with the new settings.
-        if file_search_changed && self.file_query.is_some() {
+        if file_search_changed {
             self.file_query = None;
             if self.visible {
                 self.update_results();

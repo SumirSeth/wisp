@@ -42,6 +42,10 @@ const ITEM_DRIVE: u32 = 0x2;
 const ANSWER_WITHIN: Duration = Duration::from_millis(400);
 /// How long to use the index instead after Everything didn't answer in time.
 const RETRY_AFTER: Duration = Duration::from_secs(30);
+/// Longest name or path read from a reply, in UTF-16 units.
+const MAX_TEXT_UNITS: usize = 32767;
+/// Longest wait before asking again after repeated failures.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(300);
 /// Largest reply accepted. 500 rows with long paths take well under 1 MB.
 const MAX_REPLY_BYTES: usize = 4 << 20;
 
@@ -68,6 +72,8 @@ pub(super) struct Everything {
     /// Everything's window, once it said its database is loaded.
     loaded: Option<isize>,
     failed_at: Option<Instant>,
+    /// How long to use the index after a failure; doubles while failures repeat.
+    retry_after: Duration,
 }
 
 impl Everything {
@@ -107,6 +113,7 @@ impl Everything {
             max: 0,
             loaded: None,
             failed_at: None,
+            retry_after: RETRY_AFTER,
         })
     }
 
@@ -115,7 +122,7 @@ impl Everything {
     /// to stop waiting for it. `None` if Everything isn't running, hasn't loaded
     /// its database yet, or recently didn't answer in time.
     pub(super) fn ask(&mut self, words: &[String], exclude: &[String], max: u32) -> Option<(u32, Instant)> {
-        if self.failed_at.is_some_and(|t| t.elapsed() < RETRY_AFTER) {
+        if self.failed_at.is_some_and(|t| t.elapsed() < self.retry_after) {
             return None;
         }
         let target = window()?;
@@ -170,6 +177,8 @@ impl Everything {
     pub(super) fn answer(&mut self, bytes: &[u8]) -> Option<Vec<Row>> {
         self.cancel();
         let rows = parse(bytes, self.max)?;
+        self.failed_at = None;
+        self.retry_after = RETRY_AFTER;
         Some(rows.into_iter().filter(is_local).collect())
     }
 
@@ -187,6 +196,9 @@ impl Everything {
     fn failed(&mut self) {
         self.pending.store(0, Ordering::Release);
         self.loaded = None;
+        if self.failed_at.is_some() {
+            self.retry_after = (self.retry_after * 2).min(MAX_RETRY_AFTER);
+        }
         self.failed_at = Some(Instant::now());
     }
 }
@@ -338,7 +350,11 @@ fn parse(bytes: &[u8], max: u32) -> Option<Vec<Row>> {
     // Reads a length, the UTF-16 text and its NUL; returns the text and the next offset.
     let text = |at: usize| -> Option<(String, usize)> {
         let len = dword(at)? as usize;
-        let start = at + 4;
+        // No Windows path or name is longer; a longer one is a forged reply.
+        if len > MAX_TEXT_UNITS {
+            return None;
+        }
+        let start = at.checked_add(4)?;
         let end = start.checked_add(len.checked_mul(2)?)?;
         let units: Vec<u16> = bytes
             .get(start..end)?
@@ -347,13 +363,13 @@ fn parse(bytes: &[u8], max: u32) -> Option<Vec<Row>> {
             .iter()
             .map(|c| u16::from_le_bytes(*c))
             .collect();
-        Some((String::from_utf16_lossy(&units), end + 2))
+        Some((String::from_utf16_lossy(&units), end.checked_add(2)?))
     };
     let mut rows = Vec::with_capacity(count as usize);
     for item in 0..count as usize {
         let at = item.checked_mul(8)?.checked_add(20)?;
         let flags = dword(at)?;
-        let (name, next) = text(dword(at + 4)? as usize)?;
+        let (name, next) = text(dword(at.checked_add(4)?)? as usize)?;
         let (path, _) = text(next)?;
         rows.push(Row {
             name,

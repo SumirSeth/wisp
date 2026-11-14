@@ -248,11 +248,18 @@ impl NameMatcher {
     /// Scores `text` against `pattern`. Returns `None` for no match or a
     /// scattered match; otherwise the score and the UTF-16 highlight ranges.
     pub fn score(&mut self, pattern: &Pattern, text: &str) -> Option<(u32, Vec<(u32, u32)>)> {
+        self.score_words(pattern, text, 1)
+    }
+
+    /// Like [`NameMatcher::score`], but each of `words` query words may match
+    /// inside a word once, as file names often hide words mid-word
+    /// (`2024 report` in `Q32024_bugreporting.pdf`).
+    pub fn score_words(&mut self, pattern: &Pattern, text: &str, words: usize) -> Option<(u32, Vec<(u32, u32)>)> {
         self.indices.clear();
         let score = pattern.indices(haystack(text, &mut self.buf), &mut self.matcher, &mut self.indices)?;
         self.indices.sort_unstable();
         self.indices.dedup();
-        is_clean_match(text, &self.indices).then(|| (score, utf16_ranges(text, &self.indices)))
+        is_clean_match(text, &self.indices, words.max(1)).then(|| (score, utf16_ranges(text, &self.indices)))
     }
 }
 
@@ -418,7 +425,7 @@ fn haystack<'a>(text: &'a str, buf: &'a mut Vec<char>) -> Utf32Str<'a> {
 
 /// Allows at most one group of consecutive matched characters to start within
 /// a word. Accepts `vsc` for Visual Studio Code; rejects `code` for Recorder.
-fn is_clean_match(text: &str, char_indices: &[u32]) -> bool {
+fn is_clean_match(text: &str, char_indices: &[u32], allowed: usize) -> bool {
     let chars: Vec<char> = text.chars().collect();
     let word_start = |i: usize| {
         i == 0 || !chars[i - 1].is_alphanumeric() || (chars[i - 1].is_lowercase() && chars[i].is_uppercase())
@@ -429,7 +436,7 @@ fn is_clean_match(text: &str, char_indices: &[u32]) -> bool {
         .filter(|&(n, &i)| n == 0 || char_indices[n - 1] + 1 != i)
         .filter(|&(_, &i)| !word_start(i as usize))
         .count();
-    mid_word_runs <= 1
+    mid_word_runs <= allowed
 }
 
 /// DirectWrite needs UTF-16 ranges rather than the matcher's `char` indices.
@@ -484,6 +491,16 @@ fn url_encode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_names_allow_one_mid_word_match_per_word() {
+        let mut matcher = NameMatcher::new();
+        let pattern = Pattern::parse("2024 report", CaseMatching::Ignore, Normalization::Smart);
+        assert!(matcher.score(&pattern, "Q32024_bugreporting.pdf").is_none());
+        assert!(matcher.score_words(&pattern, "Q32024_bugreporting.pdf", 2).is_some());
+        let scattered = Pattern::parse("rpt", CaseMatching::Ignore, Normalization::Smart);
+        assert!(matcher.score_words(&scattered, "bugreporting.pdf", 1).is_none());
+    }
 
     fn app(name: &str) -> AppEntry {
         AppEntry {
