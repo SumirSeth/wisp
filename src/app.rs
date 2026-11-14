@@ -2048,7 +2048,7 @@ impl Launcher {
     /// Reloads the surface library, reporting new problems with the user's files.
     fn load_surfaces(&mut self) {
         let _span = util::perf::Span::new("surfaces");
-        self.surfaces = Library::load();
+        self.surfaces.reload();
         let new: Vec<&String> = self
             .surfaces
             .errors

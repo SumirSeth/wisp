@@ -217,6 +217,34 @@ pub struct Library {
     pub specs: Vec<Spec>,
     /// Problems with the user's files, as "name.toml: message".
     pub errors: Vec<String>,
+    source: Option<SourceStamp>,
+}
+
+#[derive(PartialEq)]
+struct SourceStamp {
+    dir: PathBuf,
+    files: Vec<(PathBuf, std::time::SystemTime, u64)>,
+}
+impl SourceStamp {
+    fn read(dir: &std::path::Path) -> Option<Self> {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => Some(entries),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(_) => return None,
+        };
+        let mut files = Vec::new();
+        if let Some(entries) = entries {
+            for entry in entries {
+                let path = entry.ok()?.path();
+                if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("toml")) {
+                    let metadata = std::fs::metadata(&path).ok()?;
+                    files.push((path, metadata.modified().ok()?, metadata.len()));
+                }
+            }
+        }
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        Some(Self { dir: dir.into(), files })
+    }
 }
 
 impl Library {
@@ -225,6 +253,24 @@ impl Library {
     }
 
     pub fn load() -> Library {
+        Self::load_from(&Self::dir())
+    }
+
+    pub fn reload(&mut self) {
+        self.reload_from(&Self::dir());
+    }
+
+    fn reload_from(&mut self, dir: &std::path::Path) -> bool {
+        let source = SourceStamp::read(dir);
+        if source.is_some() && self.source == source {
+            return false;
+        }
+        *self = Self::load_from(dir);
+        true
+    }
+
+    fn load_from(dir: &std::path::Path) -> Library {
+        let source = SourceStamp::read(dir);
         // Built-ins never change. Parse once, while preserving fresh user-file reads.
         static BUILT_INS: std::sync::OnceLock<Vec<Spec>> = std::sync::OnceLock::new();
         let mut specs = BUILT_INS
@@ -236,7 +282,7 @@ impl Library {
             })
             .clone();
         let mut errors = Vec::new();
-        let mut files: Vec<PathBuf> = std::fs::read_dir(Self::dir())
+        let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
             .map(|dir| dir.filter_map(|entry| Some(entry.ok()?.path())).collect())
             .unwrap_or_default();
         files.retain(|path| path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("toml")));
@@ -256,7 +302,7 @@ impl Library {
                 Err(error) => errors.push(format!("{name}: {error}")),
             }
         }
-        Library { specs, errors }
+        Library { specs, errors, source }
     }
 
     /// Rows for surfaces whose title or keywords start with the query's words.
@@ -695,5 +741,28 @@ mod tests {
         let mut state = state();
         apply(&Command::AppVolume { pid: 7, percent: 20 }, &mut state);
         assert_eq!(state.sessions[0].volume, 20);
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+    #[test]
+    fn reloads_on_add_edit_remove_and_folder_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("custom.toml");
+        let mut library = Library::load_from(dir.path());
+        assert!(!library.reload_from(dir.path()));
+        std::fs::write(&path, "invalid").unwrap();
+        assert!(library.reload_from(dir.path()));
+        assert_eq!(library.errors.len(), 1);
+        assert!(!library.reload_from(dir.path()));
+        std::fs::write(&path, "also invalid and a different size").unwrap();
+        assert!(library.reload_from(dir.path()));
+        std::fs::remove_file(path).unwrap();
+        assert!(library.reload_from(dir.path()));
+        assert!(library.errors.is_empty());
+        let other = tempfile::tempdir().unwrap();
+        assert!(library.reload_from(other.path()));
     }
 }
