@@ -87,6 +87,8 @@ const WINDOWS_TIMER: usize = 107;
 const WINDOWS_HIDE_TIMER: usize = 108;
 const WINDOWS_HIDE_MS: u32 = 220;
 const REFRESH_TIMER: usize = 101;
+/// WM_REFRESH's wParam when only other apps' windows changed.
+const REFRESH_WINDOWS: usize = 1;
 /// Watches the pointer for the bottom edge while the dock is hidden, and
 /// for leaving while it shows.
 const POLL_TIMER: usize = 102;
@@ -116,6 +118,35 @@ thread_local! { static EVENT_TARGET: Cell<HWND> = const { Cell::new(HWND(std::pt
 struct Item {
     app: AppEntry,
     windows: Vec<Window>,
+}
+
+struct WindowId {
+    exe: String,
+    aumid: Option<String>,
+    read: Instant,
+}
+
+/// How long a window's app ID is trusted. Some apps set it after their
+/// window appears.
+const WINDOW_ID_TTL: Duration = Duration::from_secs(10);
+
+/// What the dock shows for its items: their apps and windows.
+fn items_key(items: &[Item]) -> Vec<(String, Vec<isize>)> {
+    items
+        .iter()
+        .map(|item| (item.app.id.clone(), item.windows.iter().map(|w| w.hwnd).collect()))
+        .collect()
+}
+
+/// Identifies the pins, so app matches made for other pins are dropped.
+fn pins_key(pins: &[AppEntry]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for pin in pins {
+        pin.id.hash(&mut hasher);
+        pin.path.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 enum PressTarget {
@@ -228,6 +259,18 @@ struct State {
     windows_slot: Option<usize>,
     windows_rows: Vec<String>,
     windows_targets: Vec<isize>,
+    /// Each window's program and app ID, read once and checked again after
+    /// [`WINDOW_ID_TTL`]: reading an app ID asks the shell.
+    window_ids: HashMap<isize, WindowId>,
+    /// Apps matched to a program and app ID. Cleared when apps or pins change.
+    app_matches: HashMap<(String, Option<String>), Option<AppEntry>>,
+    /// The pins `app_matches` was built for.
+    matched_pins: u64,
+    /// A scheduled refresh must lay the dock out again, not only rescan windows.
+    relayout: bool,
+    /// Set while a window-change refresh runs: it may skip layout and redraw
+    /// when no app, window or status changed.
+    layout_unchanged_ok: bool,
     windows_hover: Option<usize>,
     /// The last click on a notification icon, to tell double clicks.
     tray_click: Option<(tray_host::Key, Instant)>,
@@ -446,6 +489,11 @@ impl Dock {
             windows_slot: None,
             windows_rows: Vec::new(),
             windows_targets: Vec::new(),
+            window_ids: HashMap::new(),
+            app_matches: HashMap::new(),
+            matched_pins: 0,
+            relayout: false,
+            layout_unchanged_ok: false,
             windows_hover: None,
             tray_click: None,
             held_flyout: None,
@@ -765,6 +813,7 @@ impl Dock {
             let mut changed = s.apps != apps;
             if changed {
                 s.apps = apps;
+                s.app_matches.clear();
                 s.migrate_pins();
             }
             for (id, pixels) in &icons {
@@ -1108,17 +1157,47 @@ impl State {
             }
             return;
         }
+        let before = self.layout_unchanged_ok.then(|| items_key(&self.items));
         let windows = open_windows::list();
+        let pins = pins_key(&self.pinned);
+        if pins != self.matched_pins {
+            self.matched_pins = pins;
+            self.app_matches.clear();
+        }
+        self.window_ids
+            .retain(|hwnd, _| windows.iter().any(|w| w.hwnd == *hwnd));
+        let now = Instant::now();
         let mut items: Vec<Item> = Vec::new();
         for window in windows {
-            // A window that names no app may still belong to a packaged one,
-            // whose process does.
-            let aumid = window_aumid(HWND(window.hwnd as _)).or_else(|| {
-                logic::package_family(&window.exe).and_then(|_| open_windows::window_process_aumid(window.hwnd))
-            });
-            let app = logic::match_app(&self.pinned, &window.exe, aumid.as_deref())
-                .or_else(|| logic::match_app(&self.apps, &window.exe, aumid.as_deref()))
-                .cloned()
+            let aumid = match self.window_ids.get(&window.hwnd) {
+                Some(id) if id.exe == window.exe && now.duration_since(id.read) < WINDOW_ID_TTL => id.aumid.clone(),
+                _ => {
+                    // A window that names no app may still belong to a packaged one,
+                    // whose process does.
+                    let aumid = window_aumid(HWND(window.hwnd as _)).or_else(|| {
+                        logic::package_family(&window.exe).and_then(|_| open_windows::window_process_aumid(window.hwnd))
+                    });
+                    self.window_ids.insert(
+                        window.hwnd,
+                        WindowId {
+                            exe: window.exe.clone(),
+                            aumid: aumid.clone(),
+                            read: now,
+                        },
+                    );
+                    aumid
+                }
+            };
+            let (pinned, apps) = (&self.pinned, &self.apps);
+            let app = self
+                .app_matches
+                .entry((window.exe.clone(), aumid.clone()))
+                .or_insert_with(|| {
+                    logic::match_app(pinned, &window.exe, aumid.as_deref())
+                        .or_else(|| logic::match_app(apps, &window.exe, aumid.as_deref()))
+                        .cloned()
+                })
+                .clone()
                 .unwrap_or_else(|| {
                     let id = aumid.filter(|s| !s.is_empty()).unwrap_or_else(|| window.exe.clone());
                     AppEntry {
@@ -1164,8 +1243,12 @@ impl State {
         {
             self.hide_windows();
         }
-        self.status = status::read(self.status_placement);
-        self.place();
+        let status = status::read(self.status_placement);
+        let unchanged = before.is_some_and(|before| before == items_key(&self.items)) && status == self.status;
+        self.status = status;
+        if !unchanged {
+            self.place();
+        }
         if self.suspended {
             return;
         }
@@ -1184,7 +1267,9 @@ impl State {
             let was_shown = IsWindowVisible(self.hwnd).as_bool();
             let shown = self.visible && (self.revealed || self.slide.is_some()) && !self.fullscreen;
             let _ = ShowWindow(self.hwnd, if shown { SW_SHOWNOACTIVATE } else { SW_HIDE });
-            if shown && !was_shown {
+            if unchanged && shown && was_shown {
+                // Nothing to draw: the same apps, windows and status.
+            } else if shown && !was_shown {
                 // Layout no longer reorders the dock; come back above other
                 // topmost windows only when it appears.
                 let _ = SetWindowPos(
@@ -2993,7 +3078,7 @@ unsafe extern "system" fn window_event(
     EVENT_TARGET.with(|target| unsafe {
         let hwnd = target.get();
         if !hwnd.is_invalid() {
-            let _ = PostMessageW(Some(hwnd), WM_REFRESH, WPARAM(0), LPARAM(0));
+            let _ = PostMessageW(Some(hwnd), WM_REFRESH, WPARAM(REFRESH_WINDOWS), LPARAM(0));
         }
     });
 }
@@ -3068,6 +3153,10 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT
                     return LRESULT(0);
                 }
                 WM_REFRESH => {
+                    // Anything but another app's windows changing lays the dock out again.
+                    if wp.0 != REFRESH_WINDOWS {
+                        s.relayout = true;
+                    }
                     if !s.scheduled {
                         s.scheduled = SetTimer(Some(hwnd), REFRESH_TIMER, 100, None) != 0;
                     }
@@ -3146,7 +3235,10 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT
                 WM_TIMER if wp.0 == REFRESH_TIMER => {
                     let _ = KillTimer(Some(hwnd), REFRESH_TIMER);
                     s.scheduled = false;
+                    let relayout = std::mem::take(&mut s.relayout);
+                    s.layout_unchanged_ok = !relayout;
                     s.refresh();
+                    s.layout_unchanged_ok = false;
                     return LRESULT(0);
                 }
                 WM_DPICHANGED | WM_DISPLAYCHANGE => {

@@ -1,6 +1,7 @@
 //! Every WM_APP message Wisp uses, in one place so no two share a number.
 //! 3, 4 and 6 are also sent by other processes (a second Wisp, the settings
-//! app), so they must keep their values.
+//! app), so they must keep their values. 9 is `update_notice::MESSAGE`, which
+//! the settings app shares, so it is defined there.
 
 use windows::Win32::UI::WindowsAndMessaging::WM_APP;
 
@@ -20,8 +21,6 @@ pub const WM_APP_RELOAD: u32 = WM_APP + 6;
 pub const WM_APP_COMMANDS: u32 = WM_APP + 7;
 /// The next animation frame.
 pub const WM_APP_FRAME: u32 = WM_APP + 8;
-/// An update notice is ready. Defined in `update_notice`, which the settings app shares.
-pub use crate::update_notice::MESSAGE as WM_UPDATE_NOTICE;
 pub const WM_SHOW_LAUNCHER: u32 = WM_APP + 20;
 pub const WM_REFRESH: u32 = WM_APP + 21;
 pub const WM_TRAY_CHANGED: u32 = WM_APP + 22;
@@ -55,7 +54,7 @@ mod tests {
             WM_APP_RELOAD,
             WM_APP_COMMANDS,
             WM_APP_FRAME,
-            WM_UPDATE_NOTICE,
+            crate::update_notice::MESSAGE,
             WM_SHOW_LAUNCHER,
             WM_REFRESH,
             WM_TRAY_CHANGED,
