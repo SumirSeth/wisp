@@ -126,6 +126,209 @@ struct Item {
     windows: Vec<Window>,
 }
 
+/// Work that waits on the user or another program: menus and launches,
+/// which can show UAC. It runs with the dock's state released, so the dock
+/// keeps painting and updating, and Windows can't reenter a borrowed state.
+enum Outside {
+    AppMenu(Box<AppMenu>),
+    Chevron { owner: HWND },
+    Launch(Launch),
+}
+
+/// What a menu choice asks of the dock's state afterwards.
+enum AfterMenu {
+    TogglePin(String),
+}
+
+impl Outside {
+    fn run(self, hwnd: HWND) -> Option<AfterMenu> {
+        match self {
+            Outside::AppMenu(menu) => (*menu).track(hwnd),
+            Outside::Chevron { owner } => {
+                chevron_track(hwnd, owner);
+                None
+            }
+            Outside::Launch(launch) => {
+                launch.run();
+                None
+            }
+        }
+    }
+}
+
+struct Launch {
+    app: AppEntry,
+    /// The index knows the app, so it starts by its ID.
+    known: bool,
+    admin: bool,
+    owner: HWND,
+}
+
+impl Launch {
+    fn run(self) {
+        let Launch {
+            app,
+            known,
+            admin,
+            owner,
+        } = self;
+        let result = if known {
+            crate::launch::app(&app.id, app.path.as_deref(), admin)
+        } else if let Some(path) = &app.path {
+            if admin {
+                crate::launch::app(&app.id, Some(path), true)
+            } else {
+                crate::launch::open(path)
+            }
+        } else {
+            crate::launch::app(&app.id, None, admin)
+        };
+        if let Err(error) = result
+            && !crate::launch::is_cancelled(&error)
+        {
+            eprintln!("Dock launch: {error}");
+            if admin {
+                // Some apps, such as most Store apps, cannot run elevated.
+                crate::tray::notify(
+                    owner,
+                    &format!("Could not run {} as administrator", app.name),
+                    &error.message(),
+                    true,
+                );
+            }
+        }
+    }
+}
+
+/// An app's menu, built and ready to open.
+struct AppMenu {
+    menu: HMENU,
+    id: String,
+    app: AppEntry,
+    windows: Vec<isize>,
+    location: Option<String>,
+    ending: Option<open_windows::EndTask>,
+    jump_items: Vec<jump_lists::Item>,
+    new_window: Launch,
+    admin: Launch,
+    owner: HWND,
+}
+
+impl AppMenu {
+    /// Opens the menu at the pointer and does what the user picks.
+    fn track(self, hwnd: HWND) -> Option<AfterMenu> {
+        let AppMenu {
+            menu,
+            id,
+            app,
+            windows,
+            location,
+            ending,
+            jump_items,
+            new_window,
+            admin,
+            owner,
+        } = self;
+        let command = unsafe {
+            let mut point = POINT::default();
+            let _ = GetCursorPos(&mut point);
+            let _ = SetForegroundWindow(hwnd);
+            let command =
+                TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, point.x, point.y, None, hwnd, None).0 as usize;
+            // DestroyMenu recursively destroys the attached submenu.
+            let _ = DestroyMenu(menu);
+            command
+        };
+        match command {
+            MENU_PIN => return Some(AfterMenu::TogglePin(id)),
+            MENU_CLOSE => {
+                for hwnd in windows {
+                    let _ = open_windows::close(hwnd);
+                }
+            }
+            MENU_NEW_WINDOW => new_window.run(),
+            MENU_ADMIN => admin.run(),
+            MENU_LOCATION => {
+                if let Some(path) = &location
+                    && let Err(error) = crate::launch::reveal(path)
+                {
+                    eprintln!("Dock open file location: {error}");
+                }
+            }
+            MENU_PROPERTIES => {
+                if let Some(path) = &location
+                    && let Err(error) = crate::launch::properties(path)
+                {
+                    eprintln!("Dock properties: {error}");
+                }
+            }
+            MENU_END_TASK => {
+                if let Some(ending) = ending
+                    && let Err(error) = ending.end()
+                {
+                    let hint = if error.denied {
+                        " It may be running as another user or protected by Windows. Task Manager can end it."
+                    } else {
+                        ""
+                    };
+                    crate::tray::notify(
+                        owner,
+                        &format!("Could not end {}", app.name),
+                        &format!("{}{hint}", error.message),
+                        true,
+                    );
+                }
+            }
+            command => {
+                if let Some(item) = command
+                    .checked_sub(jump_lists::MENU_FIRST)
+                    .and_then(|i| jump_items.get(i))
+                    && let Err(error) = item.invoke()
+                {
+                    eprintln!("Dock Jump List: {error}");
+                }
+            }
+        }
+        None
+    }
+}
+
+/// The notification area's chevron menu: show the taskbar, or its settings.
+fn chevron_track(hwnd: HWND, owner: HWND) {
+    unsafe {
+        let Ok(menu) = CreatePopupMenu() else {
+            return;
+        };
+        let _ = AppendMenuW(menu, MF_STRING, 1, w!("Show taskbar"));
+        let _ = AppendMenuW(menu, MF_STRING, 2, w!("Taskbar settings"));
+        let mut point = POINT::default();
+        let _ = GetCursorPos(&mut point);
+        let _ = SetForegroundWindow(hwnd);
+        let command = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+            point.x,
+            point.y,
+            None,
+            hwnd,
+            None,
+        )
+        .0;
+        let _ = DestroyMenu(menu);
+        match command {
+            1 => {
+                let _ = PostMessageW(Some(owner), WM_DOCK_SHOW_TASKBAR, WPARAM(0), LPARAM(0));
+            }
+            2 => {
+                if let Err(error) = crate::launch::open("ms-settings:taskbar") {
+                    eprintln!("Dock taskbar settings: {error}");
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 struct WindowId {
     exe: String,
     aumid: Option<String>,
@@ -299,6 +502,11 @@ type PendingMessages = Queue<(isize, u32, usize), DockMessage>;
 struct StateCell {
     state: Deferred<State>,
     messages: RefCell<PendingMessages>,
+    /// Menus and launches waiting on the user run with the state released.
+    /// While one runs, the dock must outlive it.
+    modal: Cell<u32>,
+    /// Messages that could drop the dock, held until no menu or launch runs.
+    owner_messages: RefCell<Vec<(HWND, u32, WPARAM, LPARAM)>>,
 }
 impl std::ops::Deref for StateCell {
     type Target = Deferred<State>;
@@ -311,6 +519,29 @@ impl StateCell {
         Self {
             state: Deferred::new(state),
             messages: RefCell::new(Queue::new()),
+            modal: Cell::new(0),
+            owner_messages: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Runs `outside` with the state released, then applies what it asks of the state.
+    fn run_outside(&self, hwnd: HWND, outside: Outside) {
+        self.modal.set(self.modal.get() + 1);
+        let after = outside.run(hwnd);
+        self.modal.set(self.modal.get() - 1);
+        self.run(None, move |s| {
+            if let Some(AfterMenu::TogglePin(id)) = &after {
+                s.toggle_pin(id);
+            }
+            // The menu's choice may have closed, started or ended apps.
+            s.refresh();
+        });
+        if self.modal.get() == 0 {
+            for (owner, msg, wp, lp) in self.owner_messages.take() {
+                unsafe {
+                    let _ = PostMessageW(Some(owner), msg, wp, lp);
+                }
+            }
         }
     }
     fn defer_message(&self, hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) {
@@ -661,7 +892,12 @@ impl Dock {
     /// Keep ownership changes out of a standalone dock's modal stack as well.
     /// Returns false when idle so the caller can handle the message normally.
     pub fn defer_owner_message(&self, key: &'static str, msg: u32, wp: WPARAM, lp: LPARAM) -> bool {
-        if self.state.try_borrow_mut().is_ok() {
+        if self.state.modal.get() > 0 {
+            if let Ok(s) = self.state.try_borrow() {
+                self.state.owner_messages.borrow_mut().push((s.owner, msg, wp, lp));
+                return true;
+            }
+        } else if self.state.try_borrow_mut().is_ok() {
             return false;
         }
         self.update(Some(key), move |s| unsafe {
@@ -2332,42 +2568,12 @@ impl State {
 
     /// Offers the taskbar for icons the dock lacks, and Windows' settings
     /// for which icons show in the dock.
-    fn chevron_menu(&mut self) {
+    /// Closes what the taskbar menu would cover; the menu itself runs outside.
+    fn chevron_menu(&mut self) -> Outside {
         self.close_flyout();
         self.hide_tip();
         self.hide_windows();
-        unsafe {
-            let Ok(menu) = CreatePopupMenu() else {
-                return;
-            };
-            let _ = AppendMenuW(menu, MF_STRING, 1, w!("Show taskbar"));
-            let _ = AppendMenuW(menu, MF_STRING, 2, w!("Taskbar settings"));
-            let mut point = POINT::default();
-            let _ = GetCursorPos(&mut point);
-            let _ = SetForegroundWindow(self.hwnd);
-            let command = TrackPopupMenu(
-                menu,
-                TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
-                point.x,
-                point.y,
-                None,
-                self.hwnd,
-                None,
-            )
-            .0;
-            let _ = DestroyMenu(menu);
-            match command {
-                1 => {
-                    let _ = PostMessageW(Some(self.owner), WM_DOCK_SHOW_TASKBAR, WPARAM(0), LPARAM(0));
-                }
-                2 => {
-                    if let Err(error) = crate::launch::open("ms-settings:taskbar") {
-                        eprintln!("Dock taskbar settings: {error}");
-                    }
-                }
-                _ => {}
-            }
-        }
+        Outside::Chevron { owner: self.owner }
     }
 
     fn hit(&self, lp: LPARAM) -> Option<usize> {
@@ -2527,7 +2733,7 @@ impl State {
         }
     }
 
-    fn click(&mut self, index: usize, new_instance: bool) {
+    fn click(&mut self, index: usize, new_instance: bool) -> Option<Outside> {
         if index == 0 {
             unsafe {
                 let _ = PostMessageW(Some(self.owner), WM_SHOW_LAUNCHER, WPARAM(0), LPARAM(0));
@@ -2546,37 +2752,19 @@ impl State {
                     eprintln!("Dock activation: {error}");
                 }
             } else {
-                self.launch(&item.app, false);
+                return Some(Outside::Launch(self.launch(&item.app, false)));
             }
         }
+        None
     }
 
     /// Starts `app`, or another instance of it, as clicking it in Start would.
-    fn launch(&self, app: &AppEntry, admin: bool) {
-        let result = if self.apps.iter().any(|known| known.id == app.id) {
-            crate::launch::app(&app.id, app.path.as_deref(), admin)
-        } else if let Some(path) = &app.path {
-            if admin {
-                crate::launch::app(&app.id, Some(path), true)
-            } else {
-                crate::launch::open(path)
-            }
-        } else {
-            crate::launch::app(&app.id, None, admin)
-        };
-        if let Err(error) = result
-            && !crate::launch::is_cancelled(&error)
-        {
-            eprintln!("Dock launch: {error}");
-            if admin {
-                // Some apps, such as most Store apps, cannot run elevated.
-                crate::tray::notify(
-                    self.owner,
-                    &format!("Could not run {} as administrator", app.name),
-                    &error.message(),
-                    true,
-                );
-            }
+    fn launch(&self, app: &AppEntry, admin: bool) -> Launch {
+        Launch {
+            app: app.clone(),
+            known: self.apps.iter().any(|known| known.id == app.id),
+            admin,
+            owner: self.owner,
         }
     }
 
@@ -2601,13 +2789,10 @@ impl State {
         }
     }
 
-    fn menu(&mut self, index: usize) {
-        let Some(item) = index.checked_sub(1).and_then(|i| self.items.get(i + self.scroll)) else {
-            return;
-        };
-        let Some((id, path, windows)) = self.app_at(index) else {
-            return;
-        };
+    /// Builds an app's menu from the state. It opens outside, see [`AppMenu::track`].
+    fn menu_plan(&mut self, index: usize) -> Option<AppMenu> {
+        let item = index.checked_sub(1).and_then(|i| self.items.get(i + self.scroll))?;
+        let (id, path, windows) = self.app_at(index)?;
         let app = item.app.clone();
         let pinned = self.pinned.iter().any(|pin| pin.id.eq_ignore_ascii_case(&id));
         // A Store app starts by its ID and runs from its package: it has no file
@@ -2656,7 +2841,7 @@ impl State {
                 lower.ends_with(".exe") || lower.ends_with(".lnk")
             });
         let jumps = jump_lists::read(&id, path.as_deref(), &windows);
-        'menus: {
+        {
             unsafe {
                 let (menu, submenu) = match (CreatePopupMenu(), CreatePopupMenu()) {
                     (Ok(menu), Ok(submenu)) => (menu, submenu),
@@ -2664,7 +2849,7 @@ impl State {
                         for menu in [menu, submenu].into_iter().flatten() {
                             let _ = DestroyMenu(menu);
                         }
-                        break 'menus;
+                        return None;
                     }
                 };
                 let mut jump_items = Vec::new();
@@ -2687,7 +2872,7 @@ impl State {
                 if AppendMenuW(menu, MF_POPUP, submenu.0 as usize, &name).is_err() {
                     let _ = DestroyMenu(submenu);
                     let _ = DestroyMenu(menu);
-                    break 'menus;
+                    return None;
                 }
                 let pin = if pinned {
                     w!("Unpin from dock")
@@ -2716,74 +2901,22 @@ impl State {
                 if location.is_some() {
                     let _ = AppendMenuW(submenu, MF_STRING, MENU_PROPERTIES, w!("Properties"));
                 }
-                let mut point = POINT::default();
-                let _ = GetCursorPos(&mut point);
-                let _ = SetForegroundWindow(self.hwnd);
-                let command = TrackPopupMenu(
+                let new_window = self.launch(&app, false);
+                let admin = self.launch(&app, true);
+                Some(AppMenu {
                     menu,
-                    TPM_RETURNCMD | TPM_NONOTIFY,
-                    point.x,
-                    point.y,
-                    None,
-                    self.hwnd,
-                    None,
-                )
-                .0 as usize;
-                // DestroyMenu recursively destroys the attached submenu.
-                let _ = DestroyMenu(menu);
-                match command {
-                    MENU_PIN => self.toggle_pin(&id),
-                    MENU_CLOSE => {
-                        for hwnd in windows {
-                            let _ = open_windows::close(hwnd);
-                        }
-                    }
-                    MENU_NEW_WINDOW => self.launch(&app, false),
-                    MENU_ADMIN => self.launch(&app, true),
-                    MENU_LOCATION => {
-                        if let Some(path) = &location
-                            && let Err(error) = crate::launch::reveal(path)
-                        {
-                            eprintln!("Dock open file location: {error}");
-                        }
-                    }
-                    MENU_PROPERTIES => {
-                        if let Some(path) = &location
-                            && let Err(error) = crate::launch::properties(path)
-                        {
-                            eprintln!("Dock properties: {error}");
-                        }
-                    }
-                    MENU_END_TASK => {
-                        if let Some(ending) = ending
-                            && let Err(error) = ending.end()
-                        {
-                            let hint = if error.denied {
-                                " It may be running as another user or protected by Windows. Task Manager can end it."
-                            } else {
-                                ""
-                            };
-                            crate::tray::notify(
-                                self.owner,
-                                &format!("Could not end {}", app.name),
-                                &format!("{}{hint}", error.message),
-                                true,
-                            );
-                        }
-                    }
-                    command => {
-                        if let Some(item) = command
-                            .checked_sub(jump_lists::MENU_FIRST)
-                            .and_then(|i| jump_items.get(i))
-                            && let Err(error) = item.invoke()
-                        {
-                            eprintln!("Dock Jump List: {error}");
-                        }
-                    }
-                }
+                    id,
+                    app,
+                    windows,
+                    location,
+                    ending,
+                    jump_items,
+                    new_window,
+                    admin,
+                    owner: self.owner,
+                })
             }
         }
-        self.refresh();
     }
 
     fn dragging(&self) -> bool {
@@ -3341,12 +3474,18 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT
                         s.close_flyout();
                     }
                     s.hide_windows();
+                    let mut outside = None;
                     if let Some(index) = s.hit(lp) {
-                        s.click(index, msg == WM_MBUTTONUP);
+                        outside = s.click(index, msg == WM_MBUTTONUP);
                     } else if let Some(part) = s.hit_part(lp)
                         && msg == WM_LBUTTONUP
                     {
                         s.click_part(part);
+                    }
+                    let target = s.hwnd;
+                    drop(s);
+                    if let Some(outside) = outside {
+                        (*pointer).run_outside(target, outside);
                     }
                     return LRESULT(0);
                 }
@@ -3354,8 +3493,9 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT
                     s.finish_press(false);
                     s.close_flyout();
                     s.hide_windows();
+                    let mut outside = None;
                     if let Some(index) = s.hit(lp) {
-                        s.menu(index);
+                        outside = s.menu_plan(index).map(|menu| Outside::AppMenu(Box::new(menu)));
                     } else {
                         match s.hit_part(lp) {
                             Some(part @ (logic::Part::Status | logic::Part::Icon(_))) => {
@@ -3363,10 +3503,15 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT
                                     eprintln!("Dock sound settings: {error}");
                                 }
                             }
-                            Some(logic::Part::Chevron) => s.chevron_menu(),
+                            Some(logic::Part::Chevron) => outside = Some(s.chevron_menu()),
                             Some(logic::Part::Tray(position)) => s.click_inline(position, Action::Menu),
                             _ => {}
                         }
+                    }
+                    let target = s.hwnd;
+                    drop(s);
+                    if let Some(outside) = outside {
+                        (*pointer).run_outside(target, outside);
                     }
                     return LRESULT(0);
                 }
