@@ -24,6 +24,7 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 - The dock uses less CPU: it no longer wakes ten times a second to read the clock, volume and battery, no longer works while you drag other windows, and hides and restores the taskbar without holding up its own drawing. (#93)
 - A fullscreen app on another screen no longer hides the dock. (#93)
 - Switching to an app that has stopped responding no longer freezes the dock. (#93)
+- The dock shows when the pointer reaches the bottom of a screen with another screen below it. (#88, fixes #70)
 
 - Hibernate from the launcher when the PC supports hibernation and has a hibernation file. (#87, fixes #83)
 - Pressing a toggle in the launcher many times in a row, such as Bluetooth, Wi-Fi, dark mode or play/pause, no longer keeps Windows switching for seconds afterwards: only the last press is applied. (#78)

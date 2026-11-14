@@ -38,7 +38,7 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Accessibility::*;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
-use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
+use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, GetSystemMetricsForDpi, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, GetCapture, GetDoubleClickTime, GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE,
     TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE, VK_LBUTTON, VK_RBUTTON, VK_SHIFT,
@@ -437,6 +437,13 @@ struct State {
     /// there.
     last_cursor: POINT,
     still_polls: u8,
+    /// Separate from idle polling: valid only since the last eligible poll.
+    edge_previous: Option<(POINT, Instant)>,
+    /// Where the pointer revealed the dock: it stays on that screen while it
+    /// shows, even if the pointer carries on to the screen below.
+    reveal_at: Option<POINT>,
+    /// Consumed crossing, retained while the pointer rests at this shared edge.
+    edge_held: Option<(RECT, std::ops::Range<i32>)>,
     /// Windows reports the next pointer movement, while the pointer rests in
     /// the lower part of a screen and the dock is hidden.
     listening: bool,
@@ -713,6 +720,9 @@ impl Dock {
             poll_ms: POLL_MS,
             last_cursor: POINT::default(),
             still_polls: 0,
+            edge_previous: None,
+            reveal_at: None,
+            edge_held: None,
             listening: false,
             held: false,
             autohide: true,
@@ -1560,6 +1570,9 @@ impl State {
         self.hide_windows();
         self.stop_slide();
         self.radio_worker.hide();
+        self.edge_previous = None;
+        self.edge_held = None;
+        self.reveal_at = None;
     }
 
     fn apply_apps(&mut self, apps: &[AppEntry], icons: &HashMap<String, Arc<IconPixels>>) {
@@ -1646,8 +1659,10 @@ impl State {
         let _span = crate::util::perf::Span::new("dock_poll");
         let mut cursor = POINT::default();
         if unsafe { GetCursorPos(&mut cursor) }.is_err() {
+            self.edge_previous = None;
             return;
         }
+        self.hold_bottom_crossing(&mut cursor);
         let hidden = !self.revealed && self.slide.is_none();
         if !hidden && fullscreen_foreground(self.hwnd) {
             self.retract();
@@ -1675,9 +1690,11 @@ impl State {
             self.last_cursor = cursor;
             let monitor = cursor_monitor(cursor);
             let at_edge = monitor.is_some_and(|m| cursor.y >= m.bottom - 2);
+            self.reveal_at = None;
             let near_edge = monitor.is_some_and(|m| cursor.y >= m.bottom - (m.bottom - m.top) / 3);
             if !dragging && at_edge && !fullscreen_foreground(self.hwnd) {
                 self.listen(false);
+                self.reveal_at = Some(cursor);
                 self.reveal();
                 self.start_poll(POLL_MS);
             } else if !near_edge {
@@ -1763,6 +1780,54 @@ impl State {
             // flyout matter, and the flyout and window list need a quick answer.
             let busy = self.press.is_some() || self.flyout_open || windows_open || self.held;
             self.set_poll(if busy { POLL_MS } else { QUIET_POLL_MS });
+        }
+    }
+
+    /// Checks sampled downward motion, with no hook or clipping.
+    fn hold_bottom_crossing(&mut self, cursor: &mut POINT) {
+        let dragging =
+            unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0 || GetAsyncKeyState(VK_RBUTTON.0 as i32) < 0 };
+        if !self.visible || !self.autohide || self.suspended || self.held || dragging {
+            self.edge_previous = None;
+            self.edge_held = None;
+            return;
+        }
+        let previous = self.edge_previous.replace((*cursor, Instant::now()));
+        // Test the latch before resetting it: the second push can land well
+        // below the edge in a single poll and must still pass through freely.
+        let already_held = self.edge_held.is_some();
+        if !self.revealed
+            && !already_held
+            && let Some((previous, sampled)) = previous
+            && cursor.y > previous.y
+            && logic::glided(previous, *cursor, sampled.elapsed())
+            && let Some(upper) = cursor_monitor(previous)
+            && let Some(lower) = cursor_monitor(*cursor)
+            && upper.bottom == lower.top
+            && !fullscreen_foreground(self.hwnd)
+        {
+            let mut dpi_x = 96;
+            let mut dpi_y = 96;
+            let monitor = unsafe { MonitorFromPoint(previous, MONITOR_DEFAULTTONULL) };
+            if unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) }.is_ok() {
+                let (_, _, width) = self.dimensions(upper.right - upper.left, dpi_x.max(96));
+                let left = upper.left + (upper.right - upper.left - width) / 2;
+                let span = left..left + width;
+                if let Some(held) = logic::bottom_edge_hold(&[upper, lower], previous, *cursor, span.clone(), false)
+                    && unsafe { SetCursorPos(held.x, held.y) }.is_ok()
+                {
+                    *cursor = held;
+                    self.edge_previous = Some((held, Instant::now()));
+                    self.edge_held = Some((upper, span));
+                }
+            }
+        }
+        if self
+            .edge_held
+            .as_ref()
+            .is_some_and(|(upper, span)| !logic::at_held_edge(*upper, *cursor, span))
+        {
+            self.edge_held = None;
         }
     }
 
@@ -1932,6 +1997,28 @@ impl State {
         }
     }
 
+    /// The same capacity and rounding for placement and a prospective edge hold.
+    fn dimensions(&self, monitor_width: i32, dpi: u32) -> (usize, usize, i32) {
+        let scale = dpi as f32 / 96.0;
+        let layout_scale = logic::layout_scale(self.app_icon_size);
+        let mut fixed = self.row_layout();
+        fixed.apps = logic::AppLayout { count: 1, pinned: 0 };
+        let available = monitor_width as f32 / scale - 8.0 * layout_scale - fixed.width(layout_scale)
+            + logic::slot(layout_scale)
+            - if !self.pinned.is_empty() && self.items.len() > self.pinned.len() {
+                logic::separator_width(layout_scale)
+            } else {
+                0.0
+            };
+        let capacity = ((available / logic::slot(layout_scale)) as usize).max(1);
+        let scroll = self.scroll.min(self.items.len().saturating_sub(capacity));
+        let mut row = self.row_layout();
+        row.apps.count = self.items.len().saturating_sub(scroll).min(capacity);
+        row.apps.pinned = self.pinned.len().saturating_sub(scroll).min(row.apps.count);
+        let width = (row.width(layout_scale) * scale).ceil() as i32;
+        (capacity, scroll, width)
+    }
+
     fn place(&mut self) {
         let previous = (self.dpi, self.left, self.top, self.width, self.scroll, self.capacity);
         if self.suspended {
@@ -1945,7 +2032,9 @@ impl State {
             // The dock appears on the screen whose bottom edge the pointer
             // touched, or stays on the primary screen.
             let mut cursor = POINT::default();
-            if self.autohide {
+            if let Some(point) = self.reveal_at.filter(|_| self.autohide && self.revealed) {
+                cursor = point;
+            } else if self.autohide {
                 let _ = GetCursorPos(&mut cursor);
             }
             let monitor = if self.dragging() {
@@ -2003,20 +2092,9 @@ impl State {
                 }
             }
             let layout_scale = logic::layout_scale(self.app_icon_size);
-            let mut fixed = self.row_layout();
-            fixed.apps = logic::AppLayout { count: 1, pinned: 0 };
-            let available = (info.rcMonitor.right - info.rcMonitor.left) as f32 / scale
-                - 8.0 * layout_scale
-                - fixed.width(layout_scale)
-                + logic::slot(layout_scale)
-                - if !self.pinned.is_empty() && self.items.len() > self.pinned.len() {
-                    logic::separator_width(layout_scale)
-                } else {
-                    0.0
-                };
-            self.capacity = ((available / logic::slot(layout_scale)) as usize).max(1);
-            self.scroll = self.scroll.min(self.items.len().saturating_sub(self.capacity));
-            let width = (self.row_layout().width(layout_scale) * scale).ceil() as i32;
+            let (capacity, scroll, width) = self.dimensions(info.rcMonitor.right - info.rcMonitor.left, self.dpi);
+            self.capacity = capacity;
+            self.scroll = scroll;
             let height = (logic::height(layout_scale) * scale).round() as i32;
             let x = info.rcMonitor.left + (info.rcMonitor.right - info.rcMonitor.left - width) / 2;
             self.top = info.rcMonitor.bottom - height - (logic::margin(layout_scale) * scale).round() as i32;
@@ -3505,6 +3583,10 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT
                     return LRESULT(0);
                 }
                 WM_DPICHANGED | WM_DISPLAYCHANGE => {
+                    if msg == WM_DISPLAYCHANGE {
+                        s.edge_previous = None;
+                        s.edge_held = None;
+                    }
                     s.finish_press(false);
                     let _ = PostMessageW(Some(hwnd), WM_REFRESH, WPARAM(0), LPARAM(0));
                     return LRESULT(0);
