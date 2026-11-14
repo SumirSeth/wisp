@@ -35,6 +35,8 @@ pub const WM_ARTWORK: u32 = WM_APP + 29;
 pub const WM_DOCK_STATUS: u32 = WM_APP + 30;
 pub const WM_TASKBAR_SHOW: u32 = WM_APP + 40;
 pub const WM_RECOVERY_DONE: u32 = WM_APP + 41;
+/// The taskbar thread finished a job.
+pub const WM_TASKBAR_RESULT: u32 = WM_APP + 42;
 /// The dock space's app bar callback.
 pub const WM_APPBAR: u32 = WM_APP + 50;
 pub const WM_CHECK: u32 = WM_APP + 51;
@@ -70,6 +72,7 @@ mod tests {
             WM_DOCK_STATUS,
             WM_TASKBAR_SHOW,
             WM_RECOVERY_DONE,
+            WM_TASKBAR_RESULT,
             WM_APPBAR,
             WM_CHECK,
             WM_SET_HEIGHT,

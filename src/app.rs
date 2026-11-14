@@ -31,7 +31,7 @@ use crate::render::{Frame, Renderer, SurfaceFrame, layout};
 use crate::search::{self, Action, Drill, FileScope, Kind, ResultItem, Searcher};
 use crate::surface::nav::{self, Direction, Rect};
 use crate::surface::{self, Input, Library, Widget};
-use crate::taskbar::{self, TaskbarHider};
+use crate::taskbar::{self, Outcome, TaskbarWorker};
 use crate::theme::Palette;
 use crate::{hotkey, launch, system, tray, util};
 
@@ -471,7 +471,7 @@ struct Launcher {
     commands_sent: u64,
 
     /// Hides the Windows taskbar while `hide_taskbar` is on.
-    taskbar: Option<TaskbarHider>,
+    taskbar: Option<TaskbarWorker>,
     /// Failed attempts to hide or restore the taskbar since the config changed.
     taskbar_failures: u32,
     /// Room kept for a dock that stays visible.
@@ -689,7 +689,7 @@ impl Launcher {
             dock.set_apps(&self.apps, &self.icons);
             dock.configure(&dock::DockConfig::from(&self.config));
             // Notification icons need a home while the taskbar is hidden.
-            dock.set_tray(self.taskbar.as_ref().is_some_and(TaskbarHider::is_active));
+            dock.set_tray(self.taskbar.as_ref().is_some_and(TaskbarWorker::is_active));
             if self.visible { dock.hide() } else { dock.show() }
         }
         self.sync_reserve();
@@ -698,7 +698,7 @@ impl Launcher {
     /// Keeps maximized windows above a dock that stays visible while the
     /// taskbar is hidden. A shown taskbar keeps its own space.
     fn sync_reserve(&mut self) {
-        let hidden = self.taskbar.as_ref().is_some_and(TaskbarHider::is_active);
+        let hidden = self.taskbar.as_ref().is_some_and(TaskbarWorker::is_active);
         let wanted = hidden && self.dock.as_ref().is_some_and(Dock::stays_visible);
         let reserved_height = self
             .dock
@@ -706,7 +706,7 @@ impl Launcher {
             .map_or(dock::DEFAULT_RESERVED_HEIGHT, Dock::reserved_height);
         // Before the space exists, so a re-hide while Windows places it
         // cannot take the bottom back.
-        if wanted && let Some(hider) = &mut self.taskbar {
+        if wanted && let Some(hider) = &self.taskbar {
             hider.keep_bottom(true);
         }
         if !wanted {
@@ -721,16 +721,16 @@ impl Launcher {
                 Err(e) => eprintln!("could not keep space for the dock: {e}"),
             }
         }
-        if let Some(hider) = &mut self.taskbar {
+        if let Some(hider) = &self.taskbar {
             hider.keep_bottom(self.dock_space.is_some());
         }
     }
 
     /// Shows the Windows taskbar for a moment, from the dock's chevron menu.
     fn peek_taskbar(&mut self) {
-        let Some(hider) = &mut self.taskbar else { return };
-        if let Err(e) = hider.peek() {
-            eprintln!("could not show the taskbar: {e}");
+        let Some(hider) = &self.taskbar else { return };
+        hider.peek();
+        if !hider.is_peeking() {
             return;
         }
         // The dock would cover the taskbar.
@@ -743,22 +743,21 @@ impl Launcher {
     }
 
     fn peek_tick(&mut self) {
-        let done = match &mut self.taskbar {
-            Some(hider) => hider.peek_tick().unwrap_or_else(|e| {
-                eprintln!("could not hide the taskbar: {e}");
-                true
-            }),
-            None => true,
-        };
-        if done {
-            unsafe {
-                let _ = KillTimer(Some(self.hwnd), PEEK_TIMER);
-            }
-            if let Some(dock) = &mut self.dock
-                && !self.visible
-            {
-                dock.show();
-            }
+        match &self.taskbar {
+            // The answer arrives as an `Outcome::PeekTick`.
+            Some(hider) => hider.peek_tick(),
+            None => self.peek_done(),
+        }
+    }
+
+    fn peek_done(&mut self) {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), PEEK_TIMER);
+        }
+        if let Some(dock) = &mut self.dock
+            && !self.visible
+        {
+            dock.show();
         }
     }
 
@@ -766,18 +765,63 @@ impl Launcher {
     /// Only the taskbar and the dock's notification area change here, so a
     /// retry cannot touch the launcher or the dock's visibility.
     fn sync_taskbar(&mut self) {
-        let result = match &mut self.taskbar {
-            Some(hider) if self.config.hide_taskbar => hider.reapply(),
-            _ => TaskbarHider::configure(&mut self.taskbar, self.hwnd, self.config.hide_taskbar),
+        let result = match &self.taskbar {
+            Some(hider) if self.config.hide_taskbar => {
+                hider.reapply();
+                Ok(())
+            }
+            _ => TaskbarWorker::configure(&mut self.taskbar, self.hwnd, self.config.hide_taskbar),
         };
-        match result {
-            Ok(()) => self.taskbar_failures = 0,
-            Err(e) => self.taskbar_failed(&e),
+        if let Err(e) = result {
+            self.taskbar_failed(&e);
         }
-        let active = self.taskbar.as_ref().is_some_and(TaskbarHider::is_active);
+        self.sync_tray();
+    }
+
+    /// Notification icons need a home in the dock while the taskbar is hidden.
+    fn sync_tray(&mut self) {
+        let active = self.taskbar.as_ref().is_some_and(TaskbarWorker::is_active);
         if let Some(dock) = &mut self.dock {
-            // Notification icons need a home while the taskbar is hidden.
             dock.set_tray(active);
+        }
+    }
+
+    /// Takes in what the taskbar thread did since the last call.
+    fn drain_taskbar_results(&mut self) {
+        let Some(hider) = &self.taskbar else { return };
+        let active = hider.is_active();
+        let mut shown = false;
+        for outcome in hider.drain() {
+            match outcome {
+                Outcome::Applied { message, result } => match result {
+                    // A later failure gets its retries again, but only once the
+                    // taskbar is really hidden: a failed restore also lands here.
+                    Ok(changed) if message.is_none() || changed && self.config.hide_taskbar && active => {
+                        self.taskbar_failures = 0;
+                        shown |= message == Some(taskbar::WM_TASKBAR_SHOW);
+                    }
+                    Ok(_) => {}
+                    Err(failure) => self.taskbar_failed(&(&failure).into()),
+                },
+                Outcome::Peeked(Err(failure)) => eprintln!("could not show the taskbar: {failure:?}"),
+                Outcome::Peeked(Ok(())) => {}
+                Outcome::PeekTick(Ok(false)) => {}
+                Outcome::PeekTick(result) => {
+                    if let Err(failure) = result {
+                        eprintln!("could not hide the taskbar: {failure:?}");
+                    }
+                    self.peek_done();
+                }
+            }
+        }
+        self.sync_tray();
+        // Explorer restarting or the hider reclaiming space can take the
+        // dock's space away.
+        self.sync_reserve();
+        // Re-hiding and reclaiming space can change Explorer's z-order. Don't
+        // wait for the tray host's periodic check.
+        if shown && let Some(dock) = &self.dock {
+            dock.outrank_tray();
         }
     }
 
@@ -797,24 +841,10 @@ impl Launcher {
 
     /// Hides the taskbar again after Explorer or Windows shows it.
     fn on_taskbar_message(&mut self, msg: u32) {
-        if let Some(hider) = &mut self.taskbar {
-            match hider.on_message(msg) {
-                // A later failure gets its retries again, but only once the
-                // taskbar is really hidden: a failed restore also lands here.
-                Ok(true) if self.config.hide_taskbar && hider.is_active() => self.taskbar_failures = 0,
-                Ok(_) => {}
-                Err(e) => self.taskbar_failed(&e),
-            }
-        }
-        // Explorer restarting or the hider reclaiming space can take the
-        // dock's space away.
-        self.sync_reserve();
-        // Re-hide and reclaim space first, since those operations can change
-        // Explorer's z-order. Don't wait for the tray host's periodic check.
-        if msg == taskbar::WM_TASKBAR_SHOW
-            && let Some(dock) = &self.dock
-        {
-            dock.outrank_tray();
+        match &self.taskbar {
+            // `drain_taskbar_results` follows up once the hider is done.
+            Some(hider) => hider.on_message(msg),
+            None => self.sync_reserve(),
         }
     }
 
@@ -948,7 +978,7 @@ impl Launcher {
         self.trim_file_icons();
         self.visible = false;
         self.radios.close();
-        if self.morphed && self.unified() && !self.taskbar.as_ref().is_some_and(TaskbarHider::is_peeking) {
+        if self.morphed && self.unified() && !self.taskbar.as_ref().is_some_and(TaskbarWorker::is_peeking) {
             let to = self.dock.as_ref().unwrap().resting_rect();
             self.begin_morph(self.outline.unwrap_or_else(|| self.current_rect()), to, false, opacity);
             self.set_collapsed_style(true);
@@ -971,7 +1001,7 @@ impl Launcher {
         self.apply_theme();
         self.set_collapsed_style(true);
         if let Some(dock) = &mut self.dock
-            && !self.taskbar.as_ref().is_some_and(TaskbarHider::is_peeking)
+            && !self.taskbar.as_ref().is_some_and(TaskbarWorker::is_peeking)
         {
             dock.show();
         }
@@ -2460,7 +2490,7 @@ impl Launcher {
     fn shutdown(&mut self) {
         self.win_key_hook = None;
         self.dock = None;
-        if let Err(e) = TaskbarHider::configure(&mut self.taskbar, self.hwnd, false) {
+        if let Some(Err(e)) = self.taskbar.take().map(TaskbarWorker::shutdown) {
             eprintln!("could not restore the taskbar: {e}");
         }
         // Removed last, so Windows works the work area out again from the
@@ -3012,6 +3042,9 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
         }
         dock::WM_DOCK_SHOW_TASKBAR => {
             with_launcher(Launcher::peek_taskbar);
+        }
+        taskbar::WM_TASKBAR_RESULT => {
+            with_launcher(Launcher::drain_taskbar_results);
         }
         WM_TIMER if wparam.0 == PEEK_TIMER => {
             with_launcher(Launcher::peek_tick);

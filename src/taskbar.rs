@@ -18,7 +18,10 @@ use windows::core::{BOOL, Error, HSTRING, Result, w};
 
 #[path = "taskbar/state.rs"]
 mod state;
+#[path = "taskbar/worker.rs"]
+mod worker;
 use state::Rect;
+pub use worker::{Outcome, TaskbarWorker, WM_TASKBAR_RESULT};
 
 pub use crate::messages::WM_RECOVERY_DONE;
 pub use crate::messages::WM_TASKBAR_SHOW;
