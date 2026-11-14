@@ -1,5 +1,7 @@
 //! Independent, nonactivating app dock on the message-loop thread.
 
+#[path = "dock/artwork.rs"]
+mod artwork;
 #[path = "dock/desktops.rs"]
 mod desktops;
 #[path = "dock/jump_lists.rs"]
@@ -55,6 +57,7 @@ use crate::tray_host::{self, Action, TrayHost};
 pub const WM_SHOW_LAUNCHER: u32 = WM_APP + 20;
 pub(crate) const WM_DOCK_WAKE: u32 = WM_APP + 28;
 pub(crate) const WM_DOCK_DRAIN: u32 = WM_APP + 27;
+const WM_ARTWORK: u32 = WM_APP + 29;
 const WM_REFRESH: u32 = WM_APP + 21;
 /// The tray host's icons changed.
 const WM_TRAY_CHANGED: u32 = WM_APP + 22;
@@ -134,6 +137,7 @@ struct State {
     owner: HWND,
     apps: Vec<AppEntry>,
     icons: HashMap<String, Arc<IconPixels>>,
+    artwork: artwork::Artwork,
     items: Vec<Item>,
     pinned: Vec<AppEntry>,
     order: [logic::Section; 9],
@@ -293,6 +297,7 @@ pub(crate) fn retain_message(msg: u32) -> bool {
             | WM_CLOSE
             | WM_MOUSELEAVE
             | WM_REFRESH
+            | WM_ARTWORK
             | WM_TRAY_CHANGED
             | WM_RADIOS
             | WM_CLOSE_FLYOUT
@@ -365,6 +370,7 @@ impl Dock {
             owner,
             apps: Vec::new(),
             icons: HashMap::new(),
+            artwork: artwork::Artwork::default(),
             items: Vec::new(),
             pinned: load_pins(),
             order: logic::DEFAULT_ORDER,
@@ -621,7 +627,14 @@ impl Dock {
         msg == WM_TIMER && (REFRESH_TIMER..=WINDOWS_HIDE_TIMER).contains(&wp.0)
             || matches!(
                 msg,
-                WM_REFRESH | WM_TRAY_CHANGED | WM_RADIOS | WM_INPUT | WM_DOCK_DRAIN | WM_DOCK_WAKE | WM_CLOSE_FLYOUT
+                WM_REFRESH
+                    | WM_ARTWORK
+                    | WM_TRAY_CHANGED
+                    | WM_RADIOS
+                    | WM_INPUT
+                    | WM_DOCK_DRAIN
+                    | WM_DOCK_WAKE
+                    | WM_CLOSE_FLYOUT
             )
     }
 
@@ -1587,15 +1600,16 @@ impl State {
                 (self.tray, self.inline) = tray::update(Vec::new(), icons, size);
             }
             let size = logic::icon_pixels(self.dpi, self.app_icon_size);
+            self.artwork.drain();
             for item in &self.items {
-                if self.icons.get(&item.app.id).is_none_or(|p| p.width != size as u32) {
+                {
                     let path = item
                         .app
                         .path
                         .clone()
                         .unwrap_or_else(|| format!("shell:AppsFolder\\{}", item.app.id));
-                    if let Some(pixels) = tray::app_pixels(&path, size) {
-                        self.icons.insert(item.app.id.clone(), Arc::new(pixels));
+                    if let Some(pixels) = self.artwork.request(self.hwnd, &item.app.id, &path, size) {
+                        self.icons.insert(item.app.id.clone(), pixels);
                     }
                 }
             }
@@ -3033,6 +3047,12 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT
                     let dark = s.dark;
                     let (backdrop, tint) = (s.backdrop, s.tint);
                     s.apply_material(dark, backdrop, tint);
+                }
+                WM_ARTWORK => {
+                    s.artwork.drain();
+                    s.place();
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    return LRESULT(0);
                 }
                 WM_REFRESH => {
                     if !s.scheduled {
