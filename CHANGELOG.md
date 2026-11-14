@@ -19,11 +19,11 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ### Fixes
 
-- Fullscreen apps on another screen no longer hide the dock, and dragging windows no longer makes it refresh. (#PR)
-
-- The dock redraws at once after changing icon size or turning autohide off. (#PR)
-
-- Wisp no longer quits, and the dock no longer gets stuck, when the dock changes while one of its menus is open. A crash now leaves a note in `wisp.log`. (#PR, fixes #91)
+- Wisp no longer quits, and the dock no longer gets stuck, when the dock changes while one of its menus is open. The dock keeps updating while a menu or a "Run as administrator" prompt is open. A crash now leaves a note in `wisp.log`. (#PR, fixes #91)
+- The dock redraws at once after changing its icon size or turning autohide off, instead of showing a cut-off or empty dock for a second or two. (#PR)
+- The dock uses less CPU: it no longer wakes ten times a second to read the clock, volume and battery, no longer works while you drag other windows, and hides and restores the taskbar without holding up its own drawing. (#PR)
+- A fullscreen app on another screen no longer hides the dock. (#PR)
+- Switching to an app that has stopped responding no longer freezes the dock. (#PR)
 
 - Hibernate from the launcher when the PC supports hibernation and has a hibernation file. (#87, fixes #83)
 - Pressing a toggle in the launcher many times in a row, such as Bluetooth, Wi-Fi, dark mode or play/pause, no longer keeps Windows switching for seconds afterwards: only the last press is applied. (#78)
