@@ -60,6 +60,7 @@ pub(crate) use crate::messages::WM_DOCK_DRAIN;
 /// Asks the owner to show the Windows taskbar for a moment, for icons the
 /// dock lacks.
 pub use crate::messages::WM_DOCK_SHOW_TASKBAR;
+use crate::messages::WM_DOCK_STATUS;
 pub(crate) use crate::messages::WM_DOCK_WAKE;
 use crate::messages::WM_RADIOS;
 use crate::messages::WM_REFRESH;
@@ -110,6 +111,11 @@ const HOVER_TIMER: usize = 105;
 const HOVER_MS: f32 = 110.0;
 /// Hides the desktop pill after a scroll.
 const DESKTOP_TIMER: usize = 106;
+/// Fires as each minute starts, for the clock.
+const CLOCK_TIMER: usize = 109;
+/// A dock that stays visible and isn't in use checks for fullscreen apps at
+/// this rate; its clock, volume and battery update from events.
+const QUIET_POLL_MS: u32 = 500;
 const DESKTOP_PILL_MS: u32 = 1100;
 /// Wheel input right after a switch is the same flick, not another request.
 const DESKTOP_PAUSE: Duration = Duration::from_millis(300);
@@ -129,6 +135,15 @@ struct WindowId {
 /// How long a window's app ID is trusted. Some apps set it after their
 /// window appears.
 const WINDOW_ID_TTL: Duration = Duration::from_secs(10);
+
+/// Fires [`CLOCK_TIMER`] just after the next minute starts.
+fn arm_clock(hwnd: HWND) {
+    unsafe {
+        let now = windows::Win32::System::SystemInformation::GetLocalTime();
+        let into_minute = u32::from(now.wSecond) * 1000 + u32::from(now.wMilliseconds);
+        SetTimer(Some(hwnd), CLOCK_TIMER, 60_000 - into_minute.min(59_999) + 20, None);
+    }
+}
 
 /// What the dock shows for its items: their apps and windows.
 fn items_key(items: &[Item]) -> Vec<(String, Vec<isize>)> {
@@ -341,6 +356,7 @@ pub(crate) fn retain_message(msg: u32) -> bool {
             | WM_MOUSELEAVE
             | WM_REFRESH
             | WM_ARTWORK
+            | WM_DOCK_STATUS
             | WM_TRAY_CHANGED
             | WM_RADIOS
             | WM_CLOSE_FLYOUT
@@ -595,6 +611,8 @@ impl Dock {
             }
         }
         EVENT_TARGET.with(|target| target.set(hwnd));
+        crate::commands::audio::notify_level_changes(hwnd, WM_DOCK_STATUS);
+        arm_clock(hwnd);
         for (first, last) in [
             (EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE),
             (EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND),
@@ -675,11 +693,12 @@ impl Dock {
     }
 
     pub fn owns_message(msg: u32, wp: WPARAM) -> bool {
-        msg == WM_TIMER && (REFRESH_TIMER..=WINDOWS_HIDE_TIMER).contains(&wp.0)
+        msg == WM_TIMER && (REFRESH_TIMER..=CLOCK_TIMER).contains(&wp.0)
             || matches!(
                 msg,
                 WM_REFRESH
                     | WM_ARTWORK
+                    | WM_DOCK_STATUS
                     | WM_TRAY_CHANGED
                     | WM_RADIOS
                     | WM_INPUT
@@ -1038,6 +1057,7 @@ impl Drop for Dock {
             let _ = KillTimer(Some(self.hwnd), DESKTOP_TIMER);
             let _ = KillTimer(Some(self.hwnd), WINDOWS_TIMER);
             let _ = KillTimer(Some(self.hwnd), WINDOWS_HIDE_TIMER);
+            let _ = KillTimer(Some(self.hwnd), CLOCK_TIMER);
             // Remove the pointer before synchronous destruction can reenter the wndproc.
             for hwnd in self.popups.iter().copied().chain(std::iter::once(self.hwnd)) {
                 if !hwnd.is_invalid() {
@@ -1422,7 +1442,7 @@ impl State {
         self.listen(false);
         // Once the dock hides, a resting pointer counts its rest afresh.
         self.still_polls = 0;
-        if self.poll_ms != POLL_MS {
+        if self.autohide && self.poll_ms != POLL_MS {
             // HIDE_AFTER counts slow polls.
             self.start_poll(POLL_MS);
         }
@@ -1471,8 +1491,12 @@ impl State {
                 return;
             }
         }
-        // Polling also catches volume changes from keys and other apps.
-        self.update_status();
+        if !self.autohide {
+            // Nothing to count: only fullscreen apps and clicks away from the
+            // flyout matter, and the flyout and window list need a quick answer.
+            let busy = self.press.is_some() || self.flyout_open || windows_open || self.held;
+            self.set_poll(if busy { POLL_MS } else { QUIET_POLL_MS });
+        }
     }
 
     /// Starts or restarts the poll timer at `ms`.
@@ -3145,6 +3169,19 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT
                     let dark = s.dark;
                     let (backdrop, tint) = (s.backdrop, s.tint);
                     s.apply_material(dark, backdrop, tint);
+                    // Battery level and charging arrive here too.
+                    if msg == WM_POWERBROADCAST {
+                        s.update_status();
+                    }
+                }
+                WM_DOCK_STATUS => {
+                    s.update_status();
+                    return LRESULT(0);
+                }
+                WM_TIMER if wp.0 == CLOCK_TIMER => {
+                    s.update_status();
+                    arm_clock(hwnd);
+                    return LRESULT(0);
                 }
                 WM_ARTWORK => {
                     s.artwork.drain();
