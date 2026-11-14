@@ -251,6 +251,12 @@ impl Renderer {
         }
     }
 
+    pub fn clear_icons(&mut self) {
+        if let Some(target) = &mut self.target {
+            target.bitmaps.clear();
+        }
+    }
+
     pub fn set_dpi(&mut self, dpi: u32) {
         self.dpi = dpi as f32;
         if let Some(t) = &self.target {
@@ -1228,6 +1234,10 @@ unsafe fn bitmap(
         )
         .ok()?
     };
+    // A long search session can see thousands of distinct file icons.
+    if cache.len() >= 2048 {
+        cache.clear();
+    }
     cache.insert(key.to_string(), bitmap.clone());
     Some(bitmap)
 }
