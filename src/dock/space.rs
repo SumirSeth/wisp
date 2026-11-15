@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{E_FAIL, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WAIT_OBJECT_0, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint,
+    GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint, MonitorFromRect,
 };
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -229,10 +229,10 @@ fn check(hwnd: HWND) {
     }
 }
 
-/// Whether the primary work area stops above the strip. Another app bar
+/// Whether the screen's work area stops above the strip. Another app bar
 /// below the strip is fine.
 fn kept() -> bool {
-    primary().is_none_or(|(_, work, _)| work.bottom <= STRIP.get().top)
+    screen().is_none_or(|(_, work, _)| work.bottom <= STRIP.get().top)
 }
 
 fn bar(hwnd: HWND) -> APPBARDATA {
@@ -338,11 +338,14 @@ fn send(message: u32, data: &mut APPBARDATA) -> usize {
     result
 }
 
-/// The primary screen's bounds and work area, and its height for the space in
-/// physical pixels.
-fn primary() -> Option<(RECT, RECT, i32)> {
+/// The dock's screen's bounds and work area, and its height for the space in
+/// physical pixels. The main screen unless the user chose another.
+fn screen() -> Option<(RECT, RECT, i32)> {
     unsafe {
-        let monitor: HMONITOR = MonitorFromPoint(POINT::default(), MONITOR_DEFAULTTOPRIMARY);
+        let monitor: HMONITOR = match crate::dock::fixed_screen() {
+            Some(bounds) => MonitorFromRect(&bounds, MONITOR_DEFAULTTOPRIMARY),
+            None => MonitorFromPoint(POINT::default(), MONITOR_DEFAULTTOPRIMARY),
+        };
         let mut info = MONITORINFO {
             cbSize: size_of::<MONITORINFO>() as u32,
             ..Default::default()
@@ -357,10 +360,10 @@ fn primary() -> Option<(RECT, RECT, i32)> {
     }
 }
 
-/// Claims a strip at the bottom of the primary screen, above any app bar
+/// Claims a strip at the bottom of the dock's screen, above any app bar
 /// already there, at the screen's current scale.
 fn place(hwnd: HWND) {
-    let Some((monitor, _, height)) = primary() else { return };
+    let Some((monitor, _, height)) = screen() else { return };
     let mut data = bar(hwnd);
     data.rc = monitor;
     data.rc.top = data.rc.bottom - height;
@@ -377,7 +380,7 @@ fn place(hwnd: HWND) {
 /// Places the strip again only if the screen or strip height changed, so a
 /// broadcast caused by the strip itself does not repeat forever.
 fn place_if_changed(hwnd: HWND) {
-    let Some((monitor, _, height)) = primary() else { return };
+    let Some((monitor, _, height)) = screen() else { return };
     if PLACED_FOR.get() != (monitor, height) {
         place(hwnd);
     }
@@ -391,6 +394,8 @@ unsafe extern "system" fn space_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpara
             LRESULT(0)
         }
         WM_CHECK => {
+            // The dock may have moved to another screen.
+            place_if_changed(hwnd);
             check(hwnd);
             LRESULT(0)
         }

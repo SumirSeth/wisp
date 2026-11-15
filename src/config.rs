@@ -66,6 +66,8 @@ pub struct Config {
     pub dock_status_icons: Vec<String>,
     /// `#RRGGBB` or `#RRGGBBAA`, or empty for the theme's colors.
     pub dock_color: String,
+    /// `"pointer"`, `"main"`, or a screen's ID from Settings.
+    pub dock_screen: String,
     pub hotkey: String,
     pub win_key: bool,
     pub max_results: usize,

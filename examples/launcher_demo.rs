@@ -35,6 +35,8 @@ mod messages;
 mod morph;
 #[path = "../src/render.rs"]
 mod render;
+#[path = "../src/screens.rs"]
+mod screens;
 #[path = "../src/search.rs"]
 mod search;
 #[path = "../src/surface/mod.rs"]

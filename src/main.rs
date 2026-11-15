@@ -24,6 +24,7 @@ mod launch;
 mod messages;
 mod morph;
 mod render;
+mod screens;
 mod search;
 mod surface;
 mod system;

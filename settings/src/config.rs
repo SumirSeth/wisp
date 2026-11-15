@@ -37,6 +37,8 @@ pub struct Config {
     pub dock_icon_size: i64,
     /// `#RRGGBB` or `#RRGGBBAA`, or empty for the theme's colors.
     pub dock_color: String,
+    /// `"pointer"`, `"main"`, or a screen's ID.
+    pub dock_screen: String,
     pub hide_taskbar: bool,
     pub window_list: String,
     pub dock_status_group: Vec<String>,
@@ -127,6 +129,7 @@ impl Config {
             dock_search_button: boolean("dock_search_button")?,
             dock_icon_size,
             dock_color,
+            dock_screen: string("dock_screen")?,
             hide_taskbar: boolean("hide_taskbar")?,
             window_list,
             dock_status_group: placement.names(true),
@@ -283,6 +286,7 @@ fn validate_edit(key: &str, value: &Value) -> Result<(), String> {
             return Err("position must be center or bottom.".into());
         }
         "dock_color" => validate_color(value.as_str().ok_or("Dock color must be text.")?)?,
+        "dock_screen" if !value.is_str() => return Err("dock_screen must be text.".into()),
         "dock_icon_size" if !value.as_integer().is_some_and(|size| (24..=40).contains(&size)) => {
             return Err("Choose an app icon size between 24 and 40 DIP.".into());
         }
@@ -298,6 +302,7 @@ fn validate_edit(key: &str, value: &Value) -> Result<(), String> {
         | "dock_autohide"
         | "dock_search_button"
         | "dock_icon_size"
+        | "dock_screen"
         | "hide_taskbar" => {}
         "window_list" if !matches!(value.as_str(), Some("always" | "multiple" | "off")) => {
             return Err("window_list must be always, multiple or off.".into());

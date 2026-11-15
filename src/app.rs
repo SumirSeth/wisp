@@ -989,13 +989,19 @@ impl Launcher {
         }
     }
 
-    /// Uses the monitor under the cursor. Reduces the result count and moves
-    /// the launcher up if needed to keep it within the work area.
+    /// Uses the monitor under the cursor, or the dock's chosen screen when the
+    /// launcher grows out of the dock. Reduces the result count and moves the
+    /// launcher up if needed to keep it within the work area.
     fn place_on_active_monitor(&mut self) {
         let work = unsafe {
-            let mut cursor = POINT::default();
-            let _ = GetCursorPos(&mut cursor);
-            let monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+            let monitor = match dock::chosen_screen().filter(|_| self.unified()) {
+                Some(bounds) => MonitorFromRect(&bounds, MONITOR_DEFAULTTONEAREST),
+                None => {
+                    let mut cursor = POINT::default();
+                    let _ = GetCursorPos(&mut cursor);
+                    MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST)
+                }
+            };
             let mut info = MONITORINFO {
                 cbSize: size_of::<MONITORINFO>() as u32,
                 ..Default::default()

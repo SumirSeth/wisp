@@ -442,6 +442,11 @@ struct State {
     /// Where the pointer revealed the dock: it stays on that screen while it
     /// shows, even if the pointer carries on to the screen below.
     reveal_at: Option<POINT>,
+    /// Where the dock shows, from `dock_screen`.
+    screen: ScreenChoice,
+    /// The bounds of the screen the dock stays on, or `None` while it follows
+    /// the pointer.
+    fixed: Option<RECT>,
     /// Consumed crossing, retained while the pointer rests at this shared edge.
     edge_held: Option<(RECT, std::ops::Range<i32>)>,
     /// Windows reports the next pointer movement, while the pointer rests in
@@ -623,8 +628,45 @@ pub(crate) fn retain_message(msg: u32) -> bool {
     )
 }
 
+/// Where the dock shows: `dock_screen` in the config.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ScreenChoice {
+    /// The screen whose bottom edge the pointer touches. A dock that stays
+    /// visible uses the main screen.
+    Pointer,
+    Main,
+    /// A screen by its [`crate::screens::Screen::id`]. The main screen stands
+    /// in while it isn't connected.
+    Named(String),
+}
+
+impl ScreenChoice {
+    pub fn parse(value: &str) -> Self {
+        match value.trim() {
+            "" | crate::screens::POINTER => Self::Pointer,
+            crate::screens::MAIN => Self::Main,
+            id => Self::Named(id.to_owned()),
+        }
+    }
+}
+
+/// The screen the dock stays on, and whether the user chose it, for the
+/// launcher and for the threads that keep its space and hide the taskbar.
+static SCREEN: std::sync::Mutex<(Option<RECT>, bool)> = std::sync::Mutex::new((None, false));
+
+/// The bounds of the screen the dock stays on, or `None` while it follows
+/// the pointer.
+pub fn fixed_screen() -> Option<RECT> {
+    SCREEN.lock().map_or(None, |screen| screen.0)
+}
+
+/// The screen the user chose for the dock, if they chose one.
+pub fn chosen_screen() -> Option<RECT> {
+    SCREEN.lock().map_or(None, |screen| screen.0.filter(|_| screen.1))
+}
+
 /// Dock settings prepared before entering the state mutation.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct DockConfig {
     placement: logic::StatusPlacement,
     order: [logic::Section; 9],
@@ -632,6 +674,7 @@ pub struct DockConfig {
     mode: WindowListMode,
     search: bool,
     autohide: bool,
+    screen: ScreenChoice,
 }
 impl From<&crate::config::Config> for DockConfig {
     fn from(config: &crate::config::Config) -> Self {
@@ -641,6 +684,7 @@ impl From<&crate::config::Config> for DockConfig {
         let mode = config.window_list;
         let search = config.dock_search_button;
         let autohide = config.dock_autohide;
+        let screen = ScreenChoice::parse(&config.dock_screen);
         Self {
             placement,
             order,
@@ -648,6 +692,7 @@ impl From<&crate::config::Config> for DockConfig {
             mode,
             search,
             autohide,
+            screen,
         }
     }
 }
@@ -721,6 +766,8 @@ impl Dock {
             still_polls: 0,
             edge_previous: None,
             reveal_at: None,
+            screen: ScreenChoice::Pointer,
+            fixed: None,
             edge_held: None,
             listening: false,
             held: false,
@@ -1111,7 +1158,8 @@ impl Dock {
             mode,
             search,
             autohide,
-        } = *config;
+            screen,
+        } = config.clone();
         self.app_icon_size.set(size);
         self.autohide.set(autohide);
         self.update(Some("configure"), move |s| {
@@ -1121,6 +1169,7 @@ impl Dock {
                 && s.window_list_mode == mode
                 && s.search_button == search
                 && s.autohide == autohide
+                && s.screen == screen
             {
                 return;
             }
@@ -1139,6 +1188,8 @@ impl Dock {
             s.window_list_mode = mode;
             s.search_button = search;
             s.autohide = autohide;
+            s.screen = screen;
+            s.resolve_screen();
             s.away = 0;
             if !autohide && s.visible && !s.suspended && !s.revealed {
                 // Setting `revealed` alone would leave the slide hidden.
@@ -1567,6 +1618,21 @@ impl State {
     /// Ends whatever the dock is doing for the user, before it goes out of
     /// sight: a press, the flyout, the tooltip, the window list, a slide and
     /// the radio reads.
+    /// Works out the screen the dock stays on, after a setting or display
+    /// change, and shares it with the launcher and the dock's other threads.
+    fn resolve_screen(&mut self) {
+        self.fixed = match &self.screen {
+            ScreenChoice::Pointer if self.autohide => None,
+            ScreenChoice::Named(id) => crate::screens::find(id)
+                .map(|screen| screen.bounds)
+                .or_else(crate::screens::main),
+            _ => crate::screens::main(),
+        };
+        if let Ok(mut screen) = SCREEN.lock() {
+            *screen = (self.fixed, self.screen != ScreenChoice::Pointer);
+        }
+    }
+
     fn retract(&mut self) {
         self.finish_press(false);
         self.close_flyout();
@@ -1693,7 +1759,8 @@ impl State {
                 unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0 || GetAsyncKeyState(VK_RBUTTON.0 as i32) < 0 };
             let moved = cursor != self.last_cursor;
             self.last_cursor = cursor;
-            let monitor = cursor_monitor(cursor);
+            // On a chosen screen, other screens' bottom edges don't count.
+            let monitor = cursor_monitor(cursor).filter(|m| self.fixed.is_none_or(|fixed| fixed == *m));
             let at_edge = monitor.is_some_and(|m| cursor.y >= m.bottom - 2);
             self.reveal_at = None;
             let near_edge = monitor.is_some_and(|m| cursor.y >= m.bottom - (m.bottom - m.top) / 3);
@@ -1811,6 +1878,7 @@ impl State {
             && let Some(upper) = cursor_monitor(previous)
             && let Some(lower) = cursor_monitor(*cursor)
             && upper.bottom == lower.top
+            && self.fixed.is_none_or(|fixed| fixed == upper)
             && !fullscreen_foreground(self.hwnd)
         {
             let mut dpi_x = 96;
@@ -2045,8 +2113,8 @@ impl State {
             Err(error) => eprintln!("Dock percentage width: {error}"),
         }
         unsafe {
-            // The dock appears on the screen whose bottom edge the pointer
-            // touched, or stays on the primary screen.
+            // The dock appears on its chosen screen, or on the screen whose
+            // bottom edge the pointer touched.
             let mut cursor = POINT::default();
             if let Some(point) = self.reveal_at.filter(|_| self.autohide && self.revealed) {
                 cursor = point;
@@ -2055,6 +2123,8 @@ impl State {
             }
             let monitor = if self.dragging() {
                 MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTOPRIMARY)
+            } else if let Some(fixed) = self.fixed {
+                MonitorFromRect(&fixed, MONITOR_DEFAULTTOPRIMARY)
             } else {
                 MonitorFromPoint(cursor, MONITOR_DEFAULTTOPRIMARY)
             };
@@ -3594,6 +3664,8 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT
                     if msg == WM_DISPLAYCHANGE {
                         s.edge_previous = None;
                         s.edge_held = None;
+                        // The chosen screen may have come back, or gone.
+                        s.resolve_screen();
                     }
                     s.finish_press(false);
                     let _ = PostMessageW(Some(hwnd), WM_REFRESH, WPARAM(0), LPARAM(0));

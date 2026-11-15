@@ -52,6 +52,10 @@ dock = true
 # taskbar is hidden.
 dock_autohide = true
 
+# The screen the dock shows on: "pointer", "main", or a screen chosen in
+# Settings. A chosen screen that isn't connected falls back to the main one.
+dock_screen = "pointer"
+
 # Show the search button at the start of the dock.
 dock_search_button = true
 

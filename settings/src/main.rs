@@ -13,6 +13,10 @@ mod hotkey;
 #[path = "../../src/install.rs"]
 mod install;
 mod palette;
+// Shared with the launcher, which also finds a screen by its ID.
+#[allow(dead_code)]
+#[path = "../../src/screens.rs"]
+mod screens;
 mod system;
 mod ui;
 mod update;

@@ -19,7 +19,7 @@ use crate::{
     config::{self, Config, Store},
     hotkey,
     palette::{self, Palette},
-    system, update,
+    screens, system, update,
 };
 
 const ICON_SVG: &[u8] = include_bytes!("../../assets/icon.svg");
@@ -103,6 +103,9 @@ pub struct Settings {
     theme: Entity<Choices>,
     backdrop: Entity<Choices>,
     window_list: Entity<Choices>,
+    dock_screen: Entity<SelectState<SearchableVec<SharedString>>>,
+    /// The values behind `dock_screen`'s labels.
+    screen_values: Vec<String>,
     results: Entity<SliderState>,
     app_icon_size: Entity<SliderState>,
     /// Whether Appearance's Advanced section is expanded.
@@ -162,6 +165,33 @@ fn dock_value(color: Hsla) -> String {
     format!("#{r:02X}{g:02X}{b:02X}{a:02X}")
 }
 
+/// The dock's screen choices as values and labels: the pointer, the main
+/// screen, then each connected screen. A chosen screen that isn't connected
+/// stays listed, so the choice survives until it's back.
+fn screen_choices(current: &str) -> (Vec<String>, Vec<SharedString>) {
+    let main = screens::main();
+    let mut values = vec![screens::POINTER.to_owned(), screens::MAIN.to_owned()];
+    let mut labels: Vec<SharedString> = vec!["Follow the pointer".into(), "Main screen".into()];
+    for screen in screens::list() {
+        labels.push(if Some(screen.bounds) == main {
+            format!("{} (main)", screen.name).into()
+        } else {
+            screen.name.into()
+        });
+        values.push(screen.id);
+    }
+    if !current.is_empty() && !values.iter().any(|value| value == current) {
+        values.push(current.to_owned());
+        labels.push("A screen that isn't connected".into());
+    }
+    (values, labels)
+}
+
+fn screen_index(values: &[String], current: &str) -> Option<IndexPath> {
+    let current = if current.is_empty() { screens::POINTER } else { current };
+    values.iter().position(|value| value == current).map(IndexPath::new)
+}
+
 fn labels(choices: &[(&'static str, &'static str)]) -> Vec<&'static str> {
     choices.iter().map(|(_, label)| *label).collect()
 }
@@ -214,6 +244,15 @@ impl Settings {
             SelectState::new(
                 SearchableVec::new(labels(&WINDOW_LISTS)),
                 index_of(&WINDOW_LISTS, &config.window_list),
+                window,
+                cx,
+            )
+        });
+        let (screen_values, screen_labels) = screen_choices(&config.dock_screen);
+        let dock_screen = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(screen_labels),
+                screen_index(&screen_values, &config.dock_screen),
                 window,
                 cx,
             )
@@ -308,6 +347,15 @@ impl Settings {
             }
         })
         .detach();
+        cx.subscribe_in(&dock_screen, window, |this, state, event, window, cx| {
+            if let SelectEvent::Confirm(Some(_)) = event
+                && let Some(index) = state.read(cx).selected_index(cx)
+                && let Some(value) = this.screen_values.get(index.row).cloned()
+            {
+                this.save("dock_screen", value.into(), window, cx);
+            }
+        })
+        .detach();
         cx.subscribe_in(&results, window, |this, _, event, window, cx| {
             if let SliderEvent::Change(value) = event {
                 let value = (value.start().round() as i64).clamp(1, 20);
@@ -360,6 +408,8 @@ impl Settings {
             theme,
             backdrop,
             window_list,
+            dock_screen,
+            screen_values,
             results,
             app_icon_size,
             advanced_open: false,
@@ -616,6 +666,14 @@ impl Settings {
                 let window_list = index_of(&WINDOW_LISTS, &self.config.window_list);
                 self.window_list
                     .update(cx, |state, cx| state.set_selected_index(window_list, window, cx));
+                // Screens may have come or gone since Settings opened.
+                let (values, labels) = screen_choices(&self.config.dock_screen);
+                let screen = screen_index(&values, &self.config.dock_screen);
+                self.screen_values = values;
+                self.dock_screen.update(cx, |state, cx| {
+                    state.set_items(SearchableVec::new(labels), window, cx);
+                    state.set_selected_index(screen, window, cx);
+                });
                 let results = self.config.max_results as f32;
                 self.results
                     .update(cx, |state, cx| state.set_value(results, window, cx));
@@ -1046,6 +1104,20 @@ impl Settings {
                             .on_change(cx.listener(|this, enabled: &bool, window, cx| {
                                 this.save("dock_autohide", (!*enabled).into(), window, cx);
                             })),
+                        p,
+                    ))
+                    .child(divider(p))
+                    .child(row(
+                        "Screen",
+                        if self.config.dock_autohide {
+                            "Where the dock shows. Following the pointer, it shows on the screen whose bottom edge the pointer touches."
+                        } else {
+                            "Where the dock shows. Following the pointer, a dock that stays visible uses the main screen."
+                        },
+                        Select::new(&self.dock_screen)
+                            .disabled(!self.config.dock)
+                            .accessibility_label("Screen")
+                            .w(px(190.)),
                         p,
                     ))
                     .child(divider(p))

@@ -18,6 +18,7 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 - Find Windows tools by their program name, such as `cmd`, `taskmgr` or `regedit`, whatever the language of Windows. (#89, fixes #84)
 - Type `wisp` or `settings` in the launcher to open Wisp's Settings, also while the taskbar and its tray icon are hidden. (#86)
 - Hibernate from the launcher when the PC supports hibernation and has a hibernation file. (#87, fixes #83)
+- Choose which screen the dock shows on, under Dock > Screen in Settings: the screen the pointer touches, the main screen, or a named one. The launcher opens there too. (#99, fixes #63)
 
 ### Fixes
 
