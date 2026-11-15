@@ -718,6 +718,11 @@ impl Dock {
     }
 
     fn create(owner: HWND, shared: bool) -> Result<Self> {
+        // A new state starts following the pointer, so a previous dock's
+        // screen must not outlive it.
+        if let Ok(mut screen) = SCREEN.lock() {
+            *screen = (None, false);
+        }
         if EVENT_TARGET.with(|target| !target.get().is_invalid()) {
             return Err(Error::new(E_FAIL, "A dock already exists on this thread"));
         }
@@ -3349,13 +3354,22 @@ fn cursor_monitor(cursor: POINT) -> Option<RECT> {
     (found && (monitor.left..monitor.right).contains(&cursor.x)).then_some(monitor)
 }
 
+/// The dock's screen: the chosen one, even before the hidden dock first moves
+/// there, or the one its window is on.
+fn dock_monitor(dock: HWND) -> HMONITOR {
+    match fixed_screen() {
+        Some(bounds) => unsafe { MonitorFromRect(&bounds, MONITOR_DEFAULTTONEAREST) },
+        None => unsafe { MonitorFromWindow(dock, MONITOR_DEFAULTTONEAREST) },
+    }
+}
+
 fn fullscreen_foreground(dock: HWND) -> bool {
     unsafe {
         let hwnd = GetForegroundWindow();
         if hwnd.is_invalid()
             || hwnd == dock
             || IsIconic(hwnd).as_bool()
-            || MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) != MonitorFromWindow(dock, MONITOR_DEFAULTTONEAREST)
+            || MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) != dock_monitor(dock)
         {
             return false;
         }

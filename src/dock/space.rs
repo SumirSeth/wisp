@@ -405,6 +405,9 @@ unsafe extern "system" fn space_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpara
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == CHECK_TIMER => {
+            // The dock may have moved to another screen while its
+            // settings waited for a menu to close.
+            place_if_changed(hwnd);
             check(hwnd);
             LRESULT(0)
         }

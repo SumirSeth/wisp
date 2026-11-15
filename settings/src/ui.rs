@@ -180,7 +180,7 @@ fn screen_choices(current: &str) -> (Vec<String>, Vec<SharedString>) {
         });
         values.push(screen.id);
     }
-    if !current.is_empty() && !values.iter().any(|value| value == current) {
+    if !current.is_empty() && !values.iter().any(|value| value.eq_ignore_ascii_case(current)) {
         values.push(current.to_owned());
         labels.push("A screen that isn't connected".into());
     }
@@ -189,7 +189,10 @@ fn screen_choices(current: &str) -> (Vec<String>, Vec<SharedString>) {
 
 fn screen_index(values: &[String], current: &str) -> Option<IndexPath> {
     let current = if current.is_empty() { screens::POINTER } else { current };
-    values.iter().position(|value| value == current).map(IndexPath::new)
+    values
+        .iter()
+        .position(|value| value.eq_ignore_ascii_case(current))
+        .map(IndexPath::new)
 }
 
 fn labels(choices: &[(&'static str, &'static str)]) -> Vec<&'static str> {
@@ -1110,9 +1113,9 @@ impl Settings {
                     .child(row(
                         "Screen",
                         if self.config.dock_autohide {
-                            "Where the dock shows. Following the pointer, it shows on the screen whose bottom edge the pointer touches."
+                            "Following the pointer, the dock shows on the screen whose bottom edge the pointer touches. Main screen follows Windows' choice of main screen; a named screen stays put."
                         } else {
-                            "Where the dock shows. Following the pointer, a dock that stays visible uses the main screen."
+                            "Following the pointer, a dock that stays visible uses the main screen. Main screen follows Windows' choice of main screen; a named screen stays put."
                         },
                         Select::new(&self.dock_screen)
                             .disabled(!self.config.dock)

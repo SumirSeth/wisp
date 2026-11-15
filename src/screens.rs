@@ -8,7 +8,7 @@ use windows::Win32::Devices::Display::{
     DISPLAYCONFIG_SOURCE_DEVICE_NAME, DISPLAYCONFIG_TARGET_DEVICE_NAME, DisplayConfigGetDeviceInfo,
     GetDisplayConfigBufferSizes, QDC_ONLY_ACTIVE_PATHS, QueryDisplayConfig,
 };
-use windows::Win32::Foundation::{ERROR_SUCCESS, LPARAM, POINT, RECT};
+use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MONITORINFOEXW,
     MonitorFromPoint,
@@ -69,7 +69,7 @@ pub fn list() -> Vec<Screen> {
 
 /// The screen with this `id`, if it is connected.
 pub fn find(id: &str) -> Option<Screen> {
-    list().into_iter().find(|screen| screen.id == id)
+    list().into_iter().find(|screen| screen.id.eq_ignore_ascii_case(id))
 }
 
 /// The main screen's bounds.
@@ -108,24 +108,36 @@ fn label(models: &[String]) -> Vec<String> {
 /// monitor's device path and model.
 fn device_names() -> Vec<(String, String, String)> {
     unsafe {
-        let (mut path_count, mut mode_count) = (0, 0);
-        if GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut path_count, &mut mode_count) != ERROR_SUCCESS {
-            return Vec::new();
+        let mut paths = Vec::new();
+        // Screens can come or go between the two calls, exactly when this
+        // runs on a display change: ask again with bigger buffers.
+        for _ in 0..3 {
+            let (mut path_count, mut mode_count) = (0, 0);
+            if GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut path_count, &mut mode_count) != ERROR_SUCCESS {
+                return Vec::new();
+            }
+            paths = vec![DISPLAYCONFIG_PATH_INFO::default(); path_count as usize];
+            let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); mode_count as usize];
+            let result = QueryDisplayConfig(
+                QDC_ONLY_ACTIVE_PATHS,
+                &mut path_count,
+                paths.as_mut_ptr(),
+                &mut mode_count,
+                modes.as_mut_ptr(),
+                None,
+            );
+            if result == ERROR_SUCCESS {
+                paths.truncate(path_count as usize);
+                break;
+            }
+            paths.clear();
+            if result != ERROR_INSUFFICIENT_BUFFER {
+                break;
+            }
         }
-        let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); path_count as usize];
-        let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); mode_count as usize];
-        if QueryDisplayConfig(
-            QDC_ONLY_ACTIVE_PATHS,
-            &mut path_count,
-            paths.as_mut_ptr(),
-            &mut mode_count,
-            modes.as_mut_ptr(),
-            None,
-        ) != ERROR_SUCCESS
-        {
-            return Vec::new();
-        }
-        paths.truncate(path_count as usize);
+        // A mirrored display has a path per monitor: name it after the
+        // lowest target, whatever order Windows lists them in.
+        paths.sort_by_key(|path| (path.sourceInfo.id, path.targetInfo.id));
         paths
             .iter()
             .filter_map(|path| {
