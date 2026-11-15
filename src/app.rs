@@ -48,6 +48,8 @@ use crate::messages::WM_APP_RELOAD;
 use crate::messages::WM_APP_SHOW;
 const CLASS_NAME: PCWSTR = crate::channel::LAUNCHER_CLASS;
 const HOTKEY_ID: i32 = 1;
+/// How far left of a slider's track, in DIPs, a press still grabs it.
+const SLIDER_GRAB: f32 = 8.0;
 const UPDATE_TIMER: usize = 5;
 const CARET_TIMER: usize = 1;
 /// Reads the state again while a surface is open, so it stays live.
@@ -396,8 +398,9 @@ struct Launcher {
     last_mouse: Option<(i32, i32)>,
     drag_press: Option<((i32, i32), Payload)>,
     drag_consumed: bool,
-    /// The id of the surface slider held under the mouse button.
-    slider_drag: Option<String>,
+    /// The id of the surface slider held under the mouse button, and the
+    /// value last sent for it.
+    slider_drag: Option<(String, Option<u32>)>,
 
     apps: Vec<AppEntry>,
     icons: HashMap<String, Arc<IconPixels>>,
@@ -926,8 +929,12 @@ impl Launcher {
     }
 
     fn hide(&mut self) {
-        self.drag_press = None;
-        self.slider_drag = None;
+        // Hiding mid-press: the button-up may never come, so give the mouse back.
+        if self.drag_press.take().is_some() | self.slider_drag.take().is_some() {
+            unsafe {
+                let _ = ReleaseCapture();
+            }
+        }
         if !self.visible {
             return;
         }
@@ -2390,16 +2397,19 @@ impl Launcher {
             .stop_at(x as f32 * scale, y as f32 * scale)
             .filter(|(widget, _)| *widget == index)
             .map(|(_, stop)| stop);
-        let Some(point) = self.surface_point(x, y) else {
+        if self.surface_point(x, y).is_none() {
             return;
-        };
+        }
         let Some(open) = &mut self.surface else {
             return;
         };
         match &open.widgets[index].input {
-            Input::Slider { target, .. } => {
-                let command = target.command(nav::slider_value(&open.rects[index], point.0));
-                self.run_command(command);
+            Input::Slider { .. } => {
+                // A press on the track starts a drag instead; this is the
+                // speaker or the name, which mutes as Enter does.
+                if let Some(Action::Command(command)) = open.widgets[index].activate(0) {
+                    self.run_command(command);
+                }
             }
             Input::Choice { .. } | Input::Buttons { .. } => {
                 if let Some(stop) = stop {
@@ -2424,7 +2434,14 @@ impl Launcher {
         if !matches!(widget.input, Input::Slider { .. }) {
             return false;
         }
-        self.slider_drag = Some(widget.id.clone());
+        // The speaker and the name are not the track: a click there mutes.
+        let Some((sx, _)) = self.surface_point(x, y) else {
+            return false;
+        };
+        if sx < nav::slider_track(&open.rects[index]).0 - SLIDER_GRAB {
+            return false;
+        }
+        self.slider_drag = Some((widget.id.clone(), None));
         self.focus_widget(index);
         self.drag_slider(x);
         true
@@ -2433,20 +2450,30 @@ impl Launcher {
     /// Moves the dragged slider to window x coordinate `x`, which may be
     /// outside the slider or the window.
     fn drag_slider(&mut self, x: i32) {
-        let (Some(id), Some(open)) = (&self.slider_drag, &self.surface) else {
+        let (Some((id, sent)), Some(open)) = (&self.slider_drag, &self.surface) else {
             return;
         };
         let Some(index) = open.widgets.iter().position(|w| &w.id == id) else {
             return;
         };
-        let Input::Slider { value, target, .. } = &open.widgets[index].input else {
+        let Input::Slider { value, muted, target } = &open.widgets[index].input else {
             return;
         };
         let (ox, _) = crate::render::surface_origin(self.bottom());
         let sx = x as f32 * 96.0 / self.dpi as f32 - ox;
         let new = nav::slider_value(&open.rects[index], sx);
-        if new != *value {
+        // Compare with the value last sent, not the shown one, which a device
+        // that snaps to coarse steps can move back. The first press also
+        // unmutes, even at the shown value.
+        let changed = match sent {
+            Some(sent) => new != *sent,
+            None => new != *value || (*muted && new > 0),
+        };
+        if changed {
             let command = target.command(new);
+            if let Some((_, sent)) = &mut self.slider_drag {
+                *sent = Some(new);
+            }
             self.run_command(command);
         }
     }
@@ -2825,7 +2852,11 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
             let payload = with_launcher(|l| {
                 if l.slider_drag.is_some() {
                     if wparam.0 & 1 == 0 {
+                        // The button-up went elsewhere.
                         l.slider_drag = None;
+                        unsafe {
+                            let _ = ReleaseCapture();
+                        }
                     } else {
                         let (x, _) = l.content_point(x, y);
                         l.drag_slider(x);

@@ -275,9 +275,9 @@ impl IMMNotificationClient_Impl for DeviceChanged_Impl {
     }
 }
 
-/// `percent` is clamped to 0–100. Setting a volume also unmutes.
-/// Sets the output volume. 0% also mutes, as the Windows volume slider does:
-/// many devices still play quietly at the lowest level.
+/// Sets the output volume, clamped to 0–100. 0% also mutes, as the Windows
+/// volume slider does, since many devices still play quietly at their lowest
+/// level; any other volume unmutes.
 pub fn set_volume(percent: u32) -> Result<(), String> {
     let volume = endpoint_volume().map_err(|error| error.message())?;
     unsafe {
