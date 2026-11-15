@@ -263,6 +263,7 @@ pub fn run() -> Result<()> {
             last_mouse: None,
             drag_press: None,
             drag_consumed: false,
+            slider_drag: None,
             apps: Vec::new(),
             icons: HashMap::new(),
             history: History::load(),
@@ -395,6 +396,8 @@ struct Launcher {
     last_mouse: Option<(i32, i32)>,
     drag_press: Option<((i32, i32), Payload)>,
     drag_consumed: bool,
+    /// The id of the surface slider held under the mouse button.
+    slider_drag: Option<String>,
 
     apps: Vec<AppEntry>,
     icons: HashMap<String, Arc<IconPixels>>,
@@ -924,6 +927,7 @@ impl Launcher {
 
     fn hide(&mut self) {
         self.drag_press = None;
+        self.slider_drag = None;
         if !self.visible {
             return;
         }
@@ -2407,6 +2411,46 @@ impl Launcher {
         }
     }
 
+    /// Starts dragging a slider pressed at window point (`x`, `y`): it jumps
+    /// to the press and follows the mouse until the button comes up.
+    fn press_slider(&mut self, x: i32, y: i32) -> bool {
+        let Some(index) = self.widget_at(x, y) else {
+            return false;
+        };
+        let Some(open) = &self.surface else {
+            return false;
+        };
+        let widget = &open.widgets[index];
+        if !matches!(widget.input, Input::Slider { .. }) {
+            return false;
+        }
+        self.slider_drag = Some(widget.id.clone());
+        self.focus_widget(index);
+        self.drag_slider(x);
+        true
+    }
+
+    /// Moves the dragged slider to window x coordinate `x`, which may be
+    /// outside the slider or the window.
+    fn drag_slider(&mut self, x: i32) {
+        let (Some(id), Some(open)) = (&self.slider_drag, &self.surface) else {
+            return;
+        };
+        let Some(index) = open.widgets.iter().position(|w| &w.id == id) else {
+            return;
+        };
+        let Input::Slider { value, target, .. } = &open.widgets[index].input else {
+            return;
+        };
+        let (ox, _) = crate::render::surface_origin(self.bottom());
+        let sx = x as f32 * 96.0 / self.dpi as f32 - ox;
+        let new = nav::slider_value(&open.rects[index], sx);
+        if new != *value {
+            let command = target.command(new);
+            self.run_command(command);
+        }
+    }
+
     fn on_surface_wheel(&mut self, up: bool) {
         let view_h = self.view_height();
         if let Some(open) = &mut self.surface {
@@ -2744,6 +2788,17 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
             let point = mouse_pos(lparam);
             with_launcher(|l| {
                 l.drag_consumed = false;
+                l.slider_drag = None;
+                if l.visible && l.surface.is_some() && l.morph.is_none() {
+                    let (x, y) = l.content_point(point.0, point.1);
+                    if l.press_slider(x, y) {
+                        l.drag_press = None;
+                        unsafe {
+                            SetCapture(hwnd);
+                        }
+                        return;
+                    }
+                }
                 l.drag_press = if l.visible && l.surface.is_none() && l.morph.is_none() {
                     l.row_at(point.1)
                         .and_then(|row| l.results.get(row))
@@ -2760,11 +2815,23 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
             });
         }
         WM_CAPTURECHANGED => {
-            with_launcher(|l| l.drag_press = None);
+            with_launcher(|l| {
+                l.drag_press = None;
+                l.slider_drag = None;
+            });
         }
         WM_MOUSEMOVE => {
             let (x, y) = mouse_pos(lparam);
             let payload = with_launcher(|l| {
+                if l.slider_drag.is_some() {
+                    if wparam.0 & 1 == 0 {
+                        l.slider_drag = None;
+                    } else {
+                        let (x, _) = l.content_point(x, y);
+                        l.drag_slider(x);
+                        return None;
+                    }
+                }
                 if wparam.0 & 1 == 0 {
                     l.drag_press = None;
                 } else if let Some((start, _)) = l.drag_press.as_ref() {
@@ -2792,6 +2859,12 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
         WM_LBUTTONUP => {
             let (x, y) = mouse_pos(lparam);
             with_launcher(|l| {
+                if l.slider_drag.take().is_some() {
+                    unsafe {
+                        let _ = ReleaseCapture();
+                    }
+                    return;
+                }
                 let consumed = std::mem::take(&mut l.drag_consumed);
                 let captured = l.drag_press.take().is_some();
                 if captured {
