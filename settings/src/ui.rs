@@ -1099,7 +1099,7 @@ impl Settings {
                     .child(divider(p))
                     .child(row(
                         "Keep the dock visible",
-                        "Stays on the main screen. While the taskbar is hidden, windows stop above the dock.",
+                        "While the taskbar is hidden, windows stop above the dock.",
                         Switch::new("dock-visible")
                             .checked(!self.config.dock_autohide)
                             .disabled(!self.config.dock)
@@ -1112,10 +1112,13 @@ impl Settings {
                     .child(divider(p))
                     .child(row(
                         "Screen",
-                        if self.config.dock_autohide {
-                            "Following the pointer, the dock shows on the screen whose bottom edge the pointer touches. Main screen follows Windows' choice of main screen; a named screen stays put."
+                        // A dock that stays visible can't follow the pointer.
+                        if self.config.dock_autohide
+                            || !matches!(self.config.dock_screen.as_str(), "" | screens::POINTER)
+                        {
+                            ""
                         } else {
-                            "Following the pointer, a dock that stays visible uses the main screen. Main screen follows Windows' choice of main screen; a named screen stays put."
+                            "Uses the main screen while the dock stays visible."
                         },
                         Select::new(&self.dock_screen)
                             .disabled(!self.config.dock)
