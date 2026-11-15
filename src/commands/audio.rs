@@ -276,12 +276,14 @@ impl IMMNotificationClient_Impl for DeviceChanged_Impl {
 }
 
 /// `percent` is clamped to 0–100. Setting a volume also unmutes.
+/// Sets the output volume. 0% also mutes, as the Windows volume slider does:
+/// many devices still play quietly at the lowest level.
 pub fn set_volume(percent: u32) -> Result<(), String> {
     let volume = endpoint_volume().map_err(|error| error.message())?;
     unsafe {
         volume
             .SetMasterVolumeLevelScalar(percent.min(100) as f32 / 100.0, std::ptr::null())
-            .and_then(|()| volume.SetMute(false, std::ptr::null()))
+            .and_then(|()| volume.SetMute(percent == 0, std::ptr::null()))
             .map_err(|error| error.message())
     }
 }

@@ -1579,7 +1579,7 @@ impl Launcher {
             Command::Volume(percent) => {
                 if let Some(Some(audio)) = &mut self.command_state.audio {
                     audio.volume = *percent;
-                    audio.muted = false;
+                    audio.muted = *percent == 0;
                 }
             }
             Command::Mute(muted) => {
@@ -2859,7 +2859,10 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
         WM_LBUTTONUP => {
             let (x, y) = mouse_pos(lparam);
             with_launcher(|l| {
-                if l.slider_drag.take().is_some() {
+                if l.slider_drag.is_some() {
+                    let (x, _) = l.content_point(x, y);
+                    l.drag_slider(x);
+                    l.slider_drag = None;
                     unsafe {
                         let _ = ReleaseCapture();
                     }

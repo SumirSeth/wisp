@@ -20,6 +20,7 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 ### Fixes
 
 - Drag the volume sliders in the launcher: a slider follows the mouse while you hold the button, even past its ends, instead of jumping only when you let go.
+- Setting the volume to 0% mutes, as the Windows volume slider does. Some devices still played quietly at the lowest level.
 - Wisp no longer quits, and the dock no longer gets stuck, when the dock changes while one of its menus is open. The dock keeps updating while a menu or a "Run as administrator" prompt is open. A crash now leaves a note in `wisp.log`. (#93, fixes #91)
 - The dock redraws at once after changing its icon size or turning autohide off, instead of showing a cut-off or empty dock for a second or two. (#93)
 - The dock uses less CPU: it no longer wakes ten times a second to read the clock, volume and battery, no longer works while you drag other windows, and hides and restores the taskbar without holding up its own drawing. (#93)
