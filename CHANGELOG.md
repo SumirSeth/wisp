@@ -4,6 +4,8 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ## Unreleased
 
+## 0.8.0 - 2026-11-16
+
 ### New
 
 - Right-click an app in the dock for its Jump List: its recent files and its own tasks, as on the taskbar. (#90, fixes #74)
@@ -37,6 +39,10 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 - Setting the volume to 0% mutes, as the Windows volume slider does. Before, some devices still played quietly at the lowest level. (#98, by @dogancemd)
 - Pressing a toggle in the launcher many times in a row, such as Bluetooth, Wi-Fi, dark mode or play/pause, no longer keeps Windows switching for seconds afterwards: only the last press is applied. (#78)
 - The launcher's backdrop and border look the same at the bottom and center of the screen, in both light and dark themes. (#75, fixes #45)
+
+### Thanks
+
+@Kendoismebutmaybenot and @dogancemd contributed their first pull requests to Wisp in this release: #72 and #73, and #98. @RayTrunk and @SorbetMango came back with #57, #81 and #82.
 
 ## 0.7.0 - 2026-11-12
 
