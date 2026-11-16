@@ -628,9 +628,17 @@ impl Index {
                         .GetData(row, handle, (&mut *buffer as *mut RowBuffer).cast())
                         .is_ok()
                     {
+                        // A truncated URL could point at a different file. Do not
+                        // convert missing, truncated or otherwise failed values.
+                        if buffer.path.status != DBSTATUS_S_OK.0 as u32 {
+                            continue;
+                        }
+                        let Some(path) = item_url_to_path(&buffer.path.text()) else {
+                            continue;
+                        };
                         rows.push(Row {
                             name: buffer.name.text(),
-                            path: buffer.path.text(),
+                            path,
                             is_folder: buffer.item_type.text() == "Directory",
                         });
                     }
@@ -647,6 +655,67 @@ impl Index {
             Ok(rows)
         }
     }
+}
+
+/// Windows Search's compact `file:C:/...` form contains literal filename
+/// characters (including `%20`), not URI escapes. Standard file URLs use UTF-8
+/// percent escapes. Decode those once, without URL normalization or form-style
+/// `+` decoding, and return the same absolute backslash paths as Everything.
+fn item_url_to_path(url: &str) -> Option<String> {
+    if !url.get(..5)?.eq_ignore_ascii_case("file:") {
+        return None;
+    }
+    let rest = &url[5..];
+    let (rest, escaped) = if let Some(local) = rest.strip_prefix("///") {
+        (local, true)
+    } else {
+        (rest, rest.starts_with("//"))
+    };
+    if escaped && rest.contains(['?', '#']) {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(rest.len());
+    let mut input = rest.bytes();
+    while let Some(byte) = input.next() {
+        if escaped && byte == b'%' {
+            let high = (input.next()? as char).to_digit(16)?;
+            let low = (input.next()? as char).to_digit(16)?;
+            let decoded = (high * 16 + low) as u8;
+            // Escaped separators would change the path's structure.
+            if matches!(decoded, b'/' | b'\\') {
+                return None;
+            }
+            bytes.push(decoded);
+        } else {
+            bytes.push(byte);
+        }
+    }
+    let path = String::from_utf8(bytes).ok()?.replace('/', "\\");
+    let tail = if let Some(unc) = path.strip_prefix(r"\\") {
+        let (server, tail) = unc.split_once('\\')?;
+        if server.is_empty() || server.ends_with(['.', ' ']) || server.contains('@') {
+            return None;
+        }
+        tail
+    } else {
+        let bytes = path.as_bytes();
+        if bytes.len() < 3 || !bytes[0].is_ascii_alphabetic() || &bytes[1..3] != b":\\" {
+            return None;
+        }
+        &path[3..]
+    };
+    // Reject relative components, device paths, ADS, and invalid filename
+    // characters rather than hand a different interpretation to the shell.
+    if path
+        .chars()
+        .any(|c| c.is_control() || matches!(c, '<' | '>' | '"' | '|' | '?' | '*'))
+        || path.strip_prefix(r"\\").unwrap_or(tail).contains(':')
+        || tail.split('\\').any(|part| part.ends_with(['.', ' ']))
+        || (path.starts_with(r"\\") && tail.split('\\').next()?.is_empty())
+    {
+        return None;
+    }
+    Some(path)
 }
 
 /// The query's words, without double quotes and wildcards, which would break
@@ -690,7 +759,7 @@ fn sql(words: &[String]) -> Vec<String> {
         .join(" AND ");
     let select = |filter: String| {
         format!(
-            "SELECT TOP {CANDIDATES} System.ItemPathDisplay, System.FileName, System.ItemType \
+            "SELECT TOP {CANDIDATES} System.ItemUrl, System.FileName, System.ItemType \
              FROM SystemIndex WHERE SCOPE='file:' AND {filter} ORDER BY System.DateModified DESC"
         )
     };
@@ -700,6 +769,75 @@ fn sql(words: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn item_urls_become_absolute_windows_paths() {
+        for (url, expected) in [
+            ("file:C:/Users/x/Documents/a.txt", r"C:\Users\x\Documents\a.txt"),
+            ("file:C:/", r"C:\"),
+            ("file:C:/Start Menu/a+b #1.txt", r"C:\Start Menu\a+b #1.txt"),
+            ("file:C:/Users/Öffentlich/a.txt", r"C:\Users\Öffentlich\a.txt"),
+            ("file:C:/literal%20%2520%3A.txt", r"C:\literal%20%2520%3A.txt"),
+            ("file:C:/100%.txt", r"C:\100%.txt"),
+            ("file:///C:/a%20b/%C3%96ffentlich.txt", r"C:\a b\Öffentlich.txt"),
+            ("FILE:///c:/%2520%23+file.txt", r"c:\%20#+file.txt"),
+            (r"file:///C:\Users\x\a.txt", r"C:\Users\x\a.txt"),
+            ("file://server/share/a%20b.txt", r"\\server\share\a b.txt"),
+            ("file://server/share/Öffentlich.txt", r"\\server\share\Öffentlich.txt"),
+            (r"file:///\\server\share\a.txt", r"\\server\share\a.txt"),
+            (r"file:\\server\share\a.txt", r"\\server\share\a.txt"),
+        ] {
+            assert_eq!(item_url_to_path(url).as_deref(), Some(expected), "{url}");
+        }
+    }
+
+    #[test]
+    fn malformed_item_urls_are_skipped() {
+        for url in [
+            "",
+            "file",
+            "https://server/a.txt",
+            "mapi:message",
+            "C:/a.txt",
+            "file:",
+            "file:relative.txt",
+            "file:C:a.txt",
+            "file:/a.txt",
+            "file://server",
+            "file://server/",
+            "file:////server/share/a.txt",
+            "file:///C:/bad%",
+            "file:///C:/bad%2",
+            "file:///C:/bad%GG",
+            "file:///C:/bad%FF",
+            "file:///C:/bad%00",
+            "file:///C:/bad%0A",
+            "file:///C:/bad%2Fname",
+            "file:///C:/bad%5cname",
+            "file:C:/bad\0name",
+            "file:C:/a.txt:stream",
+            "file:///C:/a.txt?query",
+            "file:///C:/a.txt#fragment",
+            "file:C:/a*b",
+            "file:C:/a.txt.",
+            "file:C:/folder /a.txt",
+            "file:C:/../a.txt",
+            "file://server/share/../a.txt",
+            "file://./share/a.txt",
+            "file://?/C:/a.txt",
+            "file://user@server/share/a.txt",
+        ] {
+            assert_eq!(item_url_to_path(url), None, "{url:?}");
+        }
+    }
+
+    #[test]
+    fn index_queries_select_real_item_urls() {
+        for query in sql(&words("report")) {
+            assert!(query.contains("System.ItemUrl, System.FileName, System.ItemType"));
+            assert!(!query.contains("System.ItemPathDisplay"));
+        }
+    }
 
     #[test]
     fn per_file_icons_are_programs_and_shortcuts_not_types() {
