@@ -2394,6 +2394,15 @@ impl State {
         self.flyout_hover = None;
         self.layout_flyout();
         unsafe {
+            let _ = SetWindowPos(
+                self.flyout,
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
             let _ = ShowWindow(self.flyout, SW_SHOWNA);
             // The click on the chevron lets Wisp take the foreground, which
             // the flyout needs for Esc and to close on a click elsewhere.
@@ -2431,7 +2440,9 @@ impl State {
             .max(monitor.left + margin);
         let y = self.top - margin - height;
         unsafe {
-            let _ = SetWindowPos(self.flyout, Some(HWND_TOPMOST), x, y, width, height, SWP_NOACTIVATE);
+            // Tray updates can relayout an open flyout while an app's menu
+            // sits above it. Preserve that order until the flyout opens again.
+            let _ = SetWindowPos(self.flyout, None, x, y, width, height, SWP_NOACTIVATE | SWP_NOZORDER);
             let _ = InvalidateRect(Some(self.flyout), None, false);
         }
     }
@@ -2474,6 +2485,9 @@ impl State {
                 let id = process(foreground);
                 if id != ours && !self.flyout_app(pid, id) {
                     return true;
+                }
+                if id != ours && IsWindowVisible(foreground).as_bool() && menu_like(foreground) {
+                    keep_flyout_below_menu(self.flyout, foreground);
                 }
             }
             let down = [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON]
@@ -2558,6 +2572,10 @@ impl State {
     fn hover_tip(&mut self, target: Option<tray::Tip>) {
         // The open flyout already shows what the chevron's tooltip offers.
         let target = target.filter(|&t| !(t == tray::Tip::Chevron && self.flyout_open));
+        // Beside an icon's menu, a tooltip would raise the dock's popups,
+        // flyout included, above the menu. Steam's menu opens slowly, so a
+        // small move after the right-click was enough to bury it.
+        let target = target.filter(|t| !(matches!(t, tray::Tip::Flyout(_)) && self.flyout_menu.is_some()));
         if self.tip_target == target || self.held {
             return;
         }
@@ -4225,6 +4243,21 @@ fn menu_like(hwnd: HWND) -> bool {
         || (style.contains(WS_POPUP) && !style.contains(WS_CAPTION))
 }
 
+/// An owned flyout can be raised along with its dock after the menu opens.
+/// Restore its place below the menu only when their order has changed.
+fn keep_flyout_below_menu(flyout: HWND, menu: HWND) {
+    unsafe {
+        let mut above = GetWindow(menu, GW_HWNDPREV).unwrap_or_default();
+        while !above.is_invalid() {
+            if above == flyout {
+                let _ = SetWindowPos(flyout, Some(menu), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                return;
+            }
+            above = GetWindow(above, GW_HWNDPREV).unwrap_or_default();
+        }
+    }
+}
+
 /// Whether process `id` descends from process `ancestor`.
 fn descends_from(id: u32, ancestor: u32) -> bool {
     let Ok(snapshot) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else {
@@ -4273,5 +4306,71 @@ mod tests {
     fn shared_surface_routes_radio_results_to_the_dock() {
         assert!(Dock::owns_message(WM_RADIOS, WPARAM(0)));
         assert!(!Dock::owns_message(WM_SHOW_NOW, WPARAM(0)));
+    }
+
+    #[test]
+    fn flyout_stays_below_menu_after_its_owner_is_raised() {
+        unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+            unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+        }
+        unsafe {
+            let class_name = w!("Wisp.Test.FlyoutMenuOrder");
+            let instance: HINSTANCE = GetModuleHandleW(None).unwrap().into();
+            let class = WNDCLASSW {
+                lpfnWndProc: Some(wndproc),
+                hInstance: instance,
+                lpszClassName: class_name,
+                ..Default::default()
+            };
+            assert_ne!(RegisterClassW(&class), 0);
+            let create = |owner| {
+                CreateWindowExW(
+                    WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+                    class_name,
+                    w!(""),
+                    WS_POPUP,
+                    0,
+                    0,
+                    100,
+                    100,
+                    owner,
+                    None,
+                    Some(instance),
+                    None,
+                )
+                .unwrap()
+            };
+            let dock = create(None);
+            let flyout = create(Some(dock));
+            let menu = create(None);
+            let raise = |hwnd| {
+                SetWindowPos(
+                    hwnd,
+                    Some(HWND_TOPMOST),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                )
+                .unwrap();
+            };
+            raise(menu);
+            keep_flyout_below_menu(flyout, menu);
+            let initial_order = FindWindowW(class_name, None).unwrap() == menu;
+            raise(dock);
+            let owner_raised_flyout = FindWindowW(class_name, None).unwrap() == flyout;
+            keep_flyout_below_menu(flyout, menu);
+            let repaired_order = FindWindowW(class_name, None).unwrap() == menu;
+            let still_topmost = WINDOW_EX_STYLE(GetWindowLongW(flyout, GWL_EXSTYLE) as u32).contains(WS_EX_TOPMOST);
+            DestroyWindow(menu).unwrap();
+            DestroyWindow(flyout).unwrap();
+            DestroyWindow(dock).unwrap();
+            UnregisterClassW(class_name, Some(instance)).unwrap();
+            assert!(initial_order, "An already-correct menu order must be preserved");
+            assert!(owner_raised_flyout, "The test must reproduce a later owner raise");
+            assert!(repaired_order, "The menu must return above the flyout");
+            assert!(still_topmost, "The flyout must remain in the topmost band");
+        }
     }
 }
