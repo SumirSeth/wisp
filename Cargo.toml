@@ -1,6 +1,6 @@
 [package]
 name = "wisp"
-version = "0.8.0"
+version = "0.8.1"
 edition = "2024"
 description = "A dock and a launcher for Windows"
 license = "MIT"

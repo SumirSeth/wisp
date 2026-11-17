@@ -4,6 +4,8 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ## Unreleased
 
+## 0.8.1 - 2026-11-17
+
 ### Fixes
 
 - Files and folders from search open on Windows in languages other than English, such as German or French. Before, they failed with a file-not-found error. (#103, fixes #101)
