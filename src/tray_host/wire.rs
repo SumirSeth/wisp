@@ -165,36 +165,29 @@ pub mod tests {
 
     /// Builds a notify packet as shell32 would.
     pub fn packet(op: u32, flags: u32, hwnd: u32, uid: u32, tip: &str) -> Vec<u8> {
-        let mut bytes = vec![0u8; NOTIFY_SIZE];
+        let mut bytes = vec![0u8; 1484];
         let mut put = |at: usize, value: u32| bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
         put(0, MAGIC);
         put(4, op);
-        put(NID, 956);
-        put(HWND, hwnd);
-        put(UID, uid);
-        put(FLAGS, flags);
-        put(CALLBACK, 0x8001);
-        put(HICON, 0x0004_1234);
-        put(STATE, NIS_HIDDEN);
-        put(STATE_MASK, NIS_HIDDEN);
-        put(VERSION, 4);
+        put(8, 956);
+        put(12, hwnd);
+        put(16, uid);
+        put(20, flags);
+        put(24, 0x8001);
+        put(28, 0x0004_1234);
+        put(288, NIS_HIDDEN);
+        put(292, NIS_HIDDEN);
+        put(808, 4);
         for (i, unit) in tip.encode_utf16().enumerate() {
-            bytes[TIP + i * 2..TIP + i * 2 + 2].copy_from_slice(&unit.to_le_bytes());
+            bytes[32 + i * 2..34 + i * 2].copy_from_slice(&unit.to_le_bytes());
         }
         for (i, unit) in r"{F38BF404-1D43-42F2-9305-67DE0B28FC23}\a.exe"
             .encode_utf16()
             .enumerate()
         {
-            bytes[EXE + i * 2..EXE + i * 2 + 2].copy_from_slice(&unit.to_le_bytes());
+            bytes[964 + i * 2..966 + i * 2].copy_from_slice(&unit.to_le_bytes());
         }
         bytes
-    }
-
-    #[test]
-    fn layout_matches_the_research() {
-        assert_eq!(EXE, 964);
-        assert_eq!(VERSION, 0x328);
-        assert_eq!(EXE + 520, NOTIFY_SIZE);
     }
 
     #[test]

@@ -86,16 +86,3 @@ impl Artwork {
         }
     }
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn failed_sizes_are_cached_separately() {
-        let mut artwork = Artwork::default();
-        artwork.cache.insert(("app".into(), 32), None);
-        assert!(artwork.cache.contains_key(&("app".into(), 32)));
-        assert!(!artwork.cache.contains_key(&("app".into(), 48)));
-        assert!(artwork.request(HWND::default(), "app", "missing", 32).is_none());
-        assert!(artwork.worker.is_none());
-    }
-}

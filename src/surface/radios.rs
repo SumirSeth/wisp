@@ -540,12 +540,12 @@ mod tests {
         panel.power = Some(true);
         panel.queued_power = Some(true);
         deliver(&mut panel, false, Ok(()));
-        assert!(panel.on);
-        assert_eq!(panel.power, Some(true));
+        assert!(matches!(panel.widgets("")[0].input, Input::Toggle { on: true, .. }));
+        assert_eq!(panel.widgets("")[0].detail, "Changing\u{2026}");
         panel.queued_power = None;
         deliver(&mut panel, true, Ok(()));
-        assert!(panel.on);
-        assert_eq!(panel.power, None);
+        assert!(matches!(panel.widgets("")[0].input, Input::Toggle { on: true, .. }));
+        assert_eq!(panel.widgets("")[0].detail, "On");
     }
     #[test]
     fn failed_power_reconciles_and_external_off_clears_credentials() {
@@ -553,8 +553,8 @@ mod tests {
         panel.on = true;
         panel.power = Some(true);
         deliver(&mut panel, false, Err("Denied".into()));
-        assert!(!panel.on);
-        assert_eq!(panel.error.as_deref(), Some("Denied"));
+        assert!(matches!(panel.widgets("")[0].input, Input::Toggle { on: false, .. }));
+        assert!(panel.widgets("").iter().any(|w| w.detail == "Denied"));
         panel.phase = Phase::Password("Home".into());
         panel.password = vec![65];
         deliver(&mut panel, false, Ok(()));

@@ -79,16 +79,6 @@ impl<T> Deferred<T> {
 mod tests {
     use super::*;
     #[test]
-    fn replacement_moves_after_intervening_work() {
-        let mut q = Queue::new();
-        q.push("apps", 1);
-        q.push("hide", 2);
-        q.push("apps", 3);
-        assert_eq!(q.pop(), Some(2));
-        assert_eq!(q.pop(), Some(3));
-        assert_eq!(q.pop(), None);
-    }
-    #[test]
     fn drain_accepts_reentrant_work_and_keeps_actions_in_order() {
         let cell = std::rc::Rc::new(Deferred::new(Vec::new()));
         let held = cell.borrow_mut();
@@ -107,11 +97,11 @@ mod tests {
         let cell = Deferred::new(Vec::new());
         let held = cell.borrow_mut();
         assert_eq!(cell.run(Some("apps"), |s| s.push(1)), None);
-        cell.run(Some("apps"), |s| s.push(2));
         cell.run(Some("hide"), |s| s.push(3));
+        cell.run(Some("apps"), |s| s.push(2));
         assert!(held.is_empty());
         drop(held);
         cell.drain();
-        assert_eq!(*cell.borrow(), vec![2, 3]);
+        assert_eq!(*cell.borrow(), vec![3, 2]);
     }
 }

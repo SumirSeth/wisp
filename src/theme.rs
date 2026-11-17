@@ -436,7 +436,7 @@ mod tests {
         let palette = Palette::with_tint(false, true, Tint::parse("#101010"));
         assert!(palette.text.r > 0.5);
         // The default strength over the light theme's 40% fill.
-        assert!((palette.background.a - (0.75 + 0.4 * 0.25)).abs() < 1e-6);
+        assert!((palette.background.a - 0.85).abs() < 1e-6);
         // A solid surface is always opaque.
         assert_eq!(
             Palette::with_tint(true, false, Tint::parse("#10101040")).background.a,
@@ -489,31 +489,27 @@ mod tests {
     }
     #[test]
     fn opaque_fallback_preserves_tint_strength_and_theme() {
+        // Expected RGB bytes are the visible composite over #202020 or #F9F9F9.
+        for (dark, tint, rgb) in [
+            (true, "#00000010", [30., 30., 30.]),
+            (true, "#FFFFFF10", [46., 46., 46.]),
+            (true, "#00000000", [32., 32., 32.]),
+            (true, "#FFFFFFFF", [255., 255., 255.]),
+            (false, "#00000010", [233., 233., 233.]),
+            (false, "#FFFFFF10", [249., 249., 249.]),
+            (false, "#00000000", [249., 249., 249.]),
+            (false, "#FFFFFFFF", [255., 255., 255.]),
+            (true, "#FFFFFF80", [144., 144., 144.]),
+            (false, "#00000080", [124., 124., 124.]),
+        ] {
+            let actual = Palette::with_tint(dark, false, Tint::parse(tint)).background;
+            assert_eq!([actual.r, actual.g, actual.b].map(|c| (c * 255.).round()), rgb);
+            assert_eq!(actual.a, 1.);
+        }
         for dark in [false, true] {
-            for value in ["#00000010", "#FFFFFF10", "#00000000", "#FFFFFFFF"] {
-                let tint = Tint::parse(value).unwrap();
-                let expected = over(Palette::new(dark, false).background, tint.rgb, tint.alpha.unwrap());
-                let actual = Palette::with_tint(dark, false, Some(tint)).background;
-                assert_eq!(
-                    (actual.r, actual.g, actual.b, actual.a),
-                    (expected.r, expected.g, expected.b, expected.a)
-                );
-            }
-            // A contrasting tint changes text, but subsequent applications still use the real theme.
             let contrast = Tint::parse(if dark { "#FFFFFF80" } else { "#00000080" });
             assert_ne!(Palette::with_tint(dark, true, contrast).text.r > 0.5, dark);
-            let fallback = Palette::with_tint(dark, false, contrast);
-            let expected = over(
-                Palette::new(dark, false).background,
-                contrast.unwrap().rgb,
-                128.0 / 255.0,
-            );
-            assert_eq!(
-                (fallback.background.r, fallback.background.g, fallback.background.b),
-                (expected.r, expected.g, expected.b)
-            );
-            let restored = Palette::with_tint(dark, true, None);
-            assert_eq!(restored.text.r > 0.5, dark);
+            assert_eq!(Palette::with_tint(dark, true, None).text.r > 0.5, dark);
         }
     }
 }

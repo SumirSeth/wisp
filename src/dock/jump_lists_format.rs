@@ -143,12 +143,14 @@ pub fn task_links(bytes: &[u8]) -> Option<Vec<&[u8]>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const FIXTURE_CLSID: [u8; 16] = [1, 0x14, 2, 0, 0, 0, 0, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0x46];
+
     fn two_tasks() -> Vec<u8> {
         let mut bytes: Vec<u8> = [2u32, 1, 0, 2, 2].into_iter().flat_map(u32::to_le_bytes).collect();
         for _ in 0..2 {
-            bytes.extend(LINK_CLSID);
+            bytes.extend(FIXTURE_CLSID);
             bytes.extend(76u32.to_le_bytes());
-            bytes.extend(LINK_CLSID);
+            bytes.extend(FIXTURE_CLSID);
             bytes.extend([0; 56]);
             bytes.extend([0; 4]);
         }
@@ -189,9 +191,9 @@ mod tests {
     #[test]
     fn checks_link_variable_lengths_and_extra_data() {
         let mut bytes: Vec<u8> = [2u32, 1, 0, 2, 1].into_iter().flat_map(u32::to_le_bytes).collect();
-        bytes.extend(LINK_CLSID);
+        bytes.extend(FIXTURE_CLSID);
         bytes.extend(76u32.to_le_bytes());
-        bytes.extend(LINK_CLSID);
+        bytes.extend(FIXTURE_CLSID);
         bytes.extend(0xfdu32.to_le_bytes()); // IDList, Unicode and all StringData, no LinkInfo.
         bytes.extend([0; 52]);
         bytes.extend(2u16.to_le_bytes());

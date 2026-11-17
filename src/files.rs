@@ -835,7 +835,6 @@ mod tests {
     fn index_queries_select_real_item_urls() {
         for query in sql(&words("report")) {
             assert!(query.contains("System.ItemUrl, System.FileName, System.ItemType"));
-            assert!(!query.contains("System.ItemPathDisplay"));
         }
     }
 

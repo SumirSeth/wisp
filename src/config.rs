@@ -197,7 +197,17 @@ mod tests {
 
     #[test]
     fn order_defaults_normalizes_and_preserves_other_config_edits() {
-        let default = Config::default().dock_order;
+        let default = [
+            "launcher",
+            "apps",
+            "tray",
+            "status",
+            "sound",
+            "battery",
+            "wifi",
+            "bluetooth",
+            "clock",
+        ];
         assert_eq!(Config::parse("").unwrap().dock_order, default);
         assert_eq!(
             Config::parse("dock_order = ['clock', 'unknown', 'clock', 'apps']")
@@ -245,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_pins_are_ignored() {
+    fn configs_with_removed_settings_still_load() {
         let config = Config::parse("dock = true\ndock_apps = ['old.app']").unwrap();
         assert!(config.dock);
         assert_eq!(config.window_list, super::WindowListMode::Multiple);

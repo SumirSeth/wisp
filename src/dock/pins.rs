@@ -85,7 +85,20 @@ mod tests {
                 path: None,
             },
         ];
-        let loaded = parse(&render(&apps).unwrap());
+        let rendered = render(&apps).unwrap();
+        let document: toml::Value = toml::from_str(&rendered).unwrap();
+        assert_eq!(document["pin"][0]["id"].as_str(), Some(r"C:\Windows\notepad.exe"));
+        assert_eq!(document["pin"][1]["id"].as_str(), Some("Package!App"));
+        let loaded = parse(
+            r"[[pin]]
+id = 'C:\Windows\notepad.exe'
+name = 'Notepad'
+path = 'C:\Windows\notepad.exe'
+[[pin]]
+id = 'Package!App'
+name = 'Store app'
+",
+        );
         assert_eq!(loaded.len(), 2);
         assert_eq!(
             (loaded[0].id.as_str(), loaded[0].path.as_deref()),

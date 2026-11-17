@@ -277,31 +277,35 @@ mod tests {
     #[test]
     fn finds_english_and_localized_names_in_german_zones() {
         let zones = [
-            ("Tokyo Standard Time", "(UTC+09:00) Osaka, Sapporo, Tokio"),
+            ("Tokyo Standard Time", "(UTC+09:00) Osaka, Sapporo, Tokio", -540),
             (
                 "W. Europe Standard Time",
                 "(UTC+01:00) Amsterdam, Berlin, Bern, Rom, Stockholm, Wien",
+                -60,
             ),
-            ("Eastern Standard Time", "(UTC-05:00) Eastern Zeit (USA & Kanada)"),
+            ("Eastern Standard Time", "(UTC-05:00) Eastern Zeit (USA & Kanada)", 300),
         ]
-        .map(|(key, display)| Zone {
-            info: DYNAMIC_TIME_ZONE_INFORMATION::default(),
+        .map(|(key, display, bias)| Zone {
+            info: DYNAMIC_TIME_ZONE_INFORMATION {
+                Bias: bias,
+                ..Default::default()
+            },
             cities: zone_cities(key, display),
         });
 
-        for (query, expected, index) in [
-            (" TOKYO ", "Tokyo", 0),
-            ("tokio", "Tokio", 0),
-            ("rome", "Rome", 1),
-            ("vienna", "Vienna", 1),
-            ("wien", "Wien", 1),
-            ("new york", "New York", 2),
-            ("eastern zeit", "Eastern Zeit (USA & Kanada)", 2),
+        for (query, expected, bias) in [
+            (" TOKYO ", "Tokyo", -540),
+            ("tokio", "Tokio", -540),
+            ("rome", "Rome", -60),
+            ("vienna", "Vienna", -60),
+            ("wien", "Wien", -60),
+            ("new york", "New York", 300),
+            ("eastern zeit", "Eastern Zeit (USA & Kanada)", 300),
         ] {
             let found = find_in(&zones, query);
             assert_eq!(found.len(), 1, "{query}");
             assert_eq!(found[0].1, expected);
-            assert!(std::ptr::eq(found[0].0, &zones[index]));
+            assert_eq!(found[0].0.info.Bias, bias);
         }
         // Shared names and prefixes still produce just one row per zone.
         assert_eq!(find_in(&zones, "osaka").len(), 1);

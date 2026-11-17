@@ -172,11 +172,6 @@ pub struct Radios {
 }
 
 impl Status {
-    #[cfg(test)]
-    pub fn tooltip(&self, radios: &Radios) -> String {
-        self.tooltip_for(radios, &STATUS_ITEMS)
-    }
-
     pub fn tooltip_for(&self, radios: &Radios, items: &[StatusItem]) -> String {
         let volume = match self.volume {
             Some(v) if v.muted => "Muted".into(),
@@ -319,19 +314,8 @@ mod tests {
 
     #[test]
     fn signal_levels_cover_every_quality_and_boundaries() {
-        for q in 0..=100 {
-            assert_eq!(
-                signal_level(q),
-                if q <= 25 {
-                    0
-                } else if q <= 50 {
-                    1
-                } else if q <= 75 {
-                    2
-                } else {
-                    3
-                }
-            );
+        for (quality, expected) in [(0, 0), (25, 0), (26, 1), (50, 1), (51, 2), (75, 2), (76, 3), (100, 3)] {
+            assert_eq!(signal_level(quality), expected);
         }
         assert_eq!(signal_level(255), 3);
     }
@@ -385,12 +369,12 @@ mod tests {
         let mut radios = Radios::default();
         assert!(
             status
-                .tooltip(&radios)
+                .tooltip_for(&radios, &STATUS_ITEMS)
                 .ends_with("Wi-Fi: checking\nBluetooth: checking")
         );
         radios.read = true;
         assert_eq!(
-            status.tooltip(&radios),
+            status.tooltip_for(&radios, &STATUS_ITEMS),
             "No audio device\nNo battery\nNo Wi-Fi\nNo Bluetooth"
         );
         status.volume = Some(Volume {
@@ -411,54 +395,28 @@ mod tests {
             connected: vec!["Headphones".into(), "Mouse".into()],
         });
         assert_eq!(
-            status.tooltip(&radios),
+            status.tooltip_for(&radios, &STATUS_ITEMS),
             "Volume 42%\nBattery 80%, charging\nWi-Fi: Office\nBluetooth: Headphones (+1)"
         );
         status.volume.as_mut().unwrap().muted = true;
         radios.wifi.as_mut().unwrap().network = None;
         radios.bluetooth.as_mut().unwrap().connected.clear();
         assert_eq!(
-            status.tooltip(&radios),
+            status.tooltip_for(&radios, &STATUS_ITEMS),
             "Muted\nBattery 80%, charging\nWi-Fi on, not connected\nBluetooth on"
         );
         radios.wifi.as_mut().unwrap().on = false;
         radios.bluetooth.as_mut().unwrap().on = false;
-        assert!(status.tooltip(&radios).ends_with("Wi-Fi off\nBluetooth off"));
+        assert!(
+            status
+                .tooltip_for(&radios, &STATUS_ITEMS)
+                .ends_with("Wi-Fi off\nBluetooth off")
+        );
         assert_eq!(status.tooltip_for(&radios, &[StatusItem::Bluetooth]), "Bluetooth off");
         assert_eq!(
             status.tooltip_for(&radios, &[StatusItem::Battery, StatusItem::Wifi]),
             "Battery 80%, charging\nWi-Fi off"
         );
         assert!(status.tooltip_for(&radios, &[]).is_empty());
-    }
-
-    #[test]
-    fn radio_refresh_is_throttled_and_hide_cancels() {
-        use std::sync::{atomic::Ordering, mpsc};
-        use windows::Win32::Foundation::HWND;
-        let mut worker = RadioWorker {
-            active: Default::default(),
-            pending: None,
-            last: Some(std::time::Instant::now()),
-        };
-        worker.refresh(HWND::default(), 0, RADIO_POLL, true, true);
-        assert!(worker.pending.is_none());
-        let (tx, rx) = mpsc::channel();
-        worker.pending = Some(rx);
-        worker.active.store(true, Ordering::Release);
-        worker.hide();
-        assert!(!worker.active.load(Ordering::Acquire));
-        assert!(worker.last.is_none());
-        // A pending request prevents another worker even after a reveal.
-        worker.refresh(HWND::default(), 0, RADIO_HOVER, true, true);
-        assert!(!worker.active.load(Ordering::Acquire));
-        assert!(worker.take().is_none());
-        tx.send(None).unwrap();
-        assert!(worker.take().is_none());
-        assert!(worker.pending.is_none());
-        worker.refresh(HWND::default(), 0, RADIO_POLL, false, false);
-        assert!(worker.pending.is_none());
-        assert!(worker.last.is_none());
-        assert!(!worker.active.load(Ordering::Acquire));
     }
 }

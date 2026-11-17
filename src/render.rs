@@ -75,24 +75,25 @@ pub mod layout {
         #[test]
         fn bottom_rows_stack_upward_from_the_query_box() {
             let h = height(3);
-            assert_eq!(input_top(h, true), h - INPUT_H);
+            assert_eq!(h, 227.0);
+            assert_eq!(input_top(h, true), 169.0);
             // The first result sits directly above the divider and padding.
-            assert_eq!(row_top(0, h, true) + ROW_H, h - LIST_TOP);
-            assert_eq!(row_top(2, h, true), LIST_PAD);
-            assert_eq!(row_top(1, h, false), LIST_TOP + ROW_H);
+            assert_eq!(row_top(0, h, true), 110.0);
+            assert_eq!(row_top(2, h, true), 6.0);
+            assert_eq!(row_top(1, h, false), 117.0);
         }
 
         #[test]
         fn row_hit_testing_matches_drawing() {
-            for bottom in [false, true] {
-                let h = height(4);
-                for row in 0..4 {
-                    let mid = row_top(row, h, bottom) + ROW_H / 2.0;
-                    assert_eq!(row_at(mid, 4, h, bottom), Some(row));
+            for (bottom, centers, query_y, empty_y) in [
+                (false, [91., 143., 195., 247.], 1., 222.),
+                (true, [188., 136., 84., 32.], 222., 7.),
+            ] {
+                for (row, mid) in centers.into_iter().enumerate() {
+                    assert_eq!(row_at(mid, 4, 279., bottom), Some(row));
                 }
-                assert_eq!(row_at(input_top(h, bottom) + 1.0, 4, h, bottom), None);
-                // Fewer results than rows leave empty space away from the box.
-                assert_eq!(row_at(row_top(3, h, bottom) + 1.0, 2, h, bottom), None);
+                assert_eq!(row_at(query_y, 4, 279., bottom), None);
+                assert_eq!(row_at(empty_y, 2, 279., bottom), None);
             }
         }
     }

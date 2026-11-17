@@ -655,14 +655,22 @@ mod tests {
 
     #[test]
     fn built_in_surfaces_parse() {
-        let library = Library::load();
-        assert!(library.specs.iter().any(|s| s.title == "Sound"));
-        assert!(library.specs.iter().any(|s| s.title == "Now"));
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::load_from(dir.path());
+        assert_eq!(
+            library
+                .search("now")
+                .iter()
+                .map(|r| r.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Now"]
+        );
     }
 
     #[test]
     fn finds_surfaces_by_keyword() {
-        let library = Library::load();
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::load_from(dir.path());
         let titles = |q: &str| library.search(q).into_iter().map(|r| r.title).collect::<Vec<_>>();
         assert_eq!(titles("mixer"), ["Sound"]);
         assert_eq!(titles("sou"), ["Sound"]);
@@ -753,16 +761,23 @@ mod cache_tests {
         let path = dir.path().join("custom.toml");
         let mut library = Library::load_from(dir.path());
         assert!(!library.reload_from(dir.path()));
-        std::fs::write(&path, "invalid").unwrap();
+        std::fs::write(&path, "title = 'Custom'\nkeywords = ['custom']\n").unwrap();
         assert!(library.reload_from(dir.path()));
-        assert_eq!(library.errors.len(), 1);
+        assert_eq!(library.search("custom")[0].title, "Custom");
         assert!(!library.reload_from(dir.path()));
-        std::fs::write(&path, "also invalid and a different size").unwrap();
+        std::fs::write(&path, "title = 'Changed'\nkeywords = ['custom']\n").unwrap();
         assert!(library.reload_from(dir.path()));
+        assert_eq!(library.search("custom")[0].title, "Changed");
         std::fs::remove_file(path).unwrap();
         assert!(library.reload_from(dir.path()));
-        assert!(library.errors.is_empty());
+        assert!(library.search("custom").is_empty());
         let other = tempfile::tempdir().unwrap();
+        std::fs::write(
+            other.path().join("other.toml"),
+            "title = 'Other'\nkeywords = ['custom']\n",
+        )
+        .unwrap();
         assert!(library.reload_from(other.path()));
+        assert_eq!(library.search("custom")[0].title, "Other");
     }
 }

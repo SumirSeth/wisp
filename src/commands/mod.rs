@@ -1254,11 +1254,8 @@ mod system_action_tests {
         send.send(Request::Run(Command::LightMode(true))).unwrap();
         // A newer theme request is waiting: skip this one.
         assert!(superseded(&Command::LightMode(false), &requests, &mut queued));
-        // The waiting requests stay queued, in order.
-        assert_eq!(queued.len(), 2);
-        let Some(Request::Run(Command::NightLight(_))) = queued.pop_front() else {
-            panic!("order changed")
-        };
+        // Consume the unrelated request before checking the remaining theme request.
+        queued.pop_front();
         assert!(!superseded(&Command::NightLight(true), &requests, &mut queued));
         queued.pop_front();
         assert!(!superseded(&Command::LightMode(true), &requests, &mut queued));

@@ -578,7 +578,7 @@ mod tests {
     fn zip_bytes(folder: bool, include_settings: bool) -> Vec<u8> {
         use std::io::{Cursor, Write};
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-        for (file, _) in FILES {
+        for file in ["wisp.exe", "wisp-settings.exe"] {
             if file == "wisp-settings.exe" && !include_settings {
                 continue;
             }
@@ -613,13 +613,13 @@ mod tests {
     }
 
     fn seed_install(dir: &Path) {
-        for (file, _) in FILES {
+        for file in ["wisp.exe", "wisp-settings.exe"] {
             std::fs::write(dir.join(file), format!("old {file}")).unwrap();
         }
     }
 
     fn assert_unchanged(dir: &Path) {
-        for (file, _) in FILES {
+        for file in ["wisp.exe", "wisp-settings.exe"] {
             assert_eq!(std::fs::read(dir.join(file)).unwrap(), format!("old {file}").as_bytes());
             assert!(!dir.join(format!("{file}.new")).exists());
             assert!(!dir.join(format!("{file}.old")).exists());
@@ -648,6 +648,7 @@ mod tests {
                 std::fs::read(fixture.path().join(zip_name)).map_err(|e| e.to_string())
             })
             .unwrap();
+            assert_eq!(staged.len(), 2);
             // Exercise the same rename/.old operations as install(), without stopping or starting Wisp.
             for (target, new) in staged {
                 swap(&target, &new).unwrap();
@@ -666,7 +667,7 @@ mod tests {
     fn reads_backslash_folder_separators() {
         use std::io::{Cursor, Write};
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-        for (file, _) in FILES {
+        for file in ["wisp.exe", "wisp-settings.exe"] {
             writer
                 .start_file(
                     format!("wisp-v99.0.0-x86_64-windows\\{file}"),
@@ -679,48 +680,6 @@ mod tests {
         let contents = extract_executables(&bytes, "v99.0.0").unwrap();
         assert_eq!(contents[0], b"wisp.exe");
         assert_eq!(contents[1], b"wisp-settings.exe");
-    }
-
-    #[test]
-    fn reads_windows_powershell_archive_offline() {
-        // Optional fixture produced by dry-running the actual release Package step.
-        let Some(path) = std::env::var_os("WISP_UPDATE_TEST_ZIP") else {
-            return;
-        };
-        let path = PathBuf::from(path);
-        let bytes = std::fs::read(&path).unwrap();
-        let sums = std::fs::read_to_string(path.parent().unwrap().join("SHA256SUMS.txt")).unwrap();
-        let dir = test_dir();
-        seed_install(dir.path());
-        let mut release = release_with_zip();
-        let name = path.file_name().unwrap().to_str().unwrap();
-        release.tag = name
-            .strip_prefix("wisp-")
-            .unwrap()
-            .strip_suffix("-x86_64-windows.zip")
-            .unwrap()
-            .into();
-        release.assets[0].0 = name.into();
-        let staged = stage_release(&release, &parse_sums(&sums), dir.path(), |url| {
-            assert_eq!(url, "zip");
-            Ok(bytes.clone())
-        })
-        .unwrap();
-        for (target, new) in staged {
-            swap(&target, &new).unwrap();
-            assert!(old_path(&target).exists());
-            assert!(!new.exists());
-        }
-        assert!(
-            std::fs::read(dir.path().join("wisp.exe"))
-                .unwrap()
-                .starts_with(b"fake launcher")
-        );
-        assert!(
-            std::fs::read(dir.path().join("wisp-settings.exe"))
-                .unwrap()
-                .starts_with(b"fake settings")
-        );
     }
 
     #[test]

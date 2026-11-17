@@ -210,12 +210,24 @@ mod tests {
     #[test]
     fn toggles_and_stamps_known_schema() {
         for on in [false, true] {
-            let bytes = encode(on, 1_800_000_000, 134_000_000_000_000_000);
+            let expected: &[u8] = if on {
+                &[
+                    0x43, 0x42, 1, 0, 0x0a, 2, 1, 0, 0x2a, 6, 100, 0x2a, 0x2b, 0x0e, 14, 0x43, 0x42, 1, 0, 0x10, 0,
+                    0xd0, 0x0a, 2, 0xc6, 0x14, 0xc8, 1, 0, 0, 0, 0,
+                ]
+            } else {
+                &[
+                    0x43, 0x42, 1, 0, 0x0a, 2, 1, 0, 0x2a, 6, 100, 0x2a, 0x2b, 0x0e, 12, 0x43, 0x42, 1, 0, 0xd0, 0x0a,
+                    2, 0xc6, 0x14, 0xc8, 1, 0, 0, 0, 0,
+                ]
+            };
+            let bytes = expected.to_vec();
+            assert_eq!(encode(on, 100, 200), expected);
             assert_eq!(
                 parse(&bytes),
                 Some(State {
                     on,
-                    modified: 1_800_000_000,
+                    modified: 100,
                     usable: true
                 })
             );
@@ -224,7 +236,7 @@ mod tests {
             }
             let mut unknown = bytes.clone();
             unknown.insert(unknown.len() - 4, 0x42);
-            unknown[18] += 1; // Keep the payload length valid, so the unknown field is rejected.
+            unknown[14] += 1; // Keep the payload length valid, so the unknown field is rejected.
             assert!(parse(&unknown).is_none());
         }
     }

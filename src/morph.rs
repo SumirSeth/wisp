@@ -79,8 +79,7 @@ mod tests {
         for dpi in [96., 120.] {
             let scale = dpi / 96.;
             let (x, y) = content_offset(500. * scale, 200. * scale, 680. * scale, 487. * scale);
-            let point = (52. * scale, 450. * scale);
-            assert_eq!(((point.0 + x) - x, (point.1 + y) - y), point);
+            assert_eq!((x, y), (-90. * scale, -287. * scale));
         }
     }
 }

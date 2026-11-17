@@ -171,15 +171,18 @@ mod tests {
 
     #[test]
     fn hibernate_requires_s4_and_a_hibernation_file() {
-        for system_s4 in [false, true] {
-            for hiber_file_present in [false, true] {
-                let capabilities = SYSTEM_POWER_CAPABILITIES {
-                    SystemS4: system_s4,
-                    HiberFilePresent: hiber_file_present,
-                    ..Default::default()
-                };
-                assert_eq!(supports_hibernate(&capabilities), system_s4 && hiber_file_present);
-            }
+        for (system_s4, hiber_file_present, expected) in [
+            (false, false, false),
+            (false, true, false),
+            (true, false, false),
+            (true, true, true),
+        ] {
+            let capabilities = SYSTEM_POWER_CAPABILITIES {
+                SystemS4: system_s4,
+                HiberFilePresent: hiber_file_present,
+                ..Default::default()
+            };
+            assert_eq!(supports_hibernate(&capabilities), expected);
         }
     }
 }

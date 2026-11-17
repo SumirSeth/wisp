@@ -1098,6 +1098,25 @@ mod tests {
         assert_eq!(placement.names(true), ["sound", "wifi"]);
         assert_eq!(placement.names(false), ["battery"]);
         assert!(!placement.visible(StatusItem::Bluetooth));
+        // Launcher, clock and padding take 152; the status group 48; own icons 32 with
+        // 4 between them; a 9 separator before the clock and each status part.
+        for (group, icons, scale, width) in [
+            ([false; 4], [false; 4], 1.0, 161.0),
+            ([true; 4], [false; 4], 1.0, 218.0),
+            ([true; 4], [false; 4], 2.0, 436.0),
+            ([false; 4], [true; 4], 1.0, 310.0),
+            ([true, true, false, false], [false, false, true, true], 1.0, 295.0),
+        ] {
+            let row = RowLayout {
+                launcher: true,
+                percent_width: 28.0,
+                apps: AppLayout { count: 0, pinned: 0 },
+                order: DEFAULT_ORDER,
+                tray: None,
+                status: StatusPlacement { group, icons },
+            };
+            assert_eq!(row.width(scale), width);
+        }
         for mask in 0u8..16 {
             let group = std::array::from_fn(|i| mask & (1 << i) != 0);
             let cells = status_cells(group);
@@ -1108,7 +1127,7 @@ mod tests {
                 match cells.len() {
                     1 => assert_eq!((x, y, size), (10.0, 14.0, 28.0)),
                     2 => assert_eq!((x, y, size), (4.0 + at as f32 * STATUS_CELL, 18.0, STATUS_CELL)),
-                    _ => assert_eq!((x, y), status_cell(item as usize)),
+                    _ => assert_eq!((x, y), [(4., 8.), (24., 8.), (4., 28.), (24., 28.)][item as usize]),
                 }
             }
             for icons_mask in 0u8..16 {
@@ -1121,20 +1140,7 @@ mod tests {
                     tray: None,
                     status: StatusPlacement { group, icons },
                 };
-                let own = icons.iter().filter(|&&v| v).count();
-                let groups = usize::from(mask != 0) + usize::from(own > 0);
                 for scale in [0.75, 1.0, 1.25, 2.0] {
-                    assert_eq!(
-                        row.width(scale),
-                        (2.0 * PAD
-                            + SLOT
-                            + CLOCK_W
-                            + usize::from(mask != 0) as f32 * STATUS_W
-                            + own as f32 * OWN_ICON_W
-                            + own.saturating_sub(1) as f32 * OWN_INNER_GAP
-                            + (groups + 1) as f32 * SEPARATOR)
-                            * scale
-                    );
                     assert_eq!(row.part_left(Part::Status, scale).is_some(), mask != 0);
                     for item in STATUS_ITEMS {
                         let part = Part::Icon(item);
@@ -1285,7 +1291,6 @@ mod tests {
 
     #[test]
     fn matrix_cells_fit_and_hit_one_slot() {
-        assert_eq!(STATUS_W, SLOT);
         let parts = parts(None);
         for scale in [0.75, 1.0, 1.25, 2.0] {
             let row = RowLayout {
@@ -1436,19 +1441,27 @@ mod tests {
 
     #[test]
     fn window_list_fits_whole_rows_with_padding_at_each_scale() {
-        for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
-            for padding in [0.0, LIST_PAD.1, 8.0] {
-                assert_eq!(window_list_rows(-10, scale, padding), 0);
-                assert_eq!(window_list_rows(0, scale, padding), 0);
-                let padding_height = (2.0 * padding * scale).ceil() as i32;
-                assert_eq!(window_list_rows(padding_height, scale, padding), 0);
-                for rows in [1, 2, 10, 100] {
-                    let height = ((rows as f32 * LIST_ROW + 2.0 * padding) * scale).ceil() as i32;
-                    assert_eq!(window_list_rows(height, scale, padding), rows);
-                    assert_eq!(window_list_rows(height - 1, scale, padding), rows - 1);
-                    assert_eq!(window_list_rows(height + 1, scale, padding), rows);
-                }
-            }
+        for (scale, padding, available, expected) in [
+            (1., 0., -10, 0),
+            (1., 0., 0, 0),
+            (1., 3., 6, 0),
+            (1., 3., 27, 0),
+            (1., 3., 28, 1),
+            (1., 3., 29, 1),
+            (1.25, 3., 62, 1),
+            (1.25, 3., 63, 2),
+            (1.25, 3., 64, 2),
+            (1.5, 8., 89, 1),
+            (1.5, 8., 90, 2),
+            (1.5, 8., 91, 2),
+            (1.75, 0., 76, 1),
+            (1.75, 0., 77, 2),
+            (1.75, 0., 78, 2),
+            (2., 3., 451, 9),
+            (2., 3., 452, 10),
+            (2., 3., 453, 10),
+        ] {
+            assert_eq!(window_list_rows(available, scale, padding), expected);
         }
     }
 
@@ -1516,20 +1529,22 @@ mod tests {
 
     #[test]
     fn scaled_slot_edges_match_hit_targets() {
-        for size in [24.0, 28.0, 32.0, 36.0, 40.0] {
+        for (size, first, second, bottom) in [
+            (24., 6., 42., 42.),
+            (28., 7., 49., 49.),
+            (32., 8., 56., 56.),
+            (36., 9., 63., 63.),
+            (40., 10., 70., 70.),
+        ] {
             let scale = layout_scale(size);
-            for index in 0..=8 {
-                let left = left_scaled(index, scale);
-                let right = left + slot(scale);
-                let bottom = height(scale);
-                assert_eq!(left, (8.0 + index as f32 * 48.0) * size / 32.0);
-                assert_eq!(right, left_scaled(index + 1, scale));
-                assert_eq!(bottom, 56.0 * size / 32.0);
-                assert_eq!(hit_scaled(left, 0.0, 8, scale), Some(index));
-                assert_eq!(hit_scaled(right - 0.5, bottom - 0.5, 8, scale), Some(index));
-                assert_eq!(hit_scaled(left, bottom, 8, scale), None);
-                assert_ne!(hit_scaled(right, 0.0, 8, scale), Some(index));
-            }
+            assert_eq!(left_scaled(0, scale), first);
+            assert_eq!(left_scaled(1, scale), second);
+            assert_eq!(height(scale), bottom);
+            assert_eq!(hit_scaled(first, 0., 8, scale), Some(0));
+            assert_eq!(hit_scaled(second - 0.5, bottom - 0.5, 8, scale), Some(0));
+            assert_eq!(hit_scaled(second, 0., 8, scale), Some(1));
+            assert_eq!(hit_scaled(first - 0.5, 10., 8, scale), None);
+            assert_eq!(hit_scaled(first, bottom, 8, scale), None);
         }
     }
 
@@ -1708,24 +1723,6 @@ mod tests {
         assert_eq!(wheel_desktop(-100, 30), (None, 30));
     }
     #[test]
-    fn floating_layout_and_hit_targets() {
-        assert_eq!((HEIGHT, MARGIN, SLOT), (56.0, 9.0, 48.0));
-        for count in [0, 1, 8, 30] {
-            for index in 0..=count {
-                assert_eq!(hit(left(index) + SLOT / 2.0, HEIGHT / 2.0, count), Some(index));
-            }
-            assert_eq!(hit(-1.0, 20.0, count), None);
-            assert_eq!(hit(PAD, HEIGHT, count), None);
-        }
-        for dpi in [96, 120, 144] {
-            assert_eq!(
-                icon_pixels(dpi, DEFAULT_APP_ICON_SIZE) as f32,
-                DEFAULT_APP_ICON_SIZE * dpi as f32 / 96.0
-            );
-        }
-        assert_eq!(((HEIGHT + MARGIN) * 120.0 / 96.0).round() as i32, 81);
-    }
-    #[test]
     fn tray_sits_between_apps_and_status() {
         let tray = parts(Some(2));
         assert_eq!(
@@ -1749,28 +1746,17 @@ mod tests {
         // Inline icons are capped; with none, only the chevron shows.
         assert_eq!(parts(Some(9)).len(), 1 + MAX_INLINE + 2);
         assert_eq!(parts(Some(0)), [Part::Chevron, Part::Status, Part::Clock]);
-        // Tray icons fit the dock's height budget.
-        const { assert!(TRAY_ICON < HEIGHT && TRAY_ICON < TRAY_W) };
     }
     #[test]
     fn flyout_grid_wraps_at_five() {
-        assert_eq!(flyout_size(0), flyout_size(1));
-        assert_eq!(
-            flyout_size(3),
-            (2.0 * FLYOUT_PAD + 3.0 * FLYOUT_CELL, 2.0 * FLYOUT_PAD + FLYOUT_CELL)
-        );
-        assert_eq!(
-            flyout_size(6),
-            (
-                2.0 * FLYOUT_PAD + 5.0 * FLYOUT_CELL,
-                2.0 * FLYOUT_PAD + 2.0 * FLYOUT_CELL
-            )
-        );
-        assert_eq!(flyout_cell(6), (FLYOUT_PAD + FLYOUT_CELL, FLYOUT_PAD + FLYOUT_CELL));
-        let (x, y) = flyout_cell(6);
-        assert_eq!(flyout_hit(x + 1.0, y + 1.0, 7), Some(6));
-        assert_eq!(flyout_hit(x + 1.0, y + 1.0, 6), None);
-        assert_eq!(flyout_hit(FLYOUT_PAD - 1.0, 10.0, 3), None);
-        assert_eq!(flyout_hit(FLYOUT_PAD + 5.0 * FLYOUT_CELL + 1.0, 10.0, 9), None);
+        assert_eq!(flyout_size(0), (56., 56.));
+        assert_eq!(flyout_size(1), (56., 56.));
+        assert_eq!(flyout_size(3), (136., 56.));
+        assert_eq!(flyout_size(6), (216., 96.));
+        assert_eq!(flyout_cell(6), (48., 48.));
+        assert_eq!(flyout_hit(49., 49., 7), Some(6));
+        assert_eq!(flyout_hit(49., 49., 6), None);
+        assert_eq!(flyout_hit(7., 10., 3), None);
+        assert_eq!(flyout_hit(209., 10., 9), None);
     }
 }

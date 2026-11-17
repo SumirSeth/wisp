@@ -57,8 +57,8 @@ mod tests {
 
     #[test]
     fn preserves_other_state_bits() {
-        for state in 0..8 {
-            assert_eq!(hidden_state(state), state | 1);
+        for (state, expected) in [(0, 1), (1, 1), (2, 3), (3, 3), (4, 5), (5, 5), (6, 7), (7, 7)] {
+            assert_eq!(hidden_state(state), expected);
         }
     }
 
