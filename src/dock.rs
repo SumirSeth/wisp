@@ -35,6 +35,9 @@ use windows::Win32::System::Com::{
     CoTaskMemFree,
     StructuredStorage::{PropVariantClear, PropVariantToStringAlloc},
 };
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Accessibility::*;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
@@ -497,6 +500,9 @@ struct State {
     /// The process whose menu was opened from the flyout. The flyout stays
     /// open beside it, and closes on a click outside both.
     flyout_menu: Option<u32>,
+    /// Processes found to descend from [`State::flyout_menu`], such as
+    /// Steam's `steamwebhelper.exe`, which draws Steam's menu.
+    flyout_kin: Vec<u32>,
     /// Whether a mouse button was down at the last [`FLYOUT_MENU_TIMER`] tick.
     flyout_pressed: bool,
     flyout_renderer: render::Renderer,
@@ -812,6 +818,7 @@ impl Dock {
             flyout_open: false,
             flyout_hover: None,
             flyout_menu: None,
+            flyout_kin: Vec::new(),
             flyout_pressed: false,
             flyout_renderer: render::Renderer::new()?,
             tip: HWND::default(),
@@ -2436,6 +2443,7 @@ impl State {
         self.flyout_open = false;
         self.flyout_hover = None;
         self.flyout_menu = None;
+        self.flyout_kin.clear();
         unsafe {
             let _ = KillTimer(Some(self.flyout), FLYOUT_MENU_TIMER);
         }
@@ -2450,7 +2458,8 @@ impl State {
     }
 
     /// Whether the user left the flyout and the menu opened from it: a new
-    /// press outside both, or another app taking the foreground.
+    /// press outside both, or another app taking the foreground. The app
+    /// includes its child processes, since some draw their menus in one.
     fn flyout_menu_outside(&mut self) -> bool {
         let Some(pid) = self.flyout_menu else { return false };
         let process = |hwnd: HWND| {
@@ -2461,8 +2470,11 @@ impl State {
         let ours = std::process::id();
         unsafe {
             let foreground = GetForegroundWindow();
-            if !foreground.is_invalid() && ![pid, ours].contains(&process(foreground)) {
-                return true;
+            if !foreground.is_invalid() {
+                let id = process(foreground);
+                if id != ours && !self.flyout_app(pid, id) {
+                    return true;
+                }
             }
             let down = [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON]
                 .iter()
@@ -2481,14 +2493,25 @@ impl State {
                 return true;
             }
             // The dock and flyout handle their own clicks, chevron included.
-            if process(target) == ours {
+            let id = process(target);
+            if id == ours {
                 return false;
             }
-            // Menus are captionless popups of the icon's app, whatever toolkit draws them.
-            let style = WINDOW_STYLE(GetWindowLongW(target, GWL_STYLE) as u32);
-            let menu = style.contains(WS_POPUP) && !style.contains(WS_CAPTION);
-            !(process(target) == pid && menu)
+            !(self.flyout_app(pid, id) && menu_like(target))
         }
+    }
+
+    /// Whether process `id` is the flyout menu's app `pid` or one of its
+    /// descendants.
+    fn flyout_app(&mut self, pid: u32, id: u32) -> bool {
+        if id == pid || self.flyout_kin.contains(&id) {
+            return true;
+        }
+        let kin = descends_from(id, pid);
+        if kin {
+            self.flyout_kin.push(id);
+        }
+        kin
     }
 
     /// Sends a gesture on `tray[index]` to its app, as Explorer would.
@@ -4189,6 +4212,47 @@ unsafe fn popup_wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
         drop(s);
         DefWindowProcW(hwnd, msg, wp, lp)
     }
+}
+
+/// Whether `hwnd` looks like a menu rather than an app's main window.
+/// Menus differ by toolkit: Win32 and Qt draw captionless popups, while
+/// Steam's has caption bits but is topmost and a tool window.
+fn menu_like(hwnd: HWND) -> bool {
+    let style = WINDOW_STYLE(unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32);
+    let ex = WINDOW_EX_STYLE(unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32);
+    ex.contains(WS_EX_TOPMOST)
+        || ex.contains(WS_EX_TOOLWINDOW)
+        || (style.contains(WS_POPUP) && !style.contains(WS_CAPTION))
+}
+
+/// Whether process `id` descends from process `ancestor`.
+fn descends_from(id: u32, ancestor: u32) -> bool {
+    let Ok(snapshot) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else {
+        return false;
+    };
+    let mut parents = std::collections::HashMap::new();
+    let mut entry = PROCESSENTRY32W {
+        dwSize: size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        let mut more = Process32FirstW(snapshot, &mut entry).is_ok();
+        while more {
+            parents.insert(entry.th32ProcessID, entry.th32ParentProcessID);
+            more = Process32NextW(snapshot, &mut entry).is_ok();
+        }
+        let _ = CloseHandle(snapshot);
+    }
+    // Process IDs are reused, so a parent chain can loop; walk a bounded depth.
+    let mut current = id;
+    for _ in 0..32 {
+        match parents.get(&current) {
+            Some(&parent) if parent == ancestor => return true,
+            Some(&parent) if parent != 0 && parent != current => current = parent,
+            _ => return false,
+        }
+    }
+    false
 }
 
 impl Drop for State {
