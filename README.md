@@ -137,7 +137,7 @@ The dock appears when the pointer touches the bottom edge of a screen, and hides
 | Scroll anywhere else | Switch virtual desktops |
 | <kbd>Shift</kbd>+scroll | Scroll through the apps |
 
-Pinned apps sit before running apps. Tray icons you pin in Windows show in the dock; the rest are behind **⌄**.
+Pinned apps sit before running apps. Up to five tray icons show in the dock: the ones turned on in Windows Settings, under **Personalization > Taskbar > Other system tray icons**. Windows turns new icons off, so at first they're all behind **⌄**.
 
 Sound, battery, Wi-Fi and Bluetooth sit in one group. In Settings, under **Status**, give any of them its own icon or hide it.
 
