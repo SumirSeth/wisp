@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use windows::Win32::Foundation::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::core::{Error, Result};
+use windows::core::{Error, Result, w};
 
 pub use model::{Action, Key};
 pub use proxy::{PROXY_PROP, explorer_tray};
@@ -155,7 +155,12 @@ pub fn invoke(icon: &Icon, action: Action, x: i32, y: i32) -> std::result::Resul
     let hwnd = HWND(wire::handle(icon.hwnd) as _);
     unsafe {
         if icon.callback == 0 {
-            return Err("The icon has no callback message".into());
+            // Added before Wisp; ask its window to add it again with its callback.
+            if IsWindow(Some(hwnd)).as_bool() && !icon.exes.iter().any(|exe| exe.ends_with(r"\explorer.exe")) {
+                let message = RegisterWindowMessageW(w!("TaskbarCreated"));
+                let _ = PostMessageW(Some(hwnd), message, WPARAM(0), LPARAM(0));
+            }
+            return Err("The icon has no callback message; asked its app to add it again".into());
         }
         let mut pid = 0;
         if !IsWindow(Some(hwnd)).as_bool() || GetWindowThreadProcessId(hwnd, Some(&mut pid)) == 0 {

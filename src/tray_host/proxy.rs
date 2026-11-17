@@ -31,6 +31,13 @@ const CHECK_MS: u32 = 1000;
 const OUTRANKED_REFRESH: u32 = 3;
 /// Rereads promotion settings after they settle.
 const SETTINGS_TIMER: usize = 2;
+/// Watches FindWindow closely while apps answer a refresh. Answers can reach
+/// Explorer while it briefly outranks the proxy, such as while Wisp hides the
+/// taskbar, and those icons would be missing. Only then are apps asked again,
+/// since each request makes some apps remove and re-add their icons.
+const WATCH_TIMER: usize = 3;
+const WATCH_MS: u32 = 100;
+const WATCH_TICKS: u8 = 30;
 /// Below shell32's own 7 second timeout, so senders hear our answer.
 const FORWARD_MS: u32 = 5000;
 /// Other shell messages to the taskbar; their senders' waits are unknown.
@@ -44,6 +51,34 @@ thread_local! {
     static EXPLORER: Cell<usize> = const { Cell::new(0) };
     static SHARED: RefCell<Option<Arc<Shared>>> = const { RefCell::new(None) };
     static PROMOTIONS: RefCell<Vec<Promotion>> = const { RefCell::new(Vec::new()) };
+    /// Windows already asked to add their icons again, so each is asked once.
+    static ASKED: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+}
+
+/// An icon known only from updates, added before the proxy, lacks the
+/// callback message that clicks need. Asks its window, as after an Explorer
+/// restart, to add the icon again with it. Apps that missed the startup
+/// broadcast, such as while Explorer briefly outranked the proxy, answer this.
+fn ask_again(icon: &super::Icon) {
+    // Explorer's own icons without a callback have none to give.
+    if icon.hwnd == 0 || icon.exes.iter().any(|exe| exe.ends_with(r"\explorer.exe")) {
+        return;
+    }
+    let first = ASKED.with(|asked| {
+        let mut asked = asked.borrow_mut();
+        let first = !asked.contains(&icon.hwnd);
+        if first {
+            asked.push(icon.hwnd);
+        }
+        first
+    });
+    if first {
+        eprintln!("Tray host: asking window {:#x} to add its icon again for its callback", icon.hwnd);
+        unsafe {
+            let message = RegisterWindowMessageW(w!("TaskbarCreated"));
+            let _ = PostMessageW(Some(HWND(wire::handle(icon.hwnd) as _)), message, WPARAM(0), LPARAM(0));
+        }
+    }
 }
 
 struct Explorer {
@@ -66,6 +101,8 @@ struct Host {
     waiting: u8,
     /// Checks in a row another Shell_TrayWnd won FindWindow.
     outranked: u32,
+    /// [`WATCH_TIMER`] ticks left after a refresh.
+    watching: u8,
 }
 
 pub(super) fn run(shared: Arc<Shared>, ready: mpsc::Sender<Result<usize, String>>) {
@@ -80,6 +117,7 @@ pub(super) fn run(shared: Arc<Shared>, ready: mpsc::Sender<Result<usize, String>
                 return;
             }
             refresh_icons();
+            with_host(Host::watch_refresh);
             pump();
         }
         Err(message) => {
@@ -145,6 +183,7 @@ fn setup(shared: Arc<Shared>) -> Result<Host, String> {
             settings_event: CreateEventW(None, false, false, None).unwrap_or_default(),
             waiting: 0,
             outranked: 0,
+            watching: 0,
         };
         // Our own process may be elevated above Explorer's broadcast.
         let _ = ChangeWindowMessageFilterEx(control, host.taskbar_created, MSGFLT_ALLOW, None);
@@ -258,6 +297,29 @@ impl Host {
         Ok(())
     }
 
+    /// Starts watching FindWindow while apps answer a refresh.
+    fn watch_refresh(&mut self) {
+        self.watching = WATCH_TICKS;
+        unsafe {
+            SetTimer(Some(self.control), WATCH_TIMER, WATCH_MS, None);
+        }
+    }
+
+    /// If Explorer outranks the proxy while apps answer, some answers went to
+    /// it; `check` then asks apps again once the proxy is back in front.
+    fn watch_tick(&mut self) {
+        self.watching = self.watching.saturating_sub(1);
+        if self.watching == 0 {
+            unsafe {
+                let _ = KillTimer(Some(self.control), WATCH_TIMER);
+            }
+        }
+        if self.proxy.is_some() && !self.outrank() && self.outranked < OUTRANKED_REFRESH {
+            eprintln!("Tray host: Explorer outranked the proxy while apps added icons; asking again");
+            self.outranked = OUTRANKED_REFRESH;
+        }
+    }
+
     /// Topmost windows come first in FindWindow's z-order search.
     fn outrank(&self) -> bool {
         let Some(proxy) = self.proxy else { return false };
@@ -299,6 +361,7 @@ impl Host {
         unsafe {
             let _ = KillTimer(Some(self.control), CHECK_TIMER);
             let _ = KillTimer(Some(self.control), SETTINGS_TIMER);
+            let _ = KillTimer(Some(self.control), WATCH_TIMER);
             let _ = DestroyWindow(self.control);
             if let Some(key) = self.settings.take() {
                 let _ = RegCloseKey(key);
@@ -342,6 +405,7 @@ impl Host {
                 eprintln!("Tray host: attached to the new Explorer");
                 // Apps re-added their icons straight to the new Explorer.
                 refresh_icons();
+                self.watch_refresh();
             }
             Err(message) => eprintln!("Tray host: {message}"),
         }
@@ -636,6 +700,7 @@ unsafe extern "system" fn control_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: 
             host.outrank();
         }),
         WM_TIMER if wp.0 == CHECK_TIMER => with_host(Host::check),
+        WM_TIMER if wp.0 == WATCH_TIMER => with_host(Host::watch_tick),
         WM_TIMER if wp.0 == SETTINGS_TIMER => {
             unsafe {
                 let _ = KillTimer(Some(hwnd), SETTINGS_TIMER);
@@ -746,6 +811,9 @@ fn on_copy_data(wp: WPARAM, lp: LPARAM) -> LRESULT {
                 );
                 if let Some(icon) = model.icons.iter_mut().find(|icon| icon.key() == key) {
                     resolve(icon);
+                    if icon.callback == 0 {
+                        ask_again(icon);
+                    }
                 }
                 drop(model);
                 shared.changed();

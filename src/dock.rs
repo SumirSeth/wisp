@@ -41,7 +41,7 @@ use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, GetSystemMetricsForDpi, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, GetCapture, GetDoubleClickTime, GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE,
-    TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE, VK_LBUTTON, VK_RBUTTON, VK_SHIFT,
+    TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON, VK_SHIFT,
 };
 use windows::Win32::UI::Input::{RAWINPUTDEVICE, RIDEV_INPUTSINK, RIDEV_REMOVE, RegisterRawInputDevices};
 use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow};
@@ -113,6 +113,10 @@ const HOVER_MS: f32 = 110.0;
 const DESKTOP_TIMER: usize = 106;
 /// Fires as each minute starts, for the clock.
 const CLOCK_TIMER: usize = 109;
+/// Watches for clicks elsewhere while an icon's menu, opened from the
+/// flyout, holds the foreground.
+const FLYOUT_MENU_TIMER: usize = 110;
+const FLYOUT_MENU_MS: u32 = 50;
 /// A dock that stays visible and isn't in use checks for fullscreen apps at
 /// this rate; its clock, volume and battery update from events.
 const QUIET_POLL_MS: u32 = 500;
@@ -490,6 +494,11 @@ struct State {
     flyout: HWND,
     flyout_open: bool,
     flyout_hover: Option<usize>,
+    /// The process whose menu was opened from the flyout. The flyout stays
+    /// open beside it, and closes on a click outside both.
+    flyout_menu: Option<u32>,
+    /// Whether a mouse button was down at the last [`FLYOUT_MENU_TIMER`] tick.
+    flyout_pressed: bool,
     flyout_renderer: render::Renderer,
     tip: HWND,
     tip_renderer: render::Renderer,
@@ -802,6 +811,8 @@ impl Dock {
             flyout: HWND::default(),
             flyout_open: false,
             flyout_hover: None,
+            flyout_menu: None,
+            flyout_pressed: false,
             flyout_renderer: render::Renderer::new()?,
             tip: HWND::default(),
             tip_renderer: render::Renderer::new()?,
@@ -2424,6 +2435,10 @@ impl State {
         }
         self.flyout_open = false;
         self.flyout_hover = None;
+        self.flyout_menu = None;
+        unsafe {
+            let _ = KillTimer(Some(self.flyout), FLYOUT_MENU_TIMER);
+        }
         if matches!(self.tip_target, Some(tray::Tip::Flyout(_))) {
             self.hide_tip();
         }
@@ -2432,6 +2447,48 @@ impl State {
             let _ = InvalidateRect(Some(self.hwnd), None, false);
         }
         self.publish_rects();
+    }
+
+    /// Whether the user left the flyout and the menu opened from it: a new
+    /// press outside both, or another app taking the foreground.
+    fn flyout_menu_outside(&mut self) -> bool {
+        let Some(pid) = self.flyout_menu else { return false };
+        let process = |hwnd: HWND| {
+            let mut id = 0;
+            unsafe { GetWindowThreadProcessId(hwnd, Some(&mut id)) };
+            id
+        };
+        let ours = std::process::id();
+        unsafe {
+            let foreground = GetForegroundWindow();
+            if !foreground.is_invalid() && ![pid, ours].contains(&process(foreground)) {
+                return true;
+            }
+            let down = [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON]
+                .iter()
+                .any(|&key| GetAsyncKeyState(key.0.into()) < 0);
+            let pressed = down && !self.flyout_pressed;
+            self.flyout_pressed = down;
+            if !pressed {
+                return false;
+            }
+            let mut point = POINT::default();
+            if GetCursorPos(&mut point).is_err() {
+                return false;
+            }
+            let target = GetAncestor(WindowFromPoint(point), GA_ROOT);
+            if target.is_invalid() {
+                return true;
+            }
+            // The dock and flyout handle their own clicks, chevron included.
+            if process(target) == ours {
+                return false;
+            }
+            // Menus are captionless popups of the icon's app, whatever toolkit draws them.
+            let style = WINDOW_STYLE(GetWindowLongW(target, GWL_STYLE) as u32);
+            let menu = style.contains(WS_POPUP) && !style.contains(WS_CAPTION);
+            !(process(target) == pid && menu)
+        }
     }
 
     /// Sends a gesture on `tray[index]` to its app, as Explorer would.
@@ -4078,7 +4135,8 @@ unsafe fn popup_wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                 let _ = InvalidateRect(Some(hwnd), None, false);
                 return LRESULT(0);
             }
-            // Like the taskbar's overflow, the flyout closes once an icon is used.
+            // A click uses an icon and closes the flyout, as on the taskbar's
+            // overflow. A right-click keeps it open beside the icon's menu.
             WM_LBUTTONUP | WM_RBUTTONUP => {
                 if let Some(position) = cell_at(&s, lp)
                     && let Some(&index) = s.hidden.get(position)
@@ -4088,13 +4146,21 @@ unsafe fn popup_wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                         x: (rect.left + rect.right) / 2,
                         y: (rect.top + rect.bottom) / 2,
                     };
-                    s.close_flyout();
-                    let action = if msg == WM_LBUTTONUP {
-                        Action::Click
+                    if msg == WM_LBUTTONUP {
+                        s.close_flyout();
+                        s.click_tray(index, Action::Click, center);
                     } else {
-                        Action::Menu
-                    };
-                    s.click_tray(index, action, center);
+                        s.flyout_menu = Some(s.tray[index].icon.pid);
+                        s.flyout_pressed = true;
+                        SetTimer(Some(hwnd), FLYOUT_MENU_TIMER, FLYOUT_MENU_MS, None);
+                        s.click_tray(index, Action::Menu, center);
+                    }
+                }
+                return LRESULT(0);
+            }
+            WM_TIMER if wp.0 == FLYOUT_MENU_TIMER => {
+                if s.flyout_menu_outside() {
+                    s.close_flyout();
                 }
                 return LRESULT(0);
             }
@@ -4107,8 +4173,9 @@ unsafe fn popup_wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                 let _ = PostMessageW(Some(hwnd), WM_CLOSE_FLYOUT, WPARAM(0), LPARAM(0));
             }
             WM_CLOSE_FLYOUT => {
-                // A held demo flyout stays for its screenshot.
-                if !s.held && GetForegroundWindow() != hwnd {
+                // A held demo flyout stays for its screenshot, and one beside
+                // an icon's menu waits for a click elsewhere.
+                if !s.held && s.flyout_menu.is_none() && GetForegroundWindow() != hwnd {
                     s.close_flyout();
                 }
                 return LRESULT(0);
