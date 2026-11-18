@@ -1833,16 +1833,14 @@ impl State {
         }
         let mut rect = RECT::default();
         let _ = unsafe { GetWindowRect(self.hwnd, &mut rect) };
-        if self.flyout_open && !self.held {
-            // Activation closes the flyout on a click elsewhere; this covers
-            // clicks while it could not take the foreground.
-            let pressed =
-                unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0 || GetAsyncKeyState(VK_RBUTTON.0 as i32) < 0 };
+        if poll_flyout_clicks(self.flyout_open, self.held, self.flyout_menu)
+            && unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0 || GetAsyncKeyState(VK_RBUTTON.0 as i32) < 0 }
+        {
             let mut flyout = RECT::default();
             let _ = unsafe { GetWindowRect(self.flyout, &mut flyout) };
             let inside =
                 |r: &RECT| cursor.x >= r.left && cursor.x < r.right && cursor.y >= r.top && cursor.y < r.bottom;
-            if pressed && !inside(&flyout) && !inside(&rect) {
+            if !inside(&flyout) && !inside(&rect) {
                 self.close_flyout();
             }
         }
@@ -4232,6 +4230,12 @@ unsafe fn popup_wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
     }
 }
 
+/// Poll for clicks if the flyout could not take focus. While an icon's menu
+/// is open, its own timer checks clicks against the menu as well.
+fn poll_flyout_clicks(open: bool, held: bool, menu: Option<u32>) -> bool {
+    open && !held && menu.is_none()
+}
+
 /// Whether `hwnd` looks like a menu rather than an app's main window.
 /// Menus differ by toolkit: Win32 and Qt draw captionless popups, while
 /// Steam's has caption bits but is topmost and a tool window.
@@ -4306,6 +4310,14 @@ mod tests {
     fn shared_surface_routes_radio_results_to_the_dock() {
         assert!(Dock::owns_message(WM_RADIOS, WPARAM(0)));
         assert!(!Dock::owns_message(WM_SHOW_NOW, WPARAM(0)));
+    }
+
+    #[test]
+    fn regular_poll_leaves_clicks_to_the_tray_menu_timer() {
+        assert!(!poll_flyout_clicks(true, false, Some(42)));
+        assert!(poll_flyout_clicks(true, false, None));
+        assert!(!poll_flyout_clicks(true, true, None));
+        assert!(!poll_flyout_clicks(false, false, None));
     }
 
     #[test]
