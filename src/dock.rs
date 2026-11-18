@@ -1723,7 +1723,10 @@ impl State {
             order: self.order,
             status: self.status_placement,
             percent_width: self.percent_width,
-            tray: self.tray_host.as_ref().map(|_| self.inline.len()),
+            tray: self.tray_host.as_ref().map(|_| logic::TrayLayout {
+                inline: self.inline.len(),
+                overflow: !self.hidden.is_empty(),
+            }),
         }
     }
 
@@ -2221,10 +2224,7 @@ impl State {
 
     /// The status parts, with the notification area while the dock hosts it.
     fn parts(&self) -> Vec<logic::Part> {
-        self.status.parts(
-            self.tray_host.as_ref().map(|_| self.inline.len()),
-            self.status_placement,
-        )
+        self.status.parts(self.row_layout().tray, self.status_placement)
     }
 
     /// A part's rectangle on screen where the dock rests, in physical pixels.
@@ -2313,7 +2313,7 @@ impl State {
         let stale = match self.tip_target {
             Some(tray::Tip::Inline(i)) => i >= self.inline.len(),
             Some(tray::Tip::Flyout(i)) => i >= self.hidden.len(),
-            Some(tray::Tip::Chevron) => self.tray_host.is_none(),
+            Some(tray::Tip::Chevron) => self.tray_host.is_none() || self.hidden.is_empty(),
             Some(tray::Tip::Status(_)) => false,
             // The desktop pill has nothing to do with the tray.
             None => false,
@@ -2321,7 +2321,7 @@ impl State {
         if stale {
             self.hide_tip();
         }
-        if self.tray_host.is_none() {
+        if self.tray_host.is_none() || self.hidden.is_empty() {
             self.close_flyout();
         }
         self.place();
@@ -2367,6 +2367,9 @@ impl State {
     }
 
     fn open_flyout(&mut self) {
+        if self.tray_host.is_none() || self.hidden.is_empty() {
+            return;
+        }
         self.hide_tip();
         self.hide_windows();
         self.flyout_open = true;
@@ -2386,6 +2389,10 @@ impl State {
 
     /// Sizes the flyout to its icons and centers it above the chevron.
     fn layout_flyout(&mut self) {
+        if self.hidden.is_empty() {
+            self.close_flyout();
+            return;
+        }
         let scale = self.dpi as f32 / 96.0;
         let (width, height) = logic::flyout_size(self.hidden.len());
         let (width, height) = ((width * scale).round() as i32, (height * scale).round() as i32);

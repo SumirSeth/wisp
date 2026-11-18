@@ -543,7 +543,7 @@ pub struct RowLayout {
     pub launcher: bool,
     pub apps: AppLayout,
     pub order: [Section; 9],
-    pub tray: Option<usize>,
+    pub tray: Option<TrayLayout>,
     pub status: StatusPlacement,
     pub percent_width: f32,
 }
@@ -557,9 +557,9 @@ impl RowLayout {
                 Section::Launcher if self.launcher => SLOT,
                 Section::Launcher => 0.0,
                 Section::Apps => self.apps.count as f32 * SLOT + self.apps.gap(),
-                Section::Tray => self
-                    .tray
-                    .map_or(0.0, |count| CHEVRON_W + count.min(MAX_INLINE) as f32 * TRAY_W),
+                Section::Tray => self.tray.map_or(0.0, |tray| {
+                    tray.chevron_width() + tray.inline.min(MAX_INLINE) as f32 * TRAY_W
+                }),
                 Section::Status => {
                     if self.status.group.contains(&true) {
                         STATUS_W
@@ -623,10 +623,12 @@ impl RowLayout {
 
     pub fn part_left(self, part: Part, scale: f32) -> Option<f32> {
         let (section, offset) = match part {
-            Part::Chevron => (Section::Tray, 0.0),
-            Part::Tray(index) if self.tray.is_some_and(|count| index < count.min(MAX_INLINE)) => {
-                (Section::Tray, CHEVRON_W + index as f32 * TRAY_W)
-            }
+            Part::Chevron if self.tray.is_some_and(|tray| tray.overflow) => (Section::Tray, 0.0),
+            Part::Chevron => return None,
+            Part::Tray(index) if self.tray.is_some_and(|tray| index < tray.inline.min(MAX_INLINE)) => (
+                Section::Tray,
+                self.tray.unwrap().chevron_width() + index as f32 * TRAY_W,
+            ),
             Part::Tray(_) => return None,
             Part::Status => (Section::Status, 0.0),
             Part::Icon(item) => (Section::Icon(item), 0.0),
@@ -795,9 +797,27 @@ impl Part {
     }
 }
 
+/// Notification icons in the dock and whether any remain in the flyout.
+#[derive(Clone, Copy)]
+pub struct TrayLayout {
+    pub inline: usize,
+    pub overflow: bool,
+}
+
+impl TrayLayout {
+    fn chevron_width(self) -> f32 {
+        if self.overflow { CHEVRON_W } else { 0.0 }
+    }
+}
+
 /// The tray, fixed status matrix and clock, in order.
-pub fn parts(tray: Option<usize>) -> Vec<Part> {
-    let tray = tray.map(|count| std::iter::once(Part::Chevron).chain((0..count.min(MAX_INLINE)).map(Part::Tray)));
+pub fn parts(tray: Option<TrayLayout>) -> Vec<Part> {
+    let tray = tray.map(|tray| {
+        tray.overflow
+            .then_some(Part::Chevron)
+            .into_iter()
+            .chain((0..tray.inline.min(MAX_INLINE)).map(Part::Tray))
+    });
     tray.into_iter().flatten().chain([Part::Status, Part::Clock]).collect()
 }
 
@@ -808,10 +828,13 @@ pub const FLYOUT_COLUMNS: usize = 5;
 /// Space between the flyout and the dock.
 pub const FLYOUT_GAP: f32 = 8.0;
 
-/// The flyout's size in DIPs for `count` icons; an empty one keeps one cell.
+/// The flyout's size in DIPs for `count` icons; no icons need no space.
 pub fn flyout_size(count: usize) -> (f32, f32) {
-    let columns = count.clamp(1, FLYOUT_COLUMNS);
-    let rows = count.max(1).div_ceil(FLYOUT_COLUMNS);
+    if count == 0 {
+        return (0.0, 0.0);
+    }
+    let columns = count.min(FLYOUT_COLUMNS);
+    let rows = count.div_ceil(FLYOUT_COLUMNS);
     (
         2.0 * FLYOUT_PAD + columns as f32 * FLYOUT_CELL,
         2.0 * FLYOUT_PAD + rows as f32 * FLYOUT_CELL,
@@ -1219,7 +1242,25 @@ mod tests {
         order.swap(4, 8);
         permutations(&mut order, 0, &|order| {
             for scale in [0.75, 1.0, 1.25, 2.0] {
-                for tray in [None, Some(0), Some(3)] {
+                for tray in [
+                    None,
+                    Some(TrayLayout {
+                        inline: 0,
+                        overflow: false,
+                    }),
+                    Some(TrayLayout {
+                        inline: 0,
+                        overflow: true,
+                    }),
+                    Some(TrayLayout {
+                        inline: 3,
+                        overflow: false,
+                    }),
+                    Some(TrayLayout {
+                        inline: 3,
+                        overflow: true,
+                    }),
+                ] {
                     for (count, pinned) in [(0, 0), (4, 0), (4, 2), (4, 4)] {
                         let row = RowLayout {
                             launcher: true,
@@ -1275,7 +1316,10 @@ mod tests {
                     },
                     apps: AppLayout { count: 8, pinned: 2 },
                     order: DEFAULT_ORDER,
-                    tray: Some(2),
+                    tray: Some(TrayLayout {
+                        inline: 2,
+                        overflow: true,
+                    }),
                 };
                 let (_, left, width) = row.sections(1.0).find(|&(item, _, _)| item == target).unwrap();
                 let from = row.order.iter().position(|&item| item == source).unwrap();
@@ -1724,7 +1768,10 @@ mod tests {
     }
     #[test]
     fn tray_sits_between_apps_and_status() {
-        let tray = parts(Some(2));
+        let tray = parts(Some(TrayLayout {
+            inline: 2,
+            overflow: true,
+        }));
         assert_eq!(
             tray,
             [Part::Chevron, Part::Tray(0), Part::Tray(1), Part::Status, Part::Clock]
@@ -1735,21 +1782,78 @@ mod tests {
             status: StatusPlacement::default(),
             apps: AppLayout { count: 2, pinned: 0 },
             order: DEFAULT_ORDER,
-            tray: Some(2),
+            tray: Some(TrayLayout {
+                inline: 2,
+                overflow: true,
+            }),
         };
         let chevron = row.part_left(Part::Chevron, 1.0).unwrap();
-        assert_eq!(row.part_left(Part::Tray(0), 1.0), Some(chevron + CHEVRON_W));
+        assert_eq!(chevron, 170.0);
+        assert_eq!(row.part_left(Part::Tray(0), 1.0), Some(198.0));
         assert_eq!(row.part_hit(chevron + 1.0, 20.0, &tray, 1.0), Some(Part::Chevron));
         let status = row.part_left(Part::Status, 1.0).unwrap();
-        assert_eq!(status, chevron + CHEVRON_W + 2.0 * TRAY_W + SEPARATOR);
+        assert_eq!(status, 271.0);
         assert_eq!(row.part_hit(status - 1.0, 20.0, &tray, 1.0), None);
-        // Inline icons are capped; with none, only the chevron shows.
-        assert_eq!(parts(Some(9)).len(), 1 + MAX_INLINE + 2);
-        assert_eq!(parts(Some(0)), [Part::Chevron, Part::Status, Part::Clock]);
+        // Inline icons are capped; hidden icons still need the chevron.
+        assert_eq!(
+            parts(Some(TrayLayout {
+                inline: 9,
+                overflow: true
+            }))
+            .len(),
+            8
+        );
+        assert_eq!(
+            parts(Some(TrayLayout {
+                inline: 0,
+                overflow: true
+            })),
+            [Part::Chevron, Part::Status, Part::Clock]
+        );
+    }
+    #[test]
+    fn tray_without_overflow_has_no_chevron_or_extra_gap() {
+        let row = |inline, overflow| RowLayout {
+            launcher: false,
+            apps: AppLayout { count: 0, pinned: 0 },
+            order: DEFAULT_ORDER,
+            tray: Some(TrayLayout { inline, overflow }),
+            status: StatusPlacement::default(),
+            percent_width: 28.0,
+        };
+        for (inline, overflow, width, status_left) in [
+            (0, false, 161.0, 8.0),
+            (0, true, 198.0, 45.0),
+            (1, false, 202.0, 49.0),
+            (2, false, 234.0, 81.0),
+            (5, false, 330.0, 177.0),
+            (5, true, 358.0, 205.0),
+        ] {
+            let row = row(inline, overflow);
+            assert_eq!(row.width(1.0), width);
+            assert_eq!(row.part_left(Part::Status, 1.0), Some(status_left));
+        }
+        let empty = row(0, false);
+        assert_eq!(parts(empty.tray), [Part::Status, Part::Clock]);
+        assert_eq!(empty.section_left(Section::Tray, 1.0), None);
+        assert_eq!(empty.part_left(Part::Chevron, 1.0), None);
+        assert_eq!(empty.part_left(Part::Tray(0), 1.0), None);
+        let shown = row(2, false);
+        let shown_parts = parts(shown.tray);
+        assert_eq!(shown_parts, [Part::Tray(0), Part::Tray(1), Part::Status, Part::Clock]);
+        assert_eq!(shown.part_left(Part::Chevron, 1.0), None);
+        assert_eq!(shown.part_left(Part::Tray(0), 1.0), Some(8.0));
+        assert_eq!(shown.part_left(Part::Tray(1), 1.0), Some(40.0));
+        assert_eq!(shown.part_hit(8.0, 20.0, &shown_parts, 1.0), Some(Part::Tray(0)));
+        assert_eq!(shown.part_hit(40.0, 20.0, &shown_parts, 1.0), Some(Part::Tray(1)));
+        assert_eq!(shown.part_hit(72.0, 20.0, &shown_parts, 1.0), None);
+        assert_eq!(shown.width(1.5), 351.0);
+        assert_eq!(shown.part_left(Part::Tray(1), 1.5), Some(60.0));
+        assert_eq!(parts(None), [Part::Status, Part::Clock]);
     }
     #[test]
     fn flyout_grid_wraps_at_five() {
-        assert_eq!(flyout_size(0), (56., 56.));
+        assert_eq!(flyout_size(0), (0., 0.));
         assert_eq!(flyout_size(1), (56., 56.));
         assert_eq!(flyout_size(3), (136., 56.));
         assert_eq!(flyout_size(6), (216., 96.));

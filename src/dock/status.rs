@@ -135,8 +135,8 @@ pub fn bluetooth_icon(read: bool, state: Option<&crate::commands::bluetooth::Sta
 }
 
 impl Status {
-    /// `tray` is the number of inline notification icons, if the dock hosts them.
-    pub fn parts(&self, tray: Option<usize>, placement: StatusPlacement) -> Vec<super::logic::Part> {
+    /// `tray` describes the notification icons and overflow, if the dock hosts them.
+    pub fn parts(&self, tray: Option<super::logic::TrayLayout>, placement: StatusPlacement) -> Vec<super::logic::Part> {
         let mut parts = super::logic::parts(tray);
         parts.retain(|part| *part != super::logic::Part::Status || placement.group.contains(&true));
         parts.extend(
