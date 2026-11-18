@@ -2,7 +2,9 @@
 //! timers, and the Explorer lifetime it forwards to.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::sync::{Arc, mpsc};
+use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::*;
 use windows::Win32::System::Com::CoTaskMemFree;
@@ -37,7 +39,7 @@ const SETTINGS_TIMER: usize = 2;
 /// since each request makes some apps remove and re-add their icons.
 const WATCH_TIMER: usize = 3;
 const WATCH_MS: u32 = 100;
-const WATCH_TICKS: u8 = 30;
+const WATCH_FOR: Duration = Duration::from_secs(3);
 /// Below shell32's own 7 second timeout, so senders hear our answer.
 const FORWARD_MS: u32 = 5000;
 /// Other shell messages to the taskbar; their senders' waits are unknown.
@@ -51,33 +53,34 @@ thread_local! {
     static EXPLORER: Cell<usize> = const { Cell::new(0) };
     static SHARED: RefCell<Option<Arc<Shared>>> = const { RefCell::new(None) };
     static PROMOTIONS: RefCell<Vec<Promotion>> = const { RefCell::new(Vec::new()) };
-    /// Windows already asked to add their icons again, so each is asked once.
-    static ASKED: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+    /// Copy-data messages can arrive while HOST is already borrowed. They
+    /// still update the model immediately while the dock waits for a snapshot.
+    static DOCK_UPDATES: Cell<DockUpdates> = const { Cell::new(DockUpdates::Immediate) };
 }
 
-/// An icon known only from updates, added before the proxy, lacks the
-/// callback message that clicks need. Asks its window, as after an Explorer
-/// restart, to add the icon again with it. Apps that missed the startup
-/// broadcast, such as while Explorer briefly outranked the proxy, answer this.
-fn ask_again(icon: &super::Icon) {
-    // Explorer's own icons without a callback have none to give.
-    if icon.hwnd == 0 || icon.exes.iter().any(|exe| exe.ends_with(r"\explorer.exe")) {
-        return;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DockUpdates {
+    Immediate,
+    Batching,
+    Dirty,
+}
+
+fn icons_changed(shared: &Shared) {
+    if DOCK_UPDATES.get() == DockUpdates::Immediate {
+        shared.changed();
+    } else {
+        DOCK_UPDATES.set(DockUpdates::Dirty);
     }
-    let first = ASKED.with(|asked| {
-        let mut asked = asked.borrow_mut();
-        let first = !asked.contains(&icon.hwnd);
-        if first {
-            asked.push(icon.hwnd);
-        }
-        first
-    });
-    if first {
-        eprintln!("Tray host: asking window {:#x} to add its icon again for its callback", icon.hwnd);
-        unsafe {
-            let message = RegisterWindowMessageW(w!("TaskbarCreated"));
-            let _ = PostMessageW(Some(HWND(wire::handle(icon.hwnd) as _)), message, WPARAM(0), LPARAM(0));
-        }
+}
+
+fn publish_icon_batch(shared: &Shared, keep_batching: bool) {
+    let next = if keep_batching {
+        DockUpdates::Batching
+    } else {
+        DockUpdates::Immediate
+    };
+    if DOCK_UPDATES.replace(next) == DockUpdates::Dirty {
+        shared.changed();
     }
 }
 
@@ -99,10 +102,9 @@ struct Host {
     settings_event: HANDLE,
     /// Checks a new Explorer tray has been seen, before attaching to it.
     waiting: u8,
-    /// Checks in a row another Shell_TrayWnd won FindWindow.
-    outranked: u32,
-    /// [`WATCH_TIMER`] ticks left after a refresh.
-    watching: u8,
+    refresh: IconRefresh,
+    /// Owners already asked individually about a missing callback.
+    asked: HashSet<(u32, u32)>,
 }
 
 pub(super) fn run(shared: Arc<Shared>, ready: mpsc::Sender<Result<usize, String>>) {
@@ -116,8 +118,7 @@ pub(super) fn run(shared: Arc<Shared>, ready: mpsc::Sender<Result<usize, String>
                 teardown();
                 return;
             }
-            refresh_icons();
-            with_host(Host::watch_refresh);
+            with_host(Host::refresh_if_ready);
             pump();
         }
         Err(message) => {
@@ -182,8 +183,8 @@ fn setup(shared: Arc<Shared>) -> Result<Host, String> {
             settings: None,
             settings_event: CreateEventW(None, false, false, None).unwrap_or_default(),
             waiting: 0,
-            outranked: 0,
-            watching: 0,
+            refresh: IconRefresh::new(),
+            asked: HashSet::new(),
         };
         // Our own process may be elevated above Explorer's broadcast.
         let _ = ChangeWindowMessageFilterEx(control, host.taskbar_created, MSGFLT_ALLOW, None);
@@ -245,13 +246,67 @@ fn teardown() {
     SHARED.with(|s| s.borrow_mut().take());
 }
 
-/// Asks running apps to add their icons again, as after an Explorer
-/// restart. Posted, so hung apps can't block us.
-fn refresh_icons() {
-    let message = unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) };
-    unsafe {
-        let _ = PostMessageW(Some(HWND_BROADCAST), message, WPARAM(0), LPARAM(0));
+#[derive(Debug, PartialEq, Eq)]
+enum RefreshAction {
+    Wait,
+    Broadcast,
+    CheckCallbacks,
+}
+
+struct IconRefresh {
+    /// None until we can send the first broadcast through the proxy.
+    watch_until: Option<Instant>,
+    outranked: u32,
+}
+
+impl IconRefresh {
+    fn new() -> Self {
+        Self {
+            watch_until: None,
+            outranked: 0,
+        }
     }
+
+    fn watching(&self, now: Instant) -> bool {
+        self.watch_until.is_some_and(|end| now < end)
+    }
+
+    /// Record a possible missed registration before repairing FindWindow order.
+    fn observe_loss(&mut self, now: Instant) {
+        if self.watching(now) {
+            self.outranked = OUTRANKED_REFRESH;
+        }
+    }
+
+    /// Called on attach and at the one-second check. Let the first set of
+    /// replies finish before deciding whether any windows need another request.
+    fn next(&mut self, now: Instant, first: bool) -> RefreshAction {
+        if !first {
+            self.outranked = self.outranked.saturating_add(1);
+            return RefreshAction::Wait;
+        }
+        if self.watch_until.is_none() {
+            self.outranked = 0;
+            self.watch_until = Some(now + WATCH_FOR);
+            return RefreshAction::Broadcast;
+        }
+        if self.watching(now) {
+            return RefreshAction::Wait;
+        }
+        if std::mem::take(&mut self.outranked) >= OUTRANKED_REFRESH {
+            return RefreshAction::Broadcast;
+        }
+        RefreshAction::CheckCallbacks
+    }
+}
+
+fn missing_callback_windows(icons: &[super::Icon], asked: &mut HashSet<(u32, u32)>) -> Vec<u32> {
+    icons
+        .iter()
+        .filter(|icon| icon.callback == 0 && icon.hwnd != 0 && !icon.exes.iter().any(|e| e.ends_with(r"\explorer.exe")))
+        .filter(|icon| asked.insert((icon.pid, icon.hwnd)))
+        .map(|icon| icon.hwnd)
+        .collect()
 }
 
 impl Host {
@@ -285,44 +340,77 @@ impl Host {
             let _ = ChangeWindowMessageFilterEx(proxy, WM_COPYDATA, MSGFLT_ALLOW, None);
             // Start and taskbar flyouts lift Explorer's tray into a higher
             // z-order band for a while; `check` keeps trying to outrank it.
-            self.outranked = 0;
             if !self.outrank() {
                 let found = FindWindowW(TRAY_CLASS, None).unwrap_or_default();
                 eprintln!("Tray host: {:?} outranks the proxy in FindWindow for now", found.0);
-                // Apps answering the startup refresh reach Explorer.
-                self.outranked = OUTRANKED_REFRESH;
             }
         }
         self.waiting = 0;
         Ok(())
     }
 
-    /// Starts watching FindWindow while apps answer a refresh.
-    fn watch_refresh(&mut self) {
-        self.watching = WATCH_TICKS;
-        unsafe {
-            SetTimer(Some(self.control), WATCH_TIMER, WATCH_MS, None);
+    fn refresh_if_ready(&mut self) {
+        let first = self.outrank();
+        let now = Instant::now();
+        match self.refresh.next(now, first) {
+            RefreshAction::Wait => {}
+            RefreshAction::Broadcast => unsafe {
+                self.batch_icon_changes();
+                if let Err(error) = PostMessageW(Some(HWND_BROADCAST), self.taskbar_created, WPARAM(0), LPARAM(0)) {
+                    eprintln!("Tray host: could not request tray icons: {error}");
+                    self.refresh.observe_loss(now);
+                }
+            },
+            RefreshAction::CheckCallbacks => self.ask_missing_callbacks(),
+        }
+    }
+
+    fn ask_missing_callbacks(&mut self) {
+        let windows = missing_callback_windows(&lock(&self.shared.model).icons, &mut self.asked);
+        if windows.is_empty() {
+            return;
+        }
+        self.batch_icon_changes();
+        for hwnd in windows {
+            let target = HWND(wire::handle(hwnd) as _);
+            if let Err(error) = unsafe { PostMessageW(Some(target), self.taskbar_created, WPARAM(0), LPARAM(0)) } {
+                eprintln!("Tray host: could not request a callback from window {hwnd:#x}: {error}");
+            }
+        }
+    }
+
+    /// The watch timer publishes at most one snapshot per tick while apps
+    /// answer. A later retry uses the same timer for its first batch of replies.
+    fn batch_icon_changes(&self) {
+        if unsafe { SetTimer(Some(self.control), WATCH_TIMER, WATCH_MS, None) } != 0
+            && DOCK_UPDATES.get() == DockUpdates::Immediate
+        {
+            DOCK_UPDATES.set(DockUpdates::Batching);
         }
     }
 
     /// If Explorer outranks the proxy while apps answer, some answers went to
     /// it; `check` then asks apps again once the proxy is back in front.
     fn watch_tick(&mut self) {
-        self.watching = self.watching.saturating_sub(1);
-        if self.watching == 0 {
+        let watching = self.refresh.watching(Instant::now());
+        if watching {
+            self.outrank();
+        } else {
             unsafe {
                 let _ = KillTimer(Some(self.control), WATCH_TIMER);
             }
         }
-        if self.proxy.is_some() && !self.outrank() && self.outranked < OUTRANKED_REFRESH {
-            eprintln!("Tray host: Explorer outranked the proxy while apps added icons; asking again");
-            self.outranked = OUTRANKED_REFRESH;
-        }
+        publish_icon_batch(&self.shared, watching);
     }
 
     /// Topmost windows come first in FindWindow's z-order search.
-    fn outrank(&self) -> bool {
+    fn outrank(&mut self) -> bool {
         let Some(proxy) = self.proxy else { return false };
+        let first = || unsafe { FindWindowW(TRAY_CLASS, None).is_ok_and(|found| found == proxy) };
+        if first() {
+            return true;
+        }
+        self.refresh.observe_loss(Instant::now());
         unsafe {
             let _ = SetWindowPos(
                 proxy,
@@ -333,12 +421,18 @@ impl Host {
                 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
             );
-            FindWindowW(TRAY_CLASS, None).is_ok_and(|found| found == proxy)
+            first()
         }
     }
 
     /// Removes the proxy, so apps reach Explorer directly, and forgets the icons.
     fn detach(&mut self) {
+        unsafe {
+            let _ = KillTimer(Some(self.control), WATCH_TIMER);
+        }
+        DOCK_UPDATES.set(DockUpdates::Immediate);
+        self.refresh = IconRefresh::new();
+        self.asked.clear();
         EXPLORER.with(|e| e.set(0));
         if let Some(proxy) = self.proxy.take() {
             unsafe {
@@ -361,7 +455,6 @@ impl Host {
         unsafe {
             let _ = KillTimer(Some(self.control), CHECK_TIMER);
             let _ = KillTimer(Some(self.control), SETTINGS_TIMER);
-            let _ = KillTimer(Some(self.control), WATCH_TIMER);
             let _ = DestroyWindow(self.control);
             if let Some(key) = self.settings.take() {
                 let _ = RegCloseKey(key);
@@ -404,8 +497,7 @@ impl Host {
             Ok(()) => {
                 eprintln!("Tray host: attached to the new Explorer");
                 // Apps re-added their icons straight to the new Explorer.
-                refresh_icons();
-                self.watch_refresh();
+                self.refresh_if_ready();
             }
             Err(message) => eprintln!("Tray host: {message}"),
         }
@@ -425,21 +517,10 @@ impl Host {
                     self.detach();
                     return;
                 }
-                let found = unsafe { FindWindowW(TRAY_CLASS, None).unwrap_or_default() };
-                if Some(found) != self.proxy && !self.outrank() {
-                    // Apps reach Explorer directly meanwhile; nothing is lost.
-                    if self.outranked == 0 {
-                        eprintln!("Tray host: {:?} outranks the proxy in FindWindow", found.0);
-                    }
-                    self.outranked += 1;
-                } else {
-                    // Apps that added icons meanwhile reached Explorer. Only
-                    // for long spells: brief ones come and go with flyouts.
-                    if self.outranked >= OUTRANKED_REFRESH {
-                        refresh_icons();
-                    }
-                    self.outranked = 0;
+                if lock(&self.shared.model).retain(|icon| owner_alive(icon.hwnd, icon.pid)) {
+                    icons_changed(&self.shared);
                 }
+                self.refresh_if_ready();
             }
             None => {
                 if explorer_tray().is_some() {
@@ -452,10 +533,6 @@ impl Host {
                     self.waiting = 0;
                 }
             }
-        }
-        let changed = lock(&self.shared.model).retain(|icon| owner_alive(icon.hwnd, icon.pid));
-        if changed {
-            self.shared.changed();
         }
     }
 
@@ -490,7 +567,7 @@ impl Host {
         }
         drop(model);
         if changed {
-            self.shared.changed();
+            icons_changed(&self.shared);
         }
     }
 }
@@ -811,12 +888,9 @@ fn on_copy_data(wp: WPARAM, lp: LPARAM) -> LRESULT {
                 );
                 if let Some(icon) = model.icons.iter_mut().find(|icon| icon.key() == key) {
                     resolve(icon);
-                    if icon.callback == 0 {
-                        ask_again(icon);
-                    }
                 }
                 drop(model);
-                shared.changed();
+                icons_changed(&shared);
             }
             result
         }
@@ -890,4 +964,139 @@ unsafe extern "system" fn proxy_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LP
     }
     // Lifecycle, paint and position messages stay with our window.
     forward_other(msg, wp, lp).unwrap_or_else(|| unsafe { DefWindowProcW(hwnd, msg, wp, lp) })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_waits_for_the_proxy_then_broadcasts_once() {
+        let mut refresh = IconRefresh::new();
+        let start = Instant::now();
+        for _ in 0..OUTRANKED_REFRESH {
+            assert_eq!(refresh.next(start, false), RefreshAction::Wait);
+        }
+        assert_eq!(refresh.next(start, true), RefreshAction::Broadcast);
+        assert_eq!(refresh.next(start + Duration::from_secs(1), true), RefreshAction::Wait);
+        assert_eq!(refresh.next(start + WATCH_FOR, true), RefreshAction::CheckCallbacks);
+    }
+
+    #[test]
+    fn multiple_startup_losses_need_only_one_recovery_broadcast() {
+        let mut refresh = IconRefresh::new();
+        let start = Instant::now();
+        assert_eq!(refresh.next(start, true), RefreshAction::Broadcast);
+        for second in [1, 2] {
+            let now = start + Duration::from_secs(second);
+            refresh.observe_loss(now);
+            // Wisp immediately repaired the order before the periodic check.
+            assert_eq!(refresh.next(now, true), RefreshAction::Wait);
+        }
+        let end = start + WATCH_FOR;
+        assert_eq!(refresh.next(end, false), RefreshAction::Wait);
+        assert_eq!(
+            refresh.next(end + Duration::from_secs(1), true),
+            RefreshAction::Broadcast
+        );
+        assert_eq!(
+            refresh.next(end + Duration::from_secs(2), true),
+            RefreshAction::CheckCallbacks
+        );
+    }
+
+    #[test]
+    fn after_startup_only_a_sustained_loss_needs_another_broadcast() {
+        let mut refresh = IconRefresh::new();
+        let now = Instant::now();
+        assert_eq!(refresh.next(now, true), RefreshAction::Broadcast);
+        let now = now + WATCH_FOR;
+        refresh.observe_loss(now);
+        assert_eq!(refresh.next(now, false), RefreshAction::Wait);
+        assert_eq!(refresh.next(now, true), RefreshAction::CheckCallbacks);
+        for _ in 0..OUTRANKED_REFRESH {
+            assert_eq!(refresh.next(now, false), RefreshAction::Wait);
+        }
+        assert_eq!(refresh.next(now, true), RefreshAction::Broadcast);
+    }
+
+    #[test]
+    fn retry_only_windows_still_missing_a_callback_once_per_owner() {
+        let mut model = model::Model::default();
+        for (hwnd, uid, exe) in [
+            (1, 1, "a.exe"),
+            (1, 2, "a.exe"),
+            (2, 1, "b.exe"),
+            (3, 1, r"c:\windows\explorer.exe"),
+        ] {
+            let packet = wire::tests::packet(wire::NIM_ADD, 0, hwnd, uid, "");
+            model.apply(
+                &wire::parse_notify(&packet).unwrap(),
+                true,
+                None,
+                Owner {
+                    pid: hwnd,
+                    exes: vec![exe.into()],
+                },
+            );
+        }
+        let reply = wire::tests::packet(wire::NIM_MODIFY, wire::NIF_MESSAGE, 2, 1, "");
+        model.apply(&wire::parse_notify(&reply).unwrap(), true, None, Owner::default());
+        let mut asked = HashSet::new();
+        assert_eq!(missing_callback_windows(&model.icons, &mut asked), vec![1]);
+        assert!(missing_callback_windows(&model.icons, &mut asked).is_empty());
+    }
+
+    #[test]
+    fn icon_rebuild_posts_one_dock_notification_after_the_batch() {
+        unsafe {
+            let window = CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                w!("STATIC"),
+                w!(""),
+                WINDOW_STYLE::default(),
+                0,
+                0,
+                0,
+                0,
+                Some(HWND_MESSAGE),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let shared = Shared {
+                model: Default::default(),
+                rects: Default::default(),
+                notify: (window.0 as usize).into(),
+                notify_msg: WM_APP + 1,
+                pending: false.into(),
+            };
+            let received = || {
+                PeekMessageW(
+                    &mut MSG::default(),
+                    Some(window),
+                    shared.notify_msg,
+                    shared.notify_msg,
+                    PM_REMOVE,
+                )
+                .as_bool()
+            };
+            DOCK_UPDATES.set(DockUpdates::Batching);
+            icons_changed(&shared); // delete
+            assert!(!received());
+            icons_changed(&shared); // add
+            assert!(!received());
+            publish_icon_batch(&shared, true);
+            assert!(received());
+            assert!(!received());
+            // The dock read the snapshot. A quiet tick should not redraw it.
+            shared.pending.store(false, std::sync::atomic::Ordering::SeqCst);
+            publish_icon_batch(&shared, false);
+            assert!(!received());
+            icons_changed(&shared);
+            assert!(received());
+            DestroyWindow(window).unwrap();
+        }
+    }
 }

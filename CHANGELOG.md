@@ -11,7 +11,7 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 - Windows Settings pages use your Windows language in launcher results and search. English names still work. (fixes #117)
 - The arrow in the dock lists only the notification icons missing from the dock, instead of all of them again. (#104, by @JulienMaille, fixes #40, #53)
 - Right-clicking a hidden tray icon keeps the hidden icons open beside its menu, until you click elsewhere. Before, they closed as the menu opened.
-- Tray icons of apps that started before Wisp, such as the Epic Games Launcher, answer clicks and right-clicks. Wisp asks such apps to add their icons again when it learns of one that it can't click, and asks every app once more if the hidden taskbar caught their first answers while Wisp started.
+- Tray icons of apps that started before Wisp, such as the Epic Games Launcher, answer clicks and right-clicks. Wisp groups startup icon updates to reduce flicker. If Explorer intercepted registrations, Wisp requests one more refresh after the startup replies settle. It then asks individual apps about any missing callbacks.
 
 ## 0.8.1 - 2026-11-17
 
