@@ -1,0 +1,60 @@
+name: Signing test
+
+# Builds main and signs it with SignPath's test certificate, without a release.
+# Run it from the Actions tab. The signed executables are kept as a run artifact.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # SignPath downloads the unsigned executables with this workflow's token.
+  actions: read
+
+jobs:
+  sign:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --workspace
+      - name: Version
+        id: version
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          "number=$version" >> $env:GITHUB_OUTPUT
+      - name: Upload unsigned executables
+        id: unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned
+          path: |
+            target/release/wisp.exe
+            target/release/wisp-settings.exe
+          if-no-files-found: error
+      - name: Sign
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: test-signing
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          parameters: |
+            version: "${{ steps.version.outputs.number }}"
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed
+      - name: Check signatures
+        shell: pwsh
+        run: |
+          foreach ($exe in Get-ChildItem signed -Recurse -Filter *.exe) {
+            $signature = Get-AuthenticodeSignature $exe.FullName
+            "$($exe.Name): $($signature.Status), $($signature.SignerCertificate.Subject)"
+            if (-not $signature.SignerCertificate) { throw "$($exe.Name) is not signed" }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed
+          path: signed
+          if-no-files-found: error

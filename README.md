@@ -215,6 +215,24 @@ To try your changes without touching your installed Wisp, run `scripts\install-n
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+- Committers and approvers: [@SumirSeth](https://github.com/SumirSeth).
+- Reviewers: [@SumirSeth](https://github.com/SumirSeth) reviews every pull request from other [contributors](https://github.com/SumirSeth/wisp/graphs/contributors).
+
+Releases are built from this repository by GitHub Actions, and each one is approved before it's signed.
+
+## Privacy
+
+Wisp sends nothing about you or your PC. It connects to the internet only to:
+
+- Check GitHub for a new release once a day. Turn this off in Settings, under Updates.
+- Download an update when you select **Update**.
+- Connect to Wi-Fi networks and Bluetooth devices you pick.
+- Open web searches and links you choose, in your browser.
+
 ## License
 
 [MIT](LICENSE) © Sumir Seth

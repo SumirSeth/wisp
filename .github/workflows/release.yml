@@ -6,6 +6,8 @@ on:
 
 permissions:
   contents: write
+  # SignPath downloads the unsigned executables with this workflow's token.
+  actions: read
 
 jobs:
   release:
@@ -17,6 +19,38 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
       - run: cargo build --release --workspace
+      # Releases are signed once the repository variable SIGNPATH_SIGNING_POLICY_SLUG
+      # is set to the release policy, which uses the production certificate. It also
+      # needs the variables SIGNPATH_ORGANIZATION_ID and SIGNPATH_PROJECT_SLUG, and the
+      # secret SIGNPATH_API_TOKEN. Each release waits for its approval in SignPath.
+      - name: Version
+        id: version
+        shell: pwsh
+        run: "\"number=$('${{ github.ref_name }}'.TrimStart('v'))\" >> $env:GITHUB_OUTPUT"
+      - name: Upload unsigned executables
+        id: unsigned
+        if: vars.SIGNPATH_SIGNING_POLICY_SLUG != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-${{ github.ref_name }}
+          path: |
+            target/release/wisp.exe
+            target/release/wisp-settings.exe
+          if-no-files-found: error
+      - name: Sign
+        if: vars.SIGNPATH_SIGNING_POLICY_SLUG != ''
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          parameters: |
+            version: "${{ steps.version.outputs.number }}"
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: target/release
       - name: Package
         shell: pwsh
         run: |
