@@ -895,7 +895,7 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
                     let battery = status
                         .battery
                         .map_or_else(|| battery_glyph(0, false), |b| battery_glyph(b.percent, b.charging));
-                    let wifi = super::status::wifi_icon(radios.read, radios.wifi.as_ref());
+                    let wifi = super::status::wifi_icon(radios.read, radios.wired, radios.wifi.as_ref());
                     let bluetooth = super::status::bluetooth_icon(radios.read, radios.bluetooth.as_ref());
                     let cells = [
                         (volume, status.volume.is_some(), false),

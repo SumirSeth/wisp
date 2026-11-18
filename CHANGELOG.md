@@ -7,6 +7,7 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 ### Fixes
 
 - The arrow in the dock hides when no notification icons are behind it, instead of opening an empty popup. (fixes #113)
+- On a wired connection, including USB tethering, the dock shows Ethernet instead of Wi-Fi as disconnected. (fixes #119)
 - Windows Settings pages use your Windows language in launcher results and search. English names still work. (fixes #117)
 - The arrow in the dock lists only the notification icons missing from the dock, instead of all of them again. (#104, by @JulienMaille, fixes #40, #53)
 

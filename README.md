@@ -139,7 +139,7 @@ The dock appears when the pointer touches the bottom edge of a screen, and hides
 
 Pinned apps sit before running apps. Up to five tray icons show in the dock: the ones turned on in Windows Settings, under **Personalization > Taskbar > Other system tray icons**. Windows turns new icons off, so at first they're all behind **⌄**.
 
-Sound, battery, Wi-Fi and Bluetooth sit in one group. In Settings, under **Status**, give any of them its own icon or hide it.
+Sound, battery, Wi-Fi and Bluetooth sit in one group. On a wired connection, the Wi-Fi icon shows Ethernet instead. In Settings, under **Status**, give any of them its own icon or hide it.
 
 If Wisp quits or crashes, the taskbar comes back with every tray icon.
 

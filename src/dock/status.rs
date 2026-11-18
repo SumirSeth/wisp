@@ -90,7 +90,7 @@ pub struct RadioIcon {
     pub badge: bool,
 }
 
-pub fn wifi_icon(read: bool, state: Option<&crate::commands::wifi::State>) -> RadioIcon {
+pub fn wifi_icon(read: bool, wired: bool, state: Option<&crate::commands::wifi::State>) -> RadioIcon {
     // Wifi1, Wifi2, Wifi3, Wifi (full), shared by Fluent Icons and MDL2 Assets.
     const LEVELS: [&str; 4] = ["\u{E872}", "\u{E873}", "\u{E874}", "\u{E701}"];
     let mut icon = RadioIcon {
@@ -99,6 +99,11 @@ pub fn wifi_icon(read: bool, state: Option<&crate::commands::wifi::State>) -> Ra
         crossed: false,
         badge: false,
     };
+    if wired {
+        // Ethernet, shared by Segoe Fluent Icons and Segoe MDL2 Assets.
+        icon.glyph = "\u{E839}";
+        return icon;
+    }
     match state {
         Some(w) if !w.on => {
             icon.opacity = 0.5;
@@ -168,6 +173,7 @@ pub struct Radios {
     /// False until the first reading arrives, so the radios aren't shown as missing.
     pub read: bool,
     pub wifi: Option<crate::commands::wifi::State>,
+    pub wired: bool,
     pub bluetooth: Option<crate::commands::bluetooth::State>,
 }
 
@@ -183,6 +189,7 @@ impl Status {
             None => "No battery".into(),
         };
         let wifi = match &radios.wifi {
+            _ if radios.wired => "Ethernet".into(),
             Some(w) if !w.on => "Wi-Fi off".into(),
             Some(w) => w
                 .network
@@ -263,6 +270,7 @@ impl RadioWorker {
                 };
                 if initialized {
                     if wifi && active.load(Ordering::Acquire) {
+                        radios.wired = crate::commands::wifi::wired_internet();
                         radios.wifi = crate::commands::wifi::state();
                     }
                     if bluetooth && active.load(Ordering::Acquire) {
@@ -313,6 +321,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ethernet_overrides_missing_disabled_and_connected_wifi() {
+        let states = [
+            None,
+            Some(crate::commands::wifi::State {
+                on: false,
+                network: None,
+                signal: None,
+            }),
+            Some(crate::commands::wifi::State {
+                on: true,
+                network: Some("Office".into()),
+                signal: Some(43),
+            }),
+        ];
+        for wifi in states {
+            assert_eq!(
+                wifi_icon(true, true, wifi.as_ref()),
+                RadioIcon {
+                    glyph: "\u{E839}",
+                    opacity: 1.0,
+                    crossed: false,
+                    badge: false,
+                }
+            );
+            let radios = Radios {
+                read: true,
+                wired: true,
+                wifi,
+                ..Default::default()
+            };
+            assert_eq!(Status::default().tooltip_for(&radios, &[StatusItem::Wifi]), "Ethernet");
+        }
+    }
+
+    #[test]
     fn signal_levels_cover_every_quality_and_boundaries() {
         for (quality, expected) in [(0, 0), (25, 0), (26, 1), (50, 1), (51, 2), (75, 2), (76, 3), (100, 3)] {
             assert_eq!(signal_level(quality), expected);
@@ -322,24 +365,24 @@ mod tests {
 
     #[test]
     fn radio_glyphs_distinguish_all_states() {
-        let neutral = wifi_icon(false, None);
+        let neutral = wifi_icon(false, false, None);
         assert_eq!(neutral.glyph, "\u{E701}");
         assert_eq!(neutral.opacity, 1.0);
-        assert_eq!(wifi_icon(true, None).opacity, 0.3);
+        assert_eq!(wifi_icon(true, false, None).opacity, 0.3);
         let mut wifi = crate::commands::wifi::State {
             on: false,
             network: None,
             signal: None,
         };
-        assert!(wifi_icon(true, Some(&wifi)).crossed);
-        assert_eq!(wifi_icon(true, Some(&wifi)).opacity, 0.5);
+        assert!(wifi_icon(true, false, Some(&wifi)).crossed);
+        assert_eq!(wifi_icon(true, false, Some(&wifi)).opacity, 0.5);
         wifi.on = true;
-        assert_eq!(wifi_icon(true, Some(&wifi)).glyph, "\u{EB5E}");
+        assert_eq!(wifi_icon(true, false, Some(&wifi)).glyph, "\u{EB5E}");
         wifi.network = Some("Office".into());
-        assert_eq!(wifi_icon(true, Some(&wifi)), neutral);
+        assert_eq!(wifi_icon(true, false, Some(&wifi)), neutral);
         for (q, glyph) in [(0, "\u{E872}"), (26, "\u{E873}"), (51, "\u{E874}"), (76, "\u{E701}")] {
             wifi.signal = Some(q);
-            let icon = wifi_icon(true, Some(&wifi));
+            let icon = wifi_icon(true, false, Some(&wifi));
             assert_eq!(icon.glyph, glyph);
             assert_eq!(icon.opacity, 1.0);
             assert!(!icon.crossed);

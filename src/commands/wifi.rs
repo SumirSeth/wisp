@@ -18,6 +18,101 @@ use windows::{
 
 use super::radio;
 
+/// Whether Windows prefers physical Ethernet (including USB tethering) for internet.
+/// Called by the dock's background reader, with COM initialized. No probes or scans.
+pub fn wired_internet() -> bool {
+    use windows::Win32::{
+        NetworkManagement::{IpHelper::*, Ndis::IfOperStatusUp},
+        Networking::{
+            NetworkListManager::{NLM_CONNECTIVITY_IPV4_INTERNET, NLM_CONNECTIVITY_IPV6_INTERNET},
+            WinSock::{AF_INET, AF_UNSPEC},
+        },
+    };
+    unsafe {
+        let read = || -> Option<bool> {
+            let manager: INetworkListManager = CoCreateInstance(&NetworkListManager, None, CLSCTX_ALL).ok()?;
+            let connections = manager.GetNetworkConnections().ok()?;
+            let mut internet = Vec::new();
+            loop {
+                let mut item: [Option<INetworkConnection>; 1] = [None];
+                let mut fetched = 0;
+                connections.Next(&mut item, Some(&mut fetched)).ok()?;
+                if fetched == 0 {
+                    break;
+                }
+                let connection = item[0].take()?;
+                internet.push((connection.GetAdapterId().ok()?, connection.GetConnectivity().ok()?.0));
+            }
+            let mut table = std::ptr::null_mut();
+            if GetIpForwardTable2(AF_UNSPEC, &mut table).is_err() || table.is_null() {
+                return None;
+            }
+            let rows = std::slice::from_raw_parts((*table).Table.as_ptr(), (*table).NumEntries as usize);
+            let mut candidates = Vec::new();
+            for route in rows {
+                if route.DestinationPrefix.PrefixLength != 0 || route.Loopback || route.ValidLifetime == 0 {
+                    continue;
+                }
+                let mut adapter = MIB_IF_ROW2 {
+                    InterfaceLuid: route.InterfaceLuid,
+                    ..Default::default()
+                };
+                if GetIfEntry2(&mut adapter).is_err() {
+                    continue;
+                }
+                let family = route.DestinationPrefix.Prefix.si_family;
+                let flag = if family == AF_INET {
+                    NLM_CONNECTIVITY_IPV4_INTERNET.0
+                } else {
+                    NLM_CONNECTIVITY_IPV6_INTERNET.0
+                };
+                let online = internet
+                    .iter()
+                    .any(|(id, flags)| *id == adapter.InterfaceGuid && flags & flag != 0);
+                let Some(wired) = physical_transport(
+                    adapter.Type,
+                    adapter.InterfaceAndOperStatusFlags._bitfield,
+                    adapter.OperStatus == IfOperStatusUp,
+                    online,
+                ) else {
+                    continue;
+                };
+                let mut interface = MIB_IPINTERFACE_ROW {
+                    Family: family,
+                    InterfaceLuid: route.InterfaceLuid,
+                    ..Default::default()
+                };
+                if GetIpInterfaceEntry(&mut interface).is_ok() {
+                    candidates.push((u64::from(route.Metric) + u64::from(interface.Metric), wired));
+                }
+            }
+            FreeMibTable(table.cast());
+            Some(prefers_wired(&candidates))
+        };
+        read().unwrap_or(false)
+    }
+}
+
+fn physical_transport(kind: u32, flags: u8, up: bool, internet: bool) -> Option<bool> {
+    // MIB_IF_ROW2's InterfaceAndOperStatusFlags: HardwareInterface is bit 0,
+    // FilterInterface bit 1. Bit 2, ConnectorPresent, is set on real cards.
+    const HARDWARE: u8 = 1;
+    const FILTER: u8 = 2;
+    if !up || !internet || flags & HARDWARE == 0 || flags & FILTER != 0 {
+        return None;
+    }
+    match kind {
+        6 => Some(true),   // IF_TYPE_ETHERNET_CSMACD, including USB RNDIS/NCM
+        71 => Some(false), // IF_TYPE_IEEE80211
+        _ => None,
+    }
+}
+
+fn prefers_wired(routes: &[(u64, bool)]) -> bool {
+    // On equal costs retain Wi-Fi rather than changing with route enumeration order.
+    routes.iter().min().is_some_and(|(_, wired)| *wired)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct State {
     pub on: bool,
@@ -485,6 +580,30 @@ mod profile_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_online_physical_ethernet_counts_as_wired() {
+        assert_eq!(physical_transport(6, 1, true, true), Some(true));
+        assert_eq!(physical_transport(71, 1, true, true), Some(false));
+        assert_eq!(physical_transport(6, 0, true, true), None); // Hyper-V / VPN
+        assert_eq!(physical_transport(6, 3, true, true), None); // Filter
+        assert_eq!(physical_transport(6, 5, true, true), Some(true)); // Connector present
+        assert_eq!(physical_transport(24, 1, true, true), None); // Loopback
+        assert_eq!(physical_transport(131, 1, true, true), None); // Tunnel
+        assert_eq!(physical_transport(6, 1, false, true), None);
+        assert_eq!(physical_transport(6, 1, true, false), None);
+    }
+
+    #[test]
+    fn follows_route_cost_instead_of_ethernet_presence() {
+        assert!(!prefers_wired(&[]));
+        assert!(prefers_wired(&[(25, true)]));
+        assert!(!prefers_wired(&[(35, false)]));
+        assert!(prefers_wired(&[(35, false), (25, true)]));
+        assert!(!prefers_wired(&[(10, false), (25, true)]));
+        assert!(!prefers_wired(&[(25, true), (25, false)]));
+        assert!(!prefers_wired(&[(25, false), (25, true)]));
+    }
 
     fn network(name: &str, saved: bool, connected: bool, signal: Option<u32>) -> Network {
         Network {
