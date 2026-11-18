@@ -189,6 +189,7 @@ fn worker(requests: Receiver<Request>, events: Sender<Event>, icon_size: i32, no
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     }
+    settings::preload();
     let send = |event| {
         if events.send(event).is_ok() {
             notify();

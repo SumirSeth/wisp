@@ -6,6 +6,7 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ### Fixes
 
+- Windows Settings pages use your Windows language in launcher results and search. English names still work. (fixes #117)
 - The arrow in the dock lists only the notification icons missing from the dock, instead of all of them again. (#104, by @JulienMaille, fixes #40, #53)
 
 ## 0.8.1 - 2026-11-17
