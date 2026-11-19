@@ -2673,6 +2673,10 @@ impl State {
         self.hide_tip();
         if let Err(error) = tray_host::invoke(&self.tray[index].icon, action, center.x, center.y) {
             eprintln!("Dock notification icon: {error}");
+            // No menu opens, so there is none to watch.
+            if action == Action::Menu {
+                self.end_flyout_menu();
+            }
         }
     }
 
@@ -4358,7 +4362,7 @@ unsafe fn popup_wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
 }
 
 /// Poll for clicks if the flyout could not take focus. While an icon's menu
-/// is open, its own timer checks clicks against the menu as well.
+/// is open, its mouse hook checks clicks against the menu instead.
 fn poll_flyout_clicks(open: bool, held: bool, menu: bool) -> bool {
     open && !held && !menu
 }
@@ -4541,7 +4545,7 @@ mod tests {
     }
 
     #[test]
-    fn regular_poll_leaves_clicks_to_the_tray_menu_timer() {
+    fn regular_poll_leaves_clicks_to_the_tray_menu_hook() {
         assert!(!poll_flyout_clicks(true, false, true));
         assert!(poll_flyout_clicks(true, false, false));
         assert!(!poll_flyout_clicks(true, true, false));
