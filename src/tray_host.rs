@@ -154,20 +154,24 @@ impl Drop for TrayHost {
 pub fn invoke(icon: &Icon, action: Action, x: i32, y: i32) -> std::result::Result<(), String> {
     let hwnd = HWND(wire::handle(icon.hwnd) as _);
     unsafe {
-        if icon.callback == 0 {
-            // Added before Wisp; ask its window to add it again with its callback.
-            if IsWindow(Some(hwnd)).as_bool() && !icon.exes.iter().any(|exe| exe.ends_with(r"\explorer.exe")) {
-                let message = RegisterWindowMessageW(w!("TaskbarCreated"));
-                let _ = PostMessageW(Some(hwnd), message, WPARAM(0), LPARAM(0));
-            }
-            return Err("The icon has no callback message; asked its app to add it again".into());
-        }
+        // Checked first: a reused handle must not reach an unrelated app,
+        // not even with the TaskbarCreated request below.
         let mut pid = 0;
         if !IsWindow(Some(hwnd)).as_bool() || GetWindowThreadProcessId(hwnd, Some(&mut pid)) == 0 {
             return Err("The icon's window is gone".into());
         }
         if icon.pid != 0 && pid != icon.pid {
             return Err("The icon's window belongs to another process now".into());
+        }
+        if icon.callback == 0 {
+            // Added before Wisp; ask its window to add it again with its
+            // callback. Only when the window's owner is known to match.
+            if icon.pid == 0 || icon.exes.iter().any(|exe| exe.ends_with(r"\explorer.exe")) {
+                return Err("The icon has no callback message".into());
+            }
+            let message = RegisterWindowMessageW(w!("TaskbarCreated"));
+            let _ = PostMessageW(Some(hwnd), message, WPARAM(0), LPARAM(0));
+            return Err("The icon has no callback message; asked its app to add it again".into());
         }
         // The app needs the foreground for its menu or window. The click gave
         // Wisp the right to pass it on.

@@ -294,18 +294,27 @@ impl IconRefresh {
             return RefreshAction::Wait;
         }
         if std::mem::take(&mut self.outranked) >= OUTRANKED_REFRESH {
+            // Replies to this broadcast settle like the first ones, so the
+            // targeted retries don't overlap slow replies.
+            self.watch_until = Some(now + WATCH_FOR);
             return RefreshAction::Broadcast;
         }
         RefreshAction::CheckCallbacks
     }
 }
 
-fn missing_callback_windows(icons: &[super::Icon], asked: &mut HashSet<(u32, u32)>) -> Vec<u32> {
+/// The `(hwnd, pid)` owners still missing a callback, each returned once.
+fn missing_callback_windows(icons: &[super::Icon], asked: &mut HashSet<(u32, u32)>) -> Vec<(u32, u32)> {
     icons
         .iter()
-        .filter(|icon| icon.callback == 0 && icon.hwnd != 0 && !icon.exes.iter().any(|e| e.ends_with(r"\explorer.exe")))
+        .filter(|icon| {
+            icon.callback == 0
+                && icon.hwnd != 0
+                && icon.pid != 0
+                && !icon.exes.iter().any(|e| e.ends_with(r"\explorer.exe"))
+        })
         .filter(|icon| asked.insert((icon.pid, icon.hwnd)))
-        .map(|icon| icon.hwnd)
+        .map(|icon| (icon.hwnd, icon.pid))
         .collect()
 }
 
@@ -371,7 +380,11 @@ impl Host {
             return;
         }
         self.batch_icon_changes();
-        for hwnd in windows {
+        for (hwnd, pid) in windows {
+            // A reused handle would make an unrelated app re-register its icons.
+            if !owner_alive(hwnd, pid) {
+                continue;
+            }
             let target = HWND(wire::handle(hwnd) as _);
             if let Err(error) = unsafe { PostMessageW(Some(target), self.taskbar_created, WPARAM(0), LPARAM(0)) } {
                 eprintln!("Tray host: could not request a callback from window {hwnd:#x}: {error}");
@@ -995,14 +1008,26 @@ mod tests {
         }
         let end = start + WATCH_FOR;
         assert_eq!(refresh.next(end, false), RefreshAction::Wait);
-        assert_eq!(
-            refresh.next(end + Duration::from_secs(1), true),
-            RefreshAction::Broadcast
-        );
-        assert_eq!(
-            refresh.next(end + Duration::from_secs(2), true),
-            RefreshAction::CheckCallbacks
-        );
+        let recovery = end + Duration::from_secs(1);
+        assert_eq!(refresh.next(recovery, true), RefreshAction::Broadcast);
+        assert_eq!(refresh.next(recovery, true), RefreshAction::Wait);
+    }
+
+    #[test]
+    fn recovery_broadcast_settles_before_targeted_retries() {
+        let mut refresh = IconRefresh::new();
+        let start = Instant::now();
+        assert_eq!(refresh.next(start, true), RefreshAction::Broadcast);
+        refresh.observe_loss(start + Duration::from_secs(1));
+        let recovery = start + WATCH_FOR;
+        assert_eq!(refresh.next(recovery, true), RefreshAction::Broadcast);
+        // Slow replies to the recovery broadcast still arrive here.
+        for second in [1, 2] {
+            let now = recovery + Duration::from_secs(second);
+            assert!(refresh.watching(now));
+            assert_eq!(refresh.next(now, true), RefreshAction::Wait);
+        }
+        assert_eq!(refresh.next(recovery + WATCH_FOR, true), RefreshAction::CheckCallbacks);
     }
 
     #[test]
@@ -1043,7 +1068,7 @@ mod tests {
         let reply = wire::tests::packet(wire::NIM_MODIFY, wire::NIF_MESSAGE, 2, 1, "");
         model.apply(&wire::parse_notify(&reply).unwrap(), true, None, Owner::default());
         let mut asked = HashSet::new();
-        assert_eq!(missing_callback_windows(&model.icons, &mut asked), vec![1]);
+        assert_eq!(missing_callback_windows(&model.icons, &mut asked), vec![(1, 1)]);
         assert!(missing_callback_windows(&model.icons, &mut asked).is_empty());
     }
 

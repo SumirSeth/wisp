@@ -39,12 +39,13 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
 use windows::Win32::UI::Accessibility::*;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, GetSystemMetricsForDpi, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, GetCapture, GetDoubleClickTime, GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE,
-    TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON, VK_SHIFT,
+    TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE, VK_LBUTTON, VK_RBUTTON, VK_SHIFT,
 };
 use windows::Win32::UI::Input::{RAWINPUTDEVICE, RIDEV_INPUTSINK, RIDEV_REMOVE, RegisterRawInputDevices};
 use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow};
@@ -66,6 +67,7 @@ pub(crate) use crate::messages::WM_DOCK_DRAIN;
 pub use crate::messages::WM_DOCK_SHOW_TASKBAR;
 use crate::messages::WM_DOCK_STATUS;
 pub(crate) use crate::messages::WM_DOCK_WAKE;
+use crate::messages::WM_FLYOUT_MENU;
 use crate::messages::WM_RADIOS;
 use crate::messages::WM_REFRESH;
 pub use crate::messages::WM_SHOW_LAUNCHER;
@@ -116,10 +118,17 @@ const HOVER_MS: f32 = 110.0;
 const DESKTOP_TIMER: usize = 106;
 /// Fires as each minute starts, for the clock.
 const CLOCK_TIMER: usize = 109;
-/// Watches for clicks elsewhere while an icon's menu, opened from the
-/// flyout, holds the foreground.
-const FLYOUT_MENU_TIMER: usize = 110;
-const FLYOUT_MENU_MS: u32 = 50;
+/// What a [`WM_FLYOUT_MENU`] reports while an icon's menu, opened from the
+/// flyout, is shown. Its `lParam` is the window, or the pressed point.
+const MENU_FOREGROUND: usize = 0;
+/// A Win32 menu popup opened (`EVENT_SYSTEM_MENUPOPUPSTART`).
+const MENU_POPUP: usize = 1;
+/// A top-level window appeared; Qt and Steam menus are plain windows.
+const MENU_SHOWN: usize = 2;
+/// A menu popup ended, or a window hid or was destroyed.
+const MENU_CLOSED: usize = 3;
+/// A mouse button went down anywhere, from the low-level mouse hook.
+const MENU_PRESS: usize = 4;
 /// A dock that stays visible and isn't in use checks for fullscreen apps at
 /// this rate; its clock, volume and battery update from events.
 const QUIET_POLL_MS: u32 = 500;
@@ -132,6 +141,9 @@ thread_local! {
     static FOREGROUND_HOOK: Cell<(HWINEVENTHOOK, u32)> = const { Cell::new((HWINEVENTHOOK(std::ptr::null_mut()), 0)) };
     /// Whether the foreground window covered its screen at the last move.
     static FOREGROUND_FULLSCREEN: Cell<bool> = const { Cell::new(false) };
+    /// The flyout while an icon's menu opened from it is shown. Window events
+    /// and the mouse hook report to it only then.
+    static FLYOUT_MENU_TARGET: Cell<HWND> = const { Cell::new(HWND(std::ptr::null_mut())) };
 }
 
 struct Item {
@@ -498,13 +510,19 @@ struct State {
     flyout_open: bool,
     flyout_hover: Option<usize>,
     /// The process whose menu was opened from the flyout. The flyout stays
-    /// open beside it, and closes on a click outside both.
-    flyout_menu: Option<u32>,
+    /// open beside it, and closes when the menu closes or on a click outside both.
+    flyout_menu: Option<ProcessIdentity>,
     /// Processes found to descend from [`State::flyout_menu`], such as
     /// Steam's `steamwebhelper.exe`, which draws Steam's menu.
-    flyout_kin: Vec<u32>,
-    /// Whether a mouse button was down at the last [`FLYOUT_MENU_TIMER`] tick.
-    flyout_pressed: bool,
+    flyout_kin: Vec<ProcessIdentity>,
+    /// The app's menu windows seen since the right-click. Once the last one
+    /// closes, the flyout closes too.
+    flyout_menus: Vec<HWND>,
+    /// Whether the last press landed on Wisp's own windows, so a menu that
+    /// closes because of it leaves the flyout open.
+    flyout_own_press: bool,
+    /// Watches Win32 menu popups and mouse presses while a menu is shown.
+    flyout_hooks: Option<(HWINEVENTHOOK, HHOOK)>,
     flyout_renderer: render::Renderer,
     tip: HWND,
     tip_renderer: render::Renderer,
@@ -633,6 +651,7 @@ pub(crate) fn retain_message(msg: u32) -> bool {
             | WM_TRAY_CHANGED
             | WM_RADIOS
             | WM_CLOSE_FLYOUT
+            | WM_FLYOUT_MENU
             | WM_DOCK_WAKE
             | WM_PAINT
             | WM_DISPLAYCHANGE
@@ -819,7 +838,9 @@ impl Dock {
             flyout_hover: None,
             flyout_menu: None,
             flyout_kin: Vec::new(),
-            flyout_pressed: false,
+            flyout_menus: Vec::new(),
+            flyout_own_press: false,
+            flyout_hooks: None,
             flyout_renderer: render::Renderer::new()?,
             tip: HWND::default(),
             tip_renderer: render::Renderer::new()?,
@@ -1833,7 +1854,7 @@ impl State {
         }
         let mut rect = RECT::default();
         let _ = unsafe { GetWindowRect(self.hwnd, &mut rect) };
-        if poll_flyout_clicks(self.flyout_open, self.held, self.flyout_menu)
+        if poll_flyout_clicks(self.flyout_open, self.held, self.flyout_menu.is_some())
             && unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0 || GetAsyncKeyState(VK_RBUTTON.0 as i32) < 0 }
         {
             let mut flyout = RECT::default();
@@ -2451,11 +2472,7 @@ impl State {
         }
         self.flyout_open = false;
         self.flyout_hover = None;
-        self.flyout_menu = None;
-        self.flyout_kin.clear();
-        unsafe {
-            let _ = KillTimer(Some(self.flyout), FLYOUT_MENU_TIMER);
-        }
+        self.end_flyout_menu();
         if matches!(self.tip_target, Some(tray::Tip::Flyout(_))) {
             self.hide_tip();
         }
@@ -2466,64 +2483,170 @@ impl State {
         self.publish_rects();
     }
 
-    /// Whether the user left the flyout and the menu opened from it: a new
-    /// press outside both, or another app taking the foreground. The app
-    /// includes its child processes, since some draw their menus in one.
-    fn flyout_menu_outside(&mut self) -> bool {
-        let Some(pid) = self.flyout_menu else { return false };
-        let process = |hwnd: HWND| {
-            let mut id = 0;
-            unsafe { GetWindowThreadProcessId(hwnd, Some(&mut id)) };
-            id
+    /// Keeps the flyout open beside the menu that process `pid` is about to
+    /// show, and starts watching for that menu to close. False if the process
+    /// can't be identified or the hooks can't be set; the flyout then closes.
+    fn start_flyout_menu(&mut self, pid: u32) -> bool {
+        let Some(owner) = process_identity(pid) else {
+            return false;
         };
-        let ours = std::process::id();
+        if self.flyout_menu != Some(owner) {
+            // Kin found for another app, or an earlier process with this PID.
+            self.flyout_kin.clear();
+        }
+        self.flyout_menu = Some(owner);
+        self.flyout_menus.clear();
+        self.flyout_own_press = false;
+        if self.flyout_hooks.is_some() {
+            return true;
+        }
         unsafe {
-            let foreground = GetForegroundWindow();
-            if !foreground.is_invalid() {
-                let id = process(foreground);
-                if id != ours && !self.flyout_app(pid, id) {
-                    return true;
+            // Foreground, show, hide and destroy events already reach
+            // `window_event` through the dock's own hooks.
+            let menus = SetWinEventHook(
+                EVENT_SYSTEM_MENUPOPUPSTART,
+                EVENT_SYSTEM_MENUPOPUPEND,
+                None,
+                Some(window_event),
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+            );
+            // Toolkit menus that never take the foreground, like Qt's, only
+            // close on a click elsewhere, which no window event reports.
+            let instance = GetModuleHandleW(None).ok().map(HINSTANCE::from);
+            let mouse = SetWindowsHookExW(WH_MOUSE_LL, Some(flyout_mouse), instance, 0);
+            match mouse {
+                Ok(mouse) if !menus.is_invalid() => {
+                    self.flyout_hooks = Some((menus, mouse));
+                    FLYOUT_MENU_TARGET.with(|target| target.set(self.flyout));
+                    true
                 }
-                if id != ours && IsWindowVisible(foreground).as_bool() && menu_like(foreground) {
-                    keep_flyout_below_menu(self.flyout, foreground);
+                result => {
+                    match result {
+                        Ok(mouse) => {
+                            eprintln!("Flyout menu hooks: no menu event hook");
+                            let _ = UnhookWindowsHookEx(mouse);
+                        }
+                        Err(error) => eprintln!("Flyout menu hooks: {error}"),
+                    }
+                    if !menus.is_invalid() {
+                        let _ = UnhookWinEvent(menus);
+                    }
+                    self.flyout_menu = None;
+                    false
                 }
             }
-            let down = [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON]
-                .iter()
-                .any(|&key| GetAsyncKeyState(key.0.into()) < 0);
-            let pressed = down && !self.flyout_pressed;
-            self.flyout_pressed = down;
-            if !pressed {
-                return false;
-            }
-            let mut point = POINT::default();
-            if GetCursorPos(&mut point).is_err() {
-                return false;
-            }
-            let target = GetAncestor(WindowFromPoint(point), GA_ROOT);
-            if target.is_invalid() {
-                return true;
-            }
-            // The dock and flyout handle their own clicks, chevron included.
-            let id = process(target);
-            if id == ours {
-                return false;
-            }
-            !(self.flyout_app(pid, id) && menu_like(target))
         }
     }
 
-    /// Whether process `id` is the flyout menu's app `pid` or one of its
-    /// descendants.
-    fn flyout_app(&mut self, pid: u32, id: u32) -> bool {
-        if id == pid || self.flyout_kin.contains(&id) {
-            return true;
+    /// Stops watching an icon's menu. The flyout itself stays as it is.
+    fn end_flyout_menu(&mut self) {
+        FLYOUT_MENU_TARGET.with(|target| target.set(HWND::default()));
+        if let Some((menus, mouse)) = self.flyout_hooks.take() {
+            unsafe {
+                let _ = UnhookWinEvent(menus);
+                let _ = UnhookWindowsHookEx(mouse);
+            }
         }
-        let kin = descends_from(id, pid);
+        self.flyout_menu = None;
+        self.flyout_kin.clear();
+        self.flyout_menus.clear();
+        self.flyout_own_press = false;
+    }
+
+    /// Handles a [`WM_FLYOUT_MENU`] report. True when the user left the menu
+    /// and the flyout: the menu closed, another app took the foreground, or
+    /// a press landed outside both.
+    fn flyout_menu_event(&mut self, kind: usize, lp: LPARAM) -> bool {
+        if self.flyout_menu.is_none() {
+            return false;
+        }
+        let ours = std::process::id();
+        let window = HWND(lp.0 as _);
+        match kind {
+            MENU_FOREGROUND => {
+                let foreground = unsafe { GetForegroundWindow() };
+                let pid = window_pid(foreground);
+                if foreground.is_invalid() || pid == ours {
+                    return false;
+                }
+                // Unconfirmed identity counts as another app.
+                if self.flyout_app(pid) != Some(true) {
+                    return true;
+                }
+                if unsafe { IsWindowVisible(foreground) }.as_bool() && menu_like(foreground) {
+                    self.track_flyout_menu(foreground);
+                }
+                false
+            }
+            MENU_POPUP | MENU_SHOWN => {
+                // Shows of unrelated windows are no reason to close.
+                let shown = kind == MENU_POPUP || unsafe { IsWindowVisible(window) }.as_bool();
+                if shown && menu_like(window) && self.flyout_app(window_pid(window)) == Some(true) {
+                    self.track_flyout_menu(window);
+                }
+                false
+            }
+            MENU_CLOSED => {
+                if self.flyout_menus.is_empty() {
+                    return false;
+                }
+                self.flyout_menus
+                    .retain(|&menu| menu != window && unsafe { IsWindowVisible(menu) }.as_bool());
+                if !self.flyout_menus.is_empty() {
+                    return false;
+                }
+                if std::mem::take(&mut self.flyout_own_press) {
+                    // A press on the flyout dismissed the menu; the flyout
+                    // handles that press itself, as without a menu.
+                    self.end_flyout_menu();
+                    return false;
+                }
+                true
+            }
+            MENU_PRESS => {
+                let point = POINT {
+                    x: (lp.0 & 0xFFFF) as u16 as i16 as i32,
+                    y: ((lp.0 >> 16) & 0xFFFF) as u16 as i16 as i32,
+                };
+                let target = unsafe { GetAncestor(WindowFromPoint(point), GA_ROOT) };
+                if target.is_invalid() {
+                    return true;
+                }
+                // The dock and flyout handle their own clicks, chevron included.
+                let pid = window_pid(target);
+                self.flyout_own_press = pid == ours;
+                if self.flyout_own_press {
+                    return false;
+                }
+                !(menu_like(target) && self.flyout_app(pid) == Some(true))
+            }
+            _ => false,
+        }
+    }
+
+    /// Remembers one of the app's menu windows and keeps the flyout below it.
+    fn track_flyout_menu(&mut self, menu: HWND) {
+        if !self.flyout_menus.contains(&menu) {
+            self.flyout_menus.push(menu);
+        }
+        keep_flyout_below_menu(self.flyout, menu);
+    }
+
+    /// Whether process `pid` is the flyout menu's app or one of its
+    /// descendants. None when its identity can't be confirmed.
+    fn flyout_app(&mut self, pid: u32) -> Option<bool> {
+        let owner = self.flyout_menu?;
+        let process = process_identity(pid)?;
+        if process == owner || self.flyout_kin.contains(&process) {
+            return Some(true);
+        }
+        let kin = descends_from(process, owner)?;
         if kin {
-            self.flyout_kin.push(id);
+            self.flyout_kin.push(process);
         }
-        kin
+        Some(kin)
     }
 
     /// Sends a gesture on `tray[index]` to its app, as Explorer would.
@@ -3524,6 +3647,7 @@ unsafe extern "system" fn window_event(
     _: u32,
     _: u32,
 ) {
+    forward_flyout_menu_event(event, hwnd, object, child);
     if event == EVENT_SYSTEM_FOREGROUND {
         track_foreground();
     } else {
@@ -4189,16 +4313,19 @@ unsafe fn popup_wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                         s.close_flyout();
                         s.click_tray(index, Action::Click, center);
                     } else {
-                        s.flyout_menu = Some(s.tray[index].icon.pid);
-                        s.flyout_pressed = true;
-                        SetTimer(Some(hwnd), FLYOUT_MENU_TIMER, FLYOUT_MENU_MS, None);
+                        let pid = s.tray[index].icon.pid;
+                        if !s.start_flyout_menu(pid) {
+                            // Without knowing whose menu it is, the flyout
+                            // can't tell when to close; close it now.
+                            s.close_flyout();
+                        }
                         s.click_tray(index, Action::Menu, center);
                     }
                 }
                 return LRESULT(0);
             }
-            WM_TIMER if wp.0 == FLYOUT_MENU_TIMER => {
-                if s.flyout_menu_outside() {
+            WM_FLYOUT_MENU => {
+                if s.flyout_menu_event(wp.0, lp) {
                     s.close_flyout();
                 }
                 return LRESULT(0);
@@ -4232,8 +4359,87 @@ unsafe fn popup_wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
 
 /// Poll for clicks if the flyout could not take focus. While an icon's menu
 /// is open, its own timer checks clicks against the menu as well.
-fn poll_flyout_clicks(open: bool, held: bool, menu: Option<u32>) -> bool {
-    open && !held && menu.is_none()
+fn poll_flyout_clicks(open: bool, held: bool, menu: bool) -> bool {
+    open && !held && !menu
+}
+
+/// Passes window events on to the flyout while an icon's menu is shown.
+fn forward_flyout_menu_event(event: u32, hwnd: HWND, object: i32, child: i32) {
+    let target = FLYOUT_MENU_TARGET.with(Cell::get);
+    if target.is_invalid() {
+        return;
+    }
+    let window = object == OBJID_WINDOW.0 && child == 0 && !hwnd.is_invalid();
+    let kind = match event {
+        EVENT_SYSTEM_FOREGROUND => MENU_FOREGROUND,
+        EVENT_SYSTEM_MENUPOPUPSTART if !hwnd.is_invalid() => MENU_POPUP,
+        EVENT_SYSTEM_MENUPOPUPEND if !hwnd.is_invalid() => MENU_CLOSED,
+        EVENT_OBJECT_SHOW if window => MENU_SHOWN,
+        EVENT_OBJECT_HIDE | EVENT_OBJECT_DESTROY if window => MENU_CLOSED,
+        _ => return,
+    };
+    unsafe {
+        let _ = PostMessageW(Some(target), WM_FLYOUT_MENU, WPARAM(kind), LPARAM(hwnd.0 as isize));
+    }
+}
+
+/// Reports each mouse press while an icon's menu is shown. Posted, so the
+/// hook returns at once and never delays input.
+unsafe extern "system" fn flyout_mouse(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    unsafe {
+        if code == HC_ACTION as i32
+            && matches!(
+                wp.0 as u32,
+                WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN
+            )
+        {
+            let target = FLYOUT_MENU_TARGET.with(Cell::get);
+            if !target.is_invalid() {
+                let point = (*(lp.0 as *const MSLLHOOKSTRUCT)).pt;
+                let packed = (point.x as u16 as u32) | ((point.y as u16 as u32) << 16);
+                let _ = PostMessageW(
+                    Some(target),
+                    WM_FLYOUT_MENU,
+                    WPARAM(MENU_PRESS),
+                    LPARAM(packed as isize),
+                );
+            }
+        }
+        CallNextHookEx(None, code, wp, lp)
+    }
+}
+
+/// A process told apart from later ones that reuse its ID.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ProcessIdentity {
+    pid: u32,
+    /// Creation time, in 100 ns units since 1601.
+    created: u64,
+}
+
+/// The running process `pid`, or None when it can't be opened.
+fn process_identity(pid: u32) -> Option<ProcessIdentity> {
+    if pid == 0 {
+        return None;
+    }
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut times = [FILETIME::default(); 4];
+        let [created, exited, kernel, user] = &mut times;
+        let result = GetProcessTimes(handle, created, exited, kernel, user);
+        let _ = CloseHandle(handle);
+        result.ok()?;
+        Some(ProcessIdentity {
+            pid,
+            created: (u64::from(times[0].dwHighDateTime) << 32) | u64::from(times[0].dwLowDateTime),
+        })
+    }
+}
+
+fn window_pid(hwnd: HWND) -> u32 {
+    let mut pid = 0;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    pid
 }
 
 /// Whether `hwnd` looks like a menu rather than an app's main window.
@@ -4262,11 +4468,10 @@ fn keep_flyout_below_menu(flyout: HWND, menu: HWND) {
     }
 }
 
-/// Whether process `id` descends from process `ancestor`.
-fn descends_from(id: u32, ancestor: u32) -> bool {
-    let Ok(snapshot) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else {
-        return false;
-    };
+/// Whether `process` descends from `ancestor`. None when that can't be
+/// confirmed, such as when a process in between can't be opened.
+fn descends_from(process: ProcessIdentity, ancestor: ProcessIdentity) -> Option<bool> {
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }.ok()?;
     let mut parents = std::collections::HashMap::new();
     let mut entry = PROCESSENTRY32W {
         dwSize: size_of::<PROCESSENTRY32W>() as u32,
@@ -4280,20 +4485,43 @@ fn descends_from(id: u32, ancestor: u32) -> bool {
         }
         let _ = CloseHandle(snapshot);
     }
-    // Process IDs are reused, so a parent chain can loop; walk a bounded depth.
-    let mut current = id;
+    descends(process, ancestor, |pid| parents.get(&pid).copied(), process_identity)
+}
+
+/// Walks `process`'s parents. A parent ID is only a hint: once the parent
+/// exits, its ID can be reused, so each parent must be confirmed to have
+/// started before its child.
+fn descends(
+    process: ProcessIdentity,
+    ancestor: ProcessIdentity,
+    parent_of: impl Fn(u32) -> Option<u32>,
+    identity: impl Fn(u32) -> Option<ProcessIdentity>,
+) -> Option<bool> {
+    let mut child = process;
+    // Reused IDs can make a chain loop; walk a bounded depth.
     for _ in 0..32 {
-        match parents.get(&current) {
-            Some(&parent) if parent == ancestor => return true,
-            Some(&parent) if parent != 0 && parent != current => current = parent,
-            _ => return false,
+        let Some(parent) = parent_of(child.pid) else {
+            return Some(false);
+        };
+        if parent == 0 || parent == child.pid {
+            return Some(false);
         }
+        if parent == ancestor.pid {
+            return Some(ancestor.created <= child.created && identity(parent)? == ancestor);
+        }
+        let parent = identity(parent)?;
+        if parent.created > child.created {
+            // The real parent exited and another process took its ID.
+            return Some(false);
+        }
+        child = parent;
     }
-    false
+    Some(false)
 }
 
 impl Drop for State {
     fn drop(&mut self) {
+        self.end_flyout_menu();
         if !self.name_hook.is_invalid() {
             unsafe {
                 let _ = UnhookWinEvent(self.name_hook);
@@ -4314,10 +4542,48 @@ mod tests {
 
     #[test]
     fn regular_poll_leaves_clicks_to_the_tray_menu_timer() {
-        assert!(!poll_flyout_clicks(true, false, Some(42)));
-        assert!(poll_flyout_clicks(true, false, None));
-        assert!(!poll_flyout_clicks(true, true, None));
-        assert!(!poll_flyout_clicks(false, false, None));
+        assert!(!poll_flyout_clicks(true, false, true));
+        assert!(poll_flyout_clicks(true, false, false));
+        assert!(!poll_flyout_clicks(true, true, false));
+        assert!(!poll_flyout_clicks(false, false, false));
+    }
+
+    #[test]
+    fn menu_kin_needs_each_parent_to_be_older_than_its_child() {
+        let p = |pid, created| ProcessIdentity { pid, created };
+        // steam (1) → steamwebhelper (2) → steamwebhelper (3)
+        let tree = [(p(1, 10), 0), (p(2, 20), 1), (p(3, 30), 2)];
+        let parent_of = |pid| tree.iter().find(|(p, _)| p.pid == pid).map(|&(_, parent)| parent);
+        let identity = |pid| tree.iter().find(|(p, _)| p.pid == pid).map(|&(p, _)| p);
+        assert_eq!(descends(p(2, 20), p(1, 10), parent_of, identity), Some(true));
+        assert_eq!(descends(p(3, 30), p(1, 10), parent_of, identity), Some(true));
+        assert_eq!(descends(p(1, 10), p(3, 30), parent_of, identity), Some(false));
+        // The menu's app exited and a newer process took its ID.
+        assert_eq!(descends(p(2, 20), p(1, 25), parent_of, identity), Some(false));
+        // A process started before the app can't be its child, whatever its parent ID says.
+        assert_eq!(descends(p(2, 5), p(1, 10), parent_of, identity), Some(false));
+        // An intermediate parent that took a dead parent's ID breaks the chain.
+        let reused = |pid| {
+            identity(pid).map(|p| {
+                if p.pid == 2 {
+                    ProcessIdentity { created: 40, ..p }
+                } else {
+                    p
+                }
+            })
+        };
+        assert_eq!(descends(p(3, 30), p(1, 10), parent_of, reused), Some(false));
+        // A parent in between that can't be opened can't be confirmed.
+        let hidden = |pid| identity(pid).filter(|p| p.pid != 2);
+        assert_eq!(descends(p(3, 30), p(1, 10), parent_of, hidden), None);
+    }
+
+    #[test]
+    fn own_process_has_a_stable_identity() {
+        let pid = std::process::id();
+        let first = process_identity(pid).unwrap();
+        assert_eq!(process_identity(pid), Some(first));
+        assert_eq!(process_identity(0), None);
     }
 
     #[test]
