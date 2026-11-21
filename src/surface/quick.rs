@@ -103,6 +103,10 @@ pub fn widgets(state: &State) -> Vec<Widget> {
         _ => Widget::new("Nothing playing", "", glyph::PLAY, Input::Info { value: String::new() }),
     };
     out.push(tile(Slot::Media, "media", media));
+    let saver = state
+        .power_saver
+        .or_else(|| state.battery.flatten().map(|v| v.saver))
+        .unwrap_or(false);
     for (col, label, icon, on, cmd) in [
         (
             0,
@@ -125,21 +129,7 @@ pub fn widgets(state: &State) -> Vec<Widget> {
             state.audio.as_ref().and_then(|v| v.as_ref()).is_some_and(|v| v.muted),
             Command::Mute(!state.audio.as_ref().and_then(|v| v.as_ref()).is_some_and(|v| v.muted)),
         ),
-        (
-            3,
-            "Power saver",
-            glyph::POWER_SAVER,
-            state
-                .power_saver
-                .or_else(|| state.battery.flatten().map(|v| v.saver))
-                .unwrap_or(false),
-            Command::PowerSaver(
-                !state
-                    .power_saver
-                    .or_else(|| state.battery.flatten().map(|v| v.saver))
-                    .unwrap_or(false),
-            ),
-        ),
+        (3, "Power saver", glyph::POWER_SAVER, saver, Command::PowerSaver(!saver)),
     ] {
         out.push(tile(
             Slot::Small(col),
