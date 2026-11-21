@@ -1,5 +1,8 @@
 //! Independent, nonactivating app dock on the message-loop thread.
 
+#[path = "dock/dodge.rs"]
+mod dodge;
+
 #[path = "dock/artwork.rs"]
 mod artwork;
 #[path = "dock/desktops.rs"]
@@ -70,7 +73,6 @@ pub(crate) use crate::messages::WM_DOCK_DRAIN;
 /// Asks the owner to show the Windows taskbar for a moment, for icons the
 /// dock lacks.
 pub use crate::messages::WM_DOCK_SHOW_TASKBAR;
-use crate::messages::WM_DOCK_STATUS;
 pub(crate) use crate::messages::WM_DOCK_WAKE;
 use crate::messages::WM_FLYOUT_MENU;
 use crate::messages::WM_RADIOS;
@@ -79,6 +81,7 @@ pub use crate::messages::WM_SHOW_LAUNCHER;
 pub use crate::messages::WM_SHOW_NOW;
 /// The tray host's icons changed.
 use crate::messages::WM_TRAY_CHANGED;
+use crate::messages::{WM_DOCK_DODGE, WM_DOCK_STATUS};
 /// Shows a notification icon's tooltip after a short hover.
 const TIP_TIMER: usize = 104;
 const TIP_MS: u32 = 450;
@@ -123,6 +126,7 @@ const HOVER_MS: f32 = 110.0;
 const DESKTOP_TIMER: usize = 106;
 /// Fires as each minute starts, for the clock.
 const CLOCK_TIMER: usize = 109;
+const DODGE_TIMER: usize = 110;
 /// What a [`WM_FLYOUT_MENU`] reports while an icon's menu, opened from the
 /// flyout, is shown. Its `lParam` is the window, or the pressed point.
 const MENU_FOREGROUND: usize = 0;
@@ -443,6 +447,8 @@ struct State {
     hover: Option<usize>,
     visible: bool,
     fullscreen: bool,
+    dodge_watch: Option<dodge::Watch>,
+    overlapped: bool,
     scheduled: bool,
     scroll: usize,
     capacity: usize,
@@ -484,6 +490,7 @@ struct State {
     autohide: bool,
     /// The gap below the dock, in DIPs at the default icon size.
     margin: f32,
+    dodge_windows: bool,
     search_button: bool,
     suspended: bool,
     held_dpi: Option<u32>,
@@ -717,6 +724,7 @@ pub struct DockConfig {
     mode: WindowListMode,
     search: bool,
     autohide: bool,
+    dodge_windows: bool,
     screen: ScreenChoice,
     margin: f32,
 }
@@ -728,6 +736,7 @@ impl From<&crate::config::Config> for DockConfig {
         let mode = config.window_list;
         let search = config.dock_search_button;
         let autohide = config.dock_autohide;
+        let dodge_windows = autohide && config.dock_dodge_windows;
         let screen = ScreenChoice::parse(&config.dock_screen);
         let margin = (config.dock_margin as f32).min(logic::MAX_MARGIN);
         Self {
@@ -737,6 +746,7 @@ impl From<&crate::config::Config> for DockConfig {
             mode,
             search,
             autohide,
+            dodge_windows,
             screen,
             margin,
         }
@@ -796,6 +806,8 @@ impl Dock {
             hover: None,
             visible: false,
             fullscreen: false,
+            dodge_watch: None,
+            overlapped: false,
             scheduled: false,
             scroll: 0,
             capacity: usize::MAX,
@@ -825,6 +837,7 @@ impl Dock {
             held: false,
             autohide: true,
             margin: logic::MARGIN,
+            dodge_windows: false,
             search_button: true,
             suspended: false,
             held_dpi: None,
@@ -1064,10 +1077,11 @@ impl Dock {
     }
 
     pub fn owns_message(msg: u32, wp: WPARAM) -> bool {
-        msg == WM_TIMER && (REFRESH_TIMER..=CLOCK_TIMER).contains(&wp.0)
+        msg == WM_TIMER && (REFRESH_TIMER..=DODGE_TIMER).contains(&wp.0)
             || matches!(
                 msg,
-                WM_REFRESH
+                WM_DOCK_DODGE
+                    | WM_REFRESH
                     | WM_ARTWORK
                     | WM_DOCK_STATUS
                     | WM_TRAY_CHANGED
@@ -1219,6 +1233,7 @@ impl Dock {
             mode,
             search,
             autohide,
+            dodge_windows,
             screen,
             margin,
         } = config.clone();
@@ -1232,6 +1247,7 @@ impl Dock {
                 && s.window_list_mode == mode
                 && s.search_button == search
                 && s.autohide == autohide
+                && s.dodge_windows == dodge_windows
                 && s.screen == screen
                 && s.margin == margin
             {
@@ -1252,6 +1268,9 @@ impl Dock {
             s.window_list_mode = mode;
             s.search_button = search;
             s.autohide = autohide;
+            s.dodge_windows = dodge_windows;
+            s.dodge_watch = None;
+            s.dodge_watch = dodge_windows.then(|| dodge::Watch::new(s.hwnd));
             s.screen = screen;
             s.margin = margin;
             s.resolve_screen();
@@ -1433,6 +1452,7 @@ impl Drop for Dock {
             let _ = KillTimer(Some(self.hwnd), WINDOWS_TIMER);
             let _ = KillTimer(Some(self.hwnd), WINDOWS_HIDE_TIMER);
             let _ = KillTimer(Some(self.hwnd), CLOCK_TIMER);
+            let _ = KillTimer(Some(self.hwnd), DODGE_TIMER);
             // Remove the pointer before synchronous destruction can reenter the wndproc.
             for hwnd in self.popups.iter().copied().chain(std::iter::once(self.hwnd)) {
                 if !hwnd.is_invalid() {
@@ -1654,6 +1674,7 @@ impl State {
         if self.suspended {
             return;
         }
+        self.update_dodge();
         self.fullscreen = fullscreen_foreground(self.hwnd);
         if !self.fullscreen {
             self.refresh_window_titles();
@@ -1798,6 +1819,36 @@ impl State {
         self.items.len().saturating_sub(self.scroll).min(self.capacity)
     }
 
+    fn update_dodge(&mut self) {
+        if !self.dodge_windows || self.suspended || !self.visible {
+            return;
+        }
+        let height = (logic::height(logic::layout_scale(self.app_icon_size)) * self.dpi as f32 / 96.0).round() as i32;
+        let rect = RECT {
+            left: self.left,
+            top: self.top,
+            right: self.left + self.width,
+            bottom: self.top + height,
+        };
+        self.overlapped = self.dodge_watch.as_ref().is_some_and(|watch| watch.overlaps(rect));
+        if !self.overlapped && !self.revealed && !fullscreen_foreground(self.hwnd) {
+            self.revealed = true;
+            self.away = 0;
+            self.start_slide(0.0);
+            unsafe {
+                let _ = SetWindowPos(
+                    self.hwnd,
+                    Some(HWND_TOPMOST),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                );
+            }
+        }
+    }
+
     /// Slides the dock in when the pointer reaches a bottom edge, and out once
     /// it has been away for a moment.
     /// `waiting`: a menu or a launch of the dock's is waiting on the user.
@@ -1822,7 +1873,7 @@ impl State {
             self.finish_press(true);
         }
         if !self.revealed {
-            if !self.autohide {
+            if !self.autohide || self.dodge_windows && !self.overlapped {
                 // Back after a fullscreen app, or after the launcher closed.
                 if !fullscreen_foreground(self.hwnd) {
                     self.reveal();
@@ -1903,6 +1954,7 @@ impl State {
             && cursor.y < windows_rect.bottom;
         // The dock stays under its own menu, wherever the pointer goes in it.
         let near = !self.autohide
+            || self.dodge_windows && !self.overlapped
             || waiting
             || self.held
             || self.press.is_some()
@@ -3844,6 +3896,18 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT
                     if msg == WM_POWERBROADCAST {
                         s.update_status();
                     }
+                }
+                WM_DOCK_DODGE => {
+                    if s.dodge_windows {
+                        SetTimer(Some(hwnd), DODGE_TIMER, 100, None);
+                    }
+                    return LRESULT(0);
+                }
+                WM_TIMER if wp.0 == DODGE_TIMER => {
+                    let _ = KillTimer(Some(hwnd), DODGE_TIMER);
+                    dodge::ready();
+                    s.update_dodge();
+                    return LRESULT(0);
                 }
                 WM_DOCK_STATUS => {
                     s.update_status();

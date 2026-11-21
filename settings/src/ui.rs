@@ -1142,6 +1142,19 @@ impl Settings {
                     ))
                     .child(divider(p))
                     .child(row(
+                        "Hide only when windows overlap",
+                        "",
+                        Switch::new("dock-dodge-windows")
+                            .checked(self.config.dock_dodge_windows)
+                            .disabled(!self.config.dock || !self.config.dock_autohide)
+                            .accessibility_label("Hide only when windows overlap")
+                            .on_change(cx.listener(|this, enabled: &bool, window, cx| {
+                                this.save("dock_dodge_windows", (*enabled).into(), window, cx);
+                            })),
+                        p,
+                    ))
+                    .child(divider(p))
+                    .child(row(
                         "Screen",
                         // A dock that stays visible can't follow the pointer.
                         if self.config.dock_autohide

@@ -60,6 +60,7 @@ pub struct Config {
     pub dock: bool,
     pub dock_autohide: bool,
     pub dock_margin: u32,
+    pub dock_dodge_windows: bool,
     pub dock_search_button: bool,
     pub dock_icon_size: usize,
     pub dock_order: Vec<String>,
@@ -195,6 +196,14 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_dodging_is_opt_in_and_keeps_autohide_compatible() {
+        assert!(!Config::parse("").unwrap().dock_dodge_windows);
+        let config = Config::parse("dock_autohide = false\ndock_dodge_windows = true").unwrap();
+        assert!(!config.dock_autohide);
+        assert!(config.dock_dodge_windows);
+    }
 
     #[test]
     fn order_defaults_normalizes_and_preserves_other_config_edits() {

@@ -116,7 +116,7 @@ Type `wifi` or `bluetooth` to go straight to a list.
 
 ### Dock
 
-The dock appears when the pointer touches the bottom edge of a screen, and hides when you move away. To keep it on screen, turn on **Keep the dock visible** in Settings; maximized windows then stop above it. Full-screen apps hide it.
+The dock appears when the pointer touches the bottom edge of a screen, and hides when you move away. To keep it on screen, turn on **Keep the dock visible** in Settings; maximized windows then stop above it. Full-screen apps hide it. With autohide on, turn on **Hide only when windows overlap** to keep the dock shown on an empty desktop.
 
 | Do this | To |
 | --- | --- |
@@ -164,6 +164,7 @@ Open **Settings** by typing `settings` in the launcher or from Wisp's tray icon,
 | `hide_taskbar` | `true` | Hides the Windows taskbar while Wisp runs |
 | `dock` | `true` | Shows the dock |
 | `dock_autohide` | `true` | Hides the dock until the pointer touches the bottom edge. `false` keeps it visible. |
+| `dock_dodge_windows` | `false` | With autohide on, stays visible until a window overlaps the dock. |
 | `dock_margin` | `9` | The gap below the dock, in DIPs, from 0 to 24. `0` puts the dock on the screen edge. |
 | `dock_screen` | `"pointer"` | `"pointer"` shows the dock on the screen the pointer touches, or the main screen while it stays visible; `"main"`; or a screen chosen in Settings |
 | `dock_search_button` | `true` | Shows the search button at the start of the dock |

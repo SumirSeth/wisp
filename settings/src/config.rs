@@ -35,6 +35,7 @@ pub struct Config {
     pub dock_autohide: bool,
     /// The gap below the dock, 0 to 24 DIPs.
     pub dock_margin: i64,
+    pub dock_dodge_windows: bool,
     pub dock_search_button: bool,
     pub dock_icon_size: i64,
     /// `#RRGGBB` or `#RRGGBBAA`, or empty for the theme's colors.
@@ -134,6 +135,7 @@ impl Config {
             dock: boolean("dock")?,
             dock_autohide: boolean("dock_autohide")?,
             dock_margin,
+            dock_dodge_windows: boolean("dock_dodge_windows")?,
             dock_search_button: boolean("dock_search_button")?,
             dock_icon_size,
             dock_color,
@@ -310,6 +312,7 @@ fn validate_edit(key: &str, value: &Value) -> Result<(), String> {
         | "file_search_everything"
         | "position"
         | "dock"
+        | "dock_dodge_windows"
         | "dock_autohide"
         | "dock_search_button"
         | "dock_margin"
@@ -328,6 +331,18 @@ fn validate_edit(key: &str, value: &Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_dodging_round_trips_without_changing_autohide() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("config.toml"));
+        let config = store.load().unwrap();
+        assert!(!config.dock_dodge_windows);
+        store.set("dock_dodge_windows", true.into()).unwrap();
+        let updated = store.load().unwrap();
+        assert!(updated.dock_dodge_windows);
+        assert_eq!(updated.dock_autohide, config.dock_autohide);
+    }
 
     #[test]
     fn status_lists_validate_normalize_and_move_atomically() {

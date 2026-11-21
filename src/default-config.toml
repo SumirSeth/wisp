@@ -51,6 +51,8 @@ dock = true
 # false, the dock stays on the main screen and windows stop above it while the
 # taskbar is hidden.
 dock_autohide = true
+# With autohide on, stay visible until a window overlaps the dock.
+dock_dodge_windows = false
 
 # The gap below the dock, in DIPs (0 to 24). 0 puts the dock on the bottom
 # edge of the screen. With the dock kept visible, the space kept for it
