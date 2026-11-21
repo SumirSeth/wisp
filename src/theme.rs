@@ -191,12 +191,10 @@ impl Palette {
 }
 
 pub fn transparency_available() -> bool {
-    use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
     use windows::Win32::System::Registry::*;
     use windows::core::w;
     let mut enabled = 1u32;
     let mut size = 4u32;
-    let mut power = SYSTEM_POWER_STATUS::default();
     unsafe {
         let _ = RegGetValueW(
             HKEY_CURRENT_USER,
@@ -207,7 +205,7 @@ pub fn transparency_available() -> bool {
             Some((&mut enabled as *mut u32).cast()),
             Some(&mut size),
         );
-        let saver = GetSystemPowerStatus(&mut power).is_ok() && power.SystemStatusFlag != 0;
+        let saver = crate::commands::power_saver::read().unwrap_or(false);
         enabled != 0 && !saver
     }
 }
