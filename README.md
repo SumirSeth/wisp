@@ -109,11 +109,11 @@ To open Wisp with the Windows key instead, turn on **Use Win key** in Settings. 
 
 ### Now
 
-Type `now`, or click the status icons in the dock. **Now** shows the time, battery, Wi-Fi, Bluetooth, volume and media.
+Type `now`, or click the status icons in the dock. **Now** puts Wi-Fi, Bluetooth, Night light, Dark mode, Mute and Lock in tiles beside what's playing, with time and battery above and volume below.
 
-- **Sound**: select it to adjust volume, choose an output device or change an app’s volume in place. Press <kbd>Esc</kbd> or choose **Back to Now** to return.
-- **Wi-Fi**: select a network to connect or disconnect. New networks ask for their password in place. Enterprise networks open Windows Wi-Fi settings.
-- **Bluetooth**: select a paired audio device to connect or disconnect it. Other devices open Bluetooth settings.
+Click a radio tile to turn it on or off. Its **›** opens networks or devices. The output name beside volume opens **Sound** for outputs and app volumes. Press <kbd>Esc</kbd> or choose **Back to Now** to return. Use arrow keys to move, and <kbd>Enter</kbd> or <kbd>Space</kbd> to activate.
+
+Custom `now.toml` files keep their list layout. The built-in uses `kind = "quick"` to opt into tiles.
 
 Type `wifi` or `bluetooth` to go straight to a list.
 

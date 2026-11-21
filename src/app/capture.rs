@@ -71,7 +71,16 @@ pub(super) fn start(l: &mut Launcher) {
             // The app icons load during the first 4 s.
             SetTimer(Some(l.hwnd), REEL_TIMER, 4000, None);
         } else if util::perf::hook_on("WISP_CAPTURE_SCENARIO") {
-            SetTimer(Some(l.hwnd), SCENARIO_TIMER, 45, None);
+            SetTimer(
+                Some(l.hwnd),
+                SCENARIO_TIMER,
+                if util::perf::hook("WISP_CAPTURE_SCENARIO").as_deref() == Some("now") {
+                    400
+                } else {
+                    45
+                },
+                None,
+            );
         }
     }
 }
@@ -173,7 +182,12 @@ fn scenario_end() {
             l.morph.is_some(),
             l.morphed
         );
-        if scenario == "slide" {
+        if scenario == "now" {
+            l.load_surfaces();
+            if let Some(index) = l.surfaces.specs.iter().position(|s| s.title == "Now") {
+                l.open_surface(index);
+            }
+        } else if scenario == "slide" {
             if let Some(dock) = &mut l.dock {
                 dock.capture_slide();
             }

@@ -84,6 +84,9 @@ pub fn chip_rects(rect: &Rect, names: &[&str]) -> Vec<Rect> {
 /// Wide widgets take a row; others fill two columns. A half widget alone in
 /// its row stays half width, so the columns line up.
 pub fn layout(widgets: &[Widget], width: f32) -> Vec<Rect> {
+    if widgets.iter().any(|w| w.quick.is_some()) {
+        return super::quick::layout(widgets, width);
+    }
     let half = (width - GAP) / 2.0;
     let mut rects = Vec::with_capacity(widgets.len());
     let (mut y, mut column) = (0.0, 0);
@@ -114,13 +117,13 @@ pub fn layout(widgets: &[Widget], width: f32) -> Vec<Rect> {
 }
 
 /// A slider's track, from its left to its right end, relative to the surface.
-pub fn slider_track(rect: &Rect) -> (f32, f32) {
-    (rect.x + 48.0, rect.x + rect.w - 16.0)
+pub fn slider_track(rect: &Rect, quick: bool) -> (f32, f32) {
+    (rect.x + 48.0, rect.x + rect.w - if quick { 56.0 } else { 16.0 })
 }
 
 /// The slider value at surface coordinate `x`.
-pub fn slider_value(rect: &Rect, x: f32) -> u32 {
-    let (x0, x1) = slider_track(rect);
+pub fn slider_value(rect: &Rect, x: f32, quick: bool) -> u32 {
+    let (x0, x1) = slider_track(rect, quick);
     (((x - x0) / (x1 - x0)).clamp(0.0, 1.0) * 100.0).round() as u32
 }
 
@@ -137,6 +140,25 @@ pub enum Direction {
     Right,
 }
 
+/// Keep the quick-settings header and keyboard hint out of arrow navigation.
+pub fn control_neighbour(widgets: &[Widget], rects: &[Rect], from: usize, direction: Direction) -> Option<usize> {
+    let controls: Vec<_> = widgets
+        .iter()
+        .enumerate()
+        .filter(|(i, w)| {
+            *i == from
+                || !matches!(
+                    w.quick,
+                    Some(super::quick::Slot::Clock | super::quick::Slot::Battery | super::quick::Slot::Hint)
+                )
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let from = controls.iter().position(|i| *i == from)?;
+    let rects: Vec<_> = controls.iter().map(|i| rects[*i]).collect();
+    neighbour(&rects, from, direction).map(|i| controls[i])
+}
+
 /// The widget nearest to `from` in `direction`, or `None` at the edge.
 pub fn neighbour(rects: &[Rect], from: usize, direction: Direction) -> Option<usize> {
     let current = rects.get(from)?;
@@ -145,8 +167,8 @@ pub fn neighbour(rects: &[Rect], from: usize, direction: Direction) -> Option<us
             && match direction {
                 Direction::Up => r.bottom() <= current.y,
                 Direction::Down => r.y >= current.bottom(),
-                Direction::Left => r.y == current.y && r.x < current.x,
-                Direction::Right => r.y == current.y && r.x > current.x,
+                Direction::Left => r.y < current.bottom() && r.bottom() > current.y && r.x + r.w <= current.x,
+                Direction::Right => r.y < current.bottom() && r.bottom() > current.y && r.x >= current.x + current.w,
             }
     });
     // Prefer the nearest row, then the closest column.
@@ -181,6 +203,7 @@ mod tests {
     fn tile(label: &str) -> Widget {
         Widget {
             id: label.into(),
+            quick: None,
             quiet: false,
             footer: false,
             editor: None,

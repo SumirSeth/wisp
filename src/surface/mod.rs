@@ -10,6 +10,7 @@
 //! in `%APPDATA%\wisp\surfaces`.
 
 pub mod nav;
+pub mod quick;
 pub mod radios;
 
 use std::path::PathBuf;
@@ -47,6 +48,8 @@ pub struct Spec {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Part {
+    /// The built-in control centre. Other specs keep their list layout.
+    Quick,
     /// The local time, or a city's time with `city`.
     Clock {
         #[serde(default)]
@@ -126,6 +129,7 @@ pub struct Widget {
     /// Stays the same while the state changes, such as "app:1234" for an
     /// app's volume, so the focus stays on it.
     pub id: String,
+    pub quick: Option<quick::Slot>,
     pub label: String,
     pub detail: String,
     pub glyph: &'static str,
@@ -147,6 +151,7 @@ impl Widget {
         );
         Widget {
             id: String::new(),
+            quick: None,
             label: label.into(),
             detail: detail.into(),
             glyph,
@@ -386,9 +391,12 @@ pub fn resolve(spec: &Spec, state: &State, filter: &str) -> Vec<Widget> {
         .enumerate()
         .flat_map(|(index, part)| {
             widgets(part, state).into_iter().map(move |mut widget| {
-                if spec.title == "Now" {
+                if spec.title == "Now" && widget.quick.is_none() {
                     widget.quiet = true;
                     widget.wide = true;
+                }
+                if widget.quick.is_some() {
+                    return widget;
                 }
                 widget.id = match widget.input {
                     Input::Slider {
@@ -445,6 +453,7 @@ fn checking(label: &str, glyph: &'static str) -> Widget {
 
 fn widgets(part: &Part, state: &State) -> Vec<Widget> {
     match part {
+        Part::Quick => quick::widgets(state),
         Part::Networks | Part::Devices => Vec::new(),
         Part::Clock { city } => clock(city.as_deref()),
         Part::Battery => match state.battery {
@@ -727,10 +736,10 @@ mod tests {
                 )
             })
             .unwrap();
-        assert_eq!(widgets[volume + 1].label, "Sound");
+        assert_eq!(widgets[volume + 1].label, "Speakers");
         let link = &widgets[volume + 1];
         assert_eq!(link.activate(0), Some(Action::SoundView));
-        assert!(link.detail.contains("40%"));
+        assert_eq!(link.quick, Some(quick::Slot::Output));
         assert_eq!(parent_index(&library.specs, Some(now), sound), Some(now));
         assert_eq!(parent_index(&library.specs, None, sound), None);
         assert_eq!(parent_index(&library.specs, Some(sound), now), None);

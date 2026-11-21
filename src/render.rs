@@ -1,6 +1,9 @@
 //! Draws with Direct2D and DirectWrite in device-independent pixels (DIPs).
 //! The render target's DPI controls scaling.
 
+#[path = "render/quick.rs"]
+mod quick;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -204,6 +207,7 @@ struct Target {
     query_layout: Option<CachedLayout>,
     chip_layout: Option<CachedLayout>,
     titles: Vec<Option<CachedTitle>>,
+    quick_text: HashMap<(String, u8, u32, u32), IDWriteTextLayout>,
 }
 
 pub struct Renderer {
@@ -393,6 +397,7 @@ impl Renderer {
                 query_layout: None,
                 chip_layout: None,
                 titles: Vec::new(),
+                quick_text: HashMap::new(),
                 rt,
             })
         }
@@ -774,7 +779,7 @@ fn d2d(r: &Rect, dx: f32, dy: f32) -> D2D_RECT_F {
 
 /// Draws a surface's widgets as tiles below the query box.
 unsafe fn draw_surface(
-    _dw: &IDWriteFactory,
+    dw: &IDWriteFactory,
     fm: &Formats,
     t: &mut Target,
     f: &Frame,
@@ -805,6 +810,25 @@ unsafe fn draw_surface(
         }
         for (index, (widget, r)) in s.widgets.iter().zip(s.rects).enumerate() {
             if r.bottom() + dy < oy || r.y + dy > oy + view_h {
+                continue;
+            }
+            if widget.quick.is_some() {
+                quick::draw(
+                    dw,
+                    fm,
+                    rt,
+                    brush,
+                    accent,
+                    &mut t.quick_text,
+                    &mut t.bitmaps,
+                    f,
+                    s,
+                    index,
+                    widget,
+                    r,
+                    (ox, dy),
+                    stops,
+                )?;
                 continue;
             }
             let focused = index == s.focus;
@@ -1056,7 +1080,7 @@ unsafe fn draw_surface(
                         rect(right - 64.0, top + 8.0, right - 16.0, top + 28.0),
                         brush,
                     );
-                    let (x0, x1) = nav::slider_track(r);
+                    let (x0, x1) = nav::slider_track(r, false);
                     let (x0, x1) = (x0 + ox, x1 + ox);
                     let y = top + 40.0;
                     brush.SetColor(&p.scrollbar);

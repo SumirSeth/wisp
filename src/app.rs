@@ -2280,6 +2280,31 @@ impl Launcher {
         {
             open.widgets.push(surface::back_widget());
         }
+        if let Some(Some(media)) = &self.command_state.media
+            && let Some(app) = self.apps.iter().find(|app| app.name.eq_ignore_ascii_case(&media.app))
+            && let Some(widget) = open
+                .widgets
+                .iter_mut()
+                .find(|w| w.quick == Some(surface::quick::Slot::Media))
+        {
+            widget.icon = Some(app.id.clone());
+        }
+        if let Some(armed) = &self.armed {
+            let label = open
+                .widgets
+                .iter()
+                .find(|w| w.activate(0) == Some(Action::Command(armed.clone())))
+                .map(|w| w.label.clone());
+            if let Some(label) = label
+                && let Some(hint) = open
+                    .widgets
+                    .iter_mut()
+                    .find(|w| w.quick == Some(surface::quick::Slot::Hint))
+            {
+                hint.label = format!("Press Enter again to {}", label.to_lowercase());
+                hint.detail = "confirm".into();
+            }
+        }
         open.rects = nav::layout(&open.widgets, crate::render::surface_width());
         let same = focused
             .as_ref()
@@ -2419,7 +2444,7 @@ impl Launcher {
             }
             VK_UP | VK_DOWN => {
                 let direction = if vk == VK_UP { Direction::Up } else { Direction::Down };
-                if let Some(next) = nav::neighbour(&open.rects, focus, direction) {
+                if let Some(next) = nav::control_neighbour(&open.widgets, &open.rects, focus, direction) {
                     self.focus_widget(next);
                 }
             }
@@ -2444,7 +2469,7 @@ impl Launcher {
                     }
                     _ => {
                         let direction = if step < 0 { Direction::Left } else { Direction::Right };
-                        if let Some(next) = nav::neighbour(&open.rects, focus, direction) {
+                        if let Some(next) = nav::control_neighbour(&open.widgets, &open.rects, focus, direction) {
                             self.focus_widget(next);
                         }
                     }
@@ -2579,7 +2604,7 @@ impl Launcher {
         let Some((sx, _)) = self.surface_point(x, y) else {
             return false;
         };
-        if sx < nav::slider_track(&open.rects[index]).0 - SLIDER_GRAB {
+        if sx < nav::slider_track(&open.rects[index], widget.quick.is_some()).0 - SLIDER_GRAB {
             return false;
         }
         self.slider_drag = Some((widget.id.clone(), None));
@@ -2602,7 +2627,7 @@ impl Launcher {
         };
         let (ox, _) = crate::render::surface_origin(self.bottom());
         let sx = x as f32 * 96.0 / self.dpi as f32 - ox;
-        let new = nav::slider_value(&open.rects[index], sx);
+        let new = nav::slider_value(&open.rects[index], sx, open.widgets[index].quick.is_some());
         // Compare with the value last sent, not the shown one, which a device
         // that snaps to coarse steps can move back. The first press also
         // unmutes, even at the shown value.

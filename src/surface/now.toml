@@ -3,22 +3,4 @@ description = "Time, battery, Wi-Fi, Bluetooth, volume and what is playing"
 keywords = ["now", "status", "quick settings", "control center", "dashboard"]
 
 [[part]]
-kind = "clock"
-
-[[part]]
-kind = "battery"
-
-[[part]]
-kind = "wifi"
-
-[[part]]
-kind = "bluetooth"
-
-[[part]]
-kind = "volume"
-
-[[part]]
-kind = "sound"
-
-[[part]]
-kind = "media"
+kind = "quick"
