@@ -2808,7 +2808,6 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     | WM_APP_COMMANDS
                     | WM_APP_FRAME
                     | WM_CLOSE
-                    | crate::messages::WM_DOCK_FULLSCREEN
                     | dock::WM_SHOW_NOW
                     | dock::WM_SHOW_LAUNCHER
                     | dock::WM_DOCK_SHOW_TASKBAR
@@ -3175,9 +3174,6 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
                     dock.refresh();
                 }
             });
-        }
-        crate::messages::WM_DOCK_FULLSCREEN => {
-            with_launcher(Launcher::sync_reserve);
         }
         dock::WM_SHOW_NOW => {
             with_launcher(|l| {

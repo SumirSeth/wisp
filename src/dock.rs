@@ -34,7 +34,6 @@ pub fn margin(config: &crate::config::Config) -> f32 {
 use crate::deferred::{Deferred, Queue};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -450,7 +449,6 @@ struct State {
     fullscreen: bool,
     dodge_watch: Option<dodge::Watch>,
     overlapped: bool,
-    fullscreen_cell: Rc<Cell<bool>>,
     fullscreen_reveal: Option<HWND>,
     scheduled: bool,
     scroll: usize,
@@ -764,7 +762,6 @@ pub struct Dock {
     state: Box<StateCell>,
     hooks: Vec<HWINEVENTHOOK>,
     autohide: Cell<bool>,
-    fullscreen: Rc<Cell<bool>>,
     app_icon_size: Cell<f32>,
     margin: Cell<f32>,
 }
@@ -787,7 +784,6 @@ impl Dock {
         if EVENT_TARGET.with(|target| !target.get().is_invalid()) {
             return Err(Error::new(E_FAIL, "A dock already exists on this thread"));
         }
-        let fullscreen = Rc::new(Cell::new(false));
         let mut state = Box::new(StateCell::new(State {
             hwnd: HWND::default(),
             owner,
@@ -813,7 +809,6 @@ impl Dock {
             fullscreen: false,
             dodge_watch: None,
             overlapped: false,
-            fullscreen_cell: fullscreen.clone(),
             fullscreen_reveal: None,
             scheduled: false,
             scroll: 0,
@@ -936,7 +931,6 @@ impl Dock {
             state,
             hooks: Vec::new(),
             autohide: Cell::new(true),
-            fullscreen,
             app_icon_size: Cell::new(logic::DEFAULT_APP_ICON_SIZE),
             margin: Cell::new(logic::MARGIN),
         };
@@ -1408,7 +1402,7 @@ impl Dock {
     }
     /// Whether the dock stays on screen instead of auto-hiding.
     pub fn stays_visible(&self) -> bool {
-        !self.autohide.get() && !self.fullscreen.get()
+        !self.autohide.get()
     }
 
     /// The room a dock that stays visible keeps at the bottom of the primary
@@ -1866,21 +1860,10 @@ impl State {
     }
 
     fn set_fullscreen(&mut self, fullscreen: bool) {
-        self.fullscreen_cell.set(fullscreen);
         if !fullscreen {
             self.fullscreen_reveal = None;
         }
-        if self.fullscreen != fullscreen {
-            self.fullscreen = fullscreen;
-            unsafe {
-                let _ = PostMessageW(
-                    Some(self.owner),
-                    crate::messages::WM_DOCK_FULLSCREEN,
-                    WPARAM(0),
-                    LPARAM(0),
-                );
-            }
-        }
+        self.fullscreen = fullscreen;
     }
 
     /// Slides the dock in when the pointer reaches a bottom edge, and out once
