@@ -34,6 +34,7 @@ pub fn margin(config: &crate::config::Config) -> f32 {
 use crate::deferred::{Deferred, Queue};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -449,6 +450,7 @@ struct State {
     fullscreen: bool,
     dodge_watch: Option<dodge::Watch>,
     overlapped: bool,
+    fullscreen_cell: Rc<Cell<bool>>,
     fullscreen_reveal: Option<HWND>,
     scheduled: bool,
     scroll: usize,
@@ -762,6 +764,7 @@ pub struct Dock {
     state: Box<StateCell>,
     hooks: Vec<HWINEVENTHOOK>,
     autohide: Cell<bool>,
+    fullscreen: Rc<Cell<bool>>,
     app_icon_size: Cell<f32>,
     margin: Cell<f32>,
 }
@@ -784,6 +787,7 @@ impl Dock {
         if EVENT_TARGET.with(|target| !target.get().is_invalid()) {
             return Err(Error::new(E_FAIL, "A dock already exists on this thread"));
         }
+        let fullscreen = Rc::new(Cell::new(false));
         let mut state = Box::new(StateCell::new(State {
             hwnd: HWND::default(),
             owner,
@@ -809,6 +813,7 @@ impl Dock {
             fullscreen: false,
             dodge_watch: None,
             overlapped: false,
+            fullscreen_cell: fullscreen.clone(),
             fullscreen_reveal: None,
             scheduled: false,
             scroll: 0,
@@ -931,6 +936,7 @@ impl Dock {
             state,
             hooks: Vec::new(),
             autohide: Cell::new(true),
+            fullscreen,
             app_icon_size: Cell::new(logic::DEFAULT_APP_ICON_SIZE),
             margin: Cell::new(logic::MARGIN),
         };
@@ -1402,7 +1408,7 @@ impl Dock {
     }
     /// Whether the dock stays on screen instead of auto-hiding.
     pub fn stays_visible(&self) -> bool {
-        !self.autohide.get() && self.state.try_borrow().is_ok_and(|s| !s.fullscreen)
+        !self.autohide.get() && !self.fullscreen.get()
     }
 
     /// The room a dock that stays visible keeps at the bottom of the primary
@@ -1860,6 +1866,7 @@ impl State {
     }
 
     fn set_fullscreen(&mut self, fullscreen: bool) {
+        self.fullscreen_cell.set(fullscreen);
         if !fullscreen {
             self.fullscreen_reveal = None;
         }
@@ -3712,8 +3719,18 @@ fn dock_monitor(dock: HWND) -> HMONITOR {
 }
 
 fn fullscreen_foreground(dock: HWND) -> bool {
+    thread_local! {
+        static LAST_FULLSCREEN: Cell<HWND> = const { Cell::new(HWND(std::ptr::null_mut())) };
+    }
+    let hwnd = unsafe { GetForegroundWindow() };
+    let previous = LAST_FULLSCREEN.with(Cell::get);
+    let fullscreen = fullscreen_window(dock, hwnd, previous == hwnd);
+    LAST_FULLSCREEN.with(|cell| cell.set(if fullscreen { hwnd } else { HWND::default() }));
+    fullscreen
+}
+
+fn fullscreen_window(dock: HWND, hwnd: HWND, was_fullscreen: bool) -> bool {
     unsafe {
-        let hwnd = GetForegroundWindow();
         if hwnd.is_invalid()
             || hwnd == dock
             || IsIconic(hwnd).as_bool()
@@ -3739,7 +3756,13 @@ fn fullscreen_foreground(dock: HWND) -> bool {
         {
             return false;
         }
-        logic::covers_screen(rect, info.rcMonitor, IsZoomed(hwnd).as_bool())
+        logic::covers_screen(
+            rect,
+            info.rcMonitor,
+            info.rcWork,
+            IsZoomed(hwnd).as_bool(),
+            was_fullscreen,
+        )
     }
 }
 

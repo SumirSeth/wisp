@@ -36,6 +36,7 @@ pub const WM_DOCK_STATUS: u32 = WM_APP + 30;
 /// A window or input event while an icon's menu, opened from the flyout, is shown.
 pub const WM_FLYOUT_MENU: u32 = WM_APP + 31;
 pub const WM_DOCK_DODGE: u32 = WM_APP + 32;
+/// The foreground window entered or left fullscreen.
 pub const WM_DOCK_FULLSCREEN: u32 = WM_APP + 33;
 pub const WM_TASKBAR_SHOW: u32 = WM_APP + 40;
 pub const WM_RECOVERY_DONE: u32 = WM_APP + 41;

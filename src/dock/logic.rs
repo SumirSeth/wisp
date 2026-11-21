@@ -1876,40 +1876,59 @@ mod tests {
     }
 }
 
-/// Borderless fullscreen fills the screen exactly, even when it retains the
-/// maximized style. Ordinary maximized windows include resize borders outside it.
+/// Maximized custom-frame windows may fill the monitor when no space is reserved.
+/// Keep a detected fullscreen window fullscreen after its reserved space is released.
 pub fn covers_screen(
     rect: windows::Win32::Foundation::RECT,
     screen: windows::Win32::Foundation::RECT,
+    work: windows::Win32::Foundation::RECT,
     maximized: bool,
+    was_fullscreen: bool,
 ) -> bool {
     let covers = rect.left <= screen.left
         && rect.top <= screen.top
         && rect.right >= screen.right
         && rect.bottom >= screen.bottom;
-    covers && (!maximized || rect == screen)
+    covers && (!maximized || (rect == screen && (work != screen || was_fullscreen)))
 }
 #[cfg(test)]
 mod fullscreen_tests {
     use super::*;
     use windows::Win32::Foundation::RECT;
+    const SCREEN: RECT = RECT {
+        left: -1920,
+        top: 0,
+        right: 0,
+        bottom: 1080,
+    };
     #[test]
-    fn fullscreen_survives_releasing_work_area_but_maximize_does_not_count() {
-        let screen = RECT {
-            left: -1920,
-            top: 0,
-            right: 0,
-            bottom: 1080,
-        };
-        assert!(covers_screen(screen, screen, false));
-        assert!(covers_screen(screen, screen, true));
-        let maximized = RECT {
+    fn maximized_custom_frame_in_autohide_is_not_fullscreen() {
+        assert!(!covers_screen(SCREEN, SCREEN, SCREEN, true, false));
+        let borders = RECT {
             left: -1928,
             top: -8,
             right: 8,
             bottom: 1088,
         };
-        assert!(!covers_screen(maximized, screen, true));
-        assert!(!covers_screen(RECT { bottom: 1000, ..screen }, screen, false));
+        assert!(!covers_screen(borders, SCREEN, SCREEN, true, false));
+    }
+    #[test]
+    fn borderless_fullscreen_fills_monitor() {
+        assert!(covers_screen(SCREEN, SCREEN, SCREEN, false, false));
+        assert!(!covers_screen(
+            RECT { bottom: 1000, ..SCREEN },
+            SCREEN,
+            SCREEN,
+            false,
+            false
+        ));
+    }
+    #[test]
+    fn fullscreen_survives_releasing_reserved_space() {
+        let reserved = RECT { bottom: 1000, ..SCREEN };
+        let detected = covers_screen(SCREEN, SCREEN, reserved, true, false);
+        assert!(detected);
+        assert!(covers_screen(SCREEN, SCREEN, SCREEN, true, detected));
+        assert!(!covers_screen(reserved, SCREEN, SCREEN, true, detected));
     }
 }
