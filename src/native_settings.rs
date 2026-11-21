@@ -9,6 +9,7 @@ use crate::{
 use controls::{Control, Kind};
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
+use windows::Win32::Graphics::DirectWrite::{IDWriteFactory, IDWriteTextFormat};
 use windows::Win32::{
     Foundation::*,
     Graphics::{Direct2D::Common::*, Direct2D::*, Gdi::*},
@@ -50,6 +51,43 @@ struct Settings {
     preview: bool,
     width: f32,
     height: f32,
+    formats: std::cell::OnceCell<Formats>,
+}
+/// Settings' own type scale, matching the GPUI app it replaces.
+struct Formats {
+    body: IDWriteTextFormat,
+    center: IDWriteTextFormat,
+    hint: IDWriteTextFormat,
+    section: IDWriteTextFormat,
+    title: IDWriteTextFormat,
+    brand: IDWriteTextFormat,
+    chevron: IDWriteTextFormat,
+    trailing: IDWriteTextFormat,
+}
+impl Formats {
+    fn new(dw: &IDWriteFactory) -> Result<Self> {
+        use windows::Win32::Graphics::DirectWrite::*;
+        let fonts = crate::render::Fonts::installed(dw);
+        unsafe {
+            let f = |family, size, weight| crate::render::text_format(dw, family, size, weight);
+            let center = f(fonts.text, 13.0, DWRITE_FONT_WEIGHT_NORMAL)?;
+            center.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+            let chevron = f(fonts.icons, 10.0, DWRITE_FONT_WEIGHT_NORMAL)?;
+            chevron.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING)?;
+            let trailing = f(fonts.text, 14.0, DWRITE_FONT_WEIGHT_NORMAL)?;
+            trailing.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING)?;
+            Ok(Self {
+                body: f(fonts.text, 14.0, DWRITE_FONT_WEIGHT_NORMAL)?,
+                center,
+                hint: f(fonts.text, 12.0, DWRITE_FONT_WEIGHT_NORMAL)?,
+                section: f(fonts.text, 12.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?,
+                title: f(fonts.display, 20.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?,
+                brand: f(fonts.display, 17.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?,
+                chevron,
+                trailing,
+            })
+        }
+    }
 }
 /// A registered chord is delivered to the launcher even while Settings records.
 pub fn record_hotkey(lp: LPARAM) -> bool {
@@ -156,6 +194,7 @@ fn open_path(page: usize, path: PathBuf, preview: bool) -> Result<()> {
             preview,
             width: 820.,
             height: 580.,
+            formats: std::cell::OnceCell::new(),
         };
         state.renderer.set_dpi(GetDpiForWindow(hwnd));
         state.rebuild();
@@ -789,7 +828,12 @@ impl Settings {
         self.renderer.settings_canvas(
             self.hwnd,
             self.logo.as_ref(),
-            |rt, dw, title, small, heading, glyph| unsafe {
+            |rt, dw, _title, _small, _heading, glyph| unsafe {
+                if self.formats.get().is_none() {
+                    let _ = self.formats.set(Formats::new(dw)?);
+                }
+                let Some(fm) = self.formats.get() else { return Ok(()) };
+                let (title, small) = (&fm.body, &fm.hint);
                 rt.Clear(Some(&p.background));
                 let brush = rt.CreateSolidColorBrush(&p.text, None)?;
                 let text = |s: &str,
@@ -812,9 +856,9 @@ impl Settings {
                         left: 56.,
                         top: 16.,
                         right: 180.,
-                        bottom: 48.,
+                        bottom: 46.,
                     },
-                    heading,
+                    &fm.brand,
                     &p.text,
                 );
                 text(
@@ -825,7 +869,7 @@ impl Settings {
                         right: self.width - 24.,
                         bottom: 60.,
                     },
-                    heading,
+                    &fm.title,
                     &p.text,
                 );
                 // Section cards share a surface; individual rows draw only their divider.
@@ -928,21 +972,22 @@ impl Settings {
                             None,
                         );
                     }
+                    // Label and hint sit as one block, centred in the row like the GPUI rows.
+                    let block = if c.hint.is_empty() || matches!(c.kind, Kind::Slider { .. }) {
+                        20.
+                    } else {
+                        38.
+                    };
+                    let top = if matches!(c.kind, Kind::Text(_)) {
+                        r.top + 14.
+                    } else {
+                        r.top + ((r.bottom - r.top) - block) / 2.
+                    };
                     let label = D2D_RECT_F {
                         left: r.left + 16.,
-                        top: r.top
-                            + if i >= 4 && c.hint.is_empty() && matches!(c.kind, Kind::Toggle(_) | Kind::Button(_)) {
-                                12.
-                            } else {
-                                4.
-                            },
+                        top: if i < 4 { r.top } else { top },
                         right: r.right - 12.,
-                        bottom: r.top
-                            + if i >= 4 && c.hint.is_empty() && matches!(c.kind, Kind::Toggle(_) | Kind::Button(_)) {
-                                38.
-                            } else {
-                                30.
-                            },
+                        bottom: if i < 4 { r.bottom } else { top + 20. },
                     };
                     match &c.kind {
                         Kind::Heading => {
@@ -954,7 +999,11 @@ impl Settings {
                                     bottom: r.bottom - 6.,
                                     ..label
                                 },
-                                small,
+                                if c.label.chars().any(|ch| ch.is_lowercase()) {
+                                    small
+                                } else {
+                                    &fm.section
+                                },
                                 if c.id == "error" { &p.accent } else { &p.subtext },
                             );
                         }
@@ -1008,94 +1057,151 @@ impl Settings {
                                 title,
                                 &fg,
                             );
+                            let mid = (r.top + r.bottom) / 2.;
                             let track = D2D_RECT_F {
-                                left: r.right - 58.,
-                                top: r.top + 17.,
-                                right: r.right - 18.,
-                                bottom: r.top + 39.,
+                                left: r.right - 56.,
+                                top: mid - 10.,
+                                right: r.right - 16.,
+                                bottom: mid + 10.,
                             };
                             brush.SetColor(if *v { &p.accent } else { &p.divider });
                             rt.FillRoundedRectangle(
                                 &D2D1_ROUNDED_RECT {
                                     rect: track,
-                                    radiusX: 11.,
-                                    radiusY: 11.,
+                                    radiusX: 10.,
+                                    radiusY: 10.,
                                 },
                                 &brush,
                             );
-                            brush.SetColor(&p.background_solid);
+                            brush.SetColor(if *v { &p.background_solid } else { &p.subtext });
                             rt.FillEllipse(
                                 &D2D1_ELLIPSE {
                                     point: windows_numerics::Vector2 {
-                                        X: if *v { track.right - 11. } else { track.left + 11. },
-                                        Y: track.top + 11.,
+                                        X: if *v { track.right - 10. } else { track.left + 10. },
+                                        Y: mid,
                                     },
-                                    radiusX: 7.,
-                                    radiusY: 7.,
+                                    radiusX: 6.,
+                                    radiusY: 6.,
                                 },
                                 &brush,
                             );
                         }
                         Kind::Button(s) if c.id == "record" => {
-                            text(s, D2D_RECT_F { left: r.left + 8., ..r }, small, &fg)
+                            let mut fill = p.divider;
+                            fill.a *= 0.6;
+                            brush.SetColor(&fill);
+                            rt.FillRoundedRectangle(
+                                &D2D1_ROUNDED_RECT {
+                                    rect: r,
+                                    radiusX: 6.,
+                                    radiusY: 6.,
+                                },
+                                &brush,
+                            );
+                            brush.SetColor(&p.divider);
+                            rt.DrawRoundedRectangle(
+                                &D2D1_ROUNDED_RECT {
+                                    rect: D2D_RECT_F {
+                                        left: r.left + 0.5,
+                                        top: r.top + 0.5,
+                                        right: r.right - 0.5,
+                                        bottom: r.bottom - 0.5,
+                                    },
+                                    radiusX: 6.,
+                                    radiusY: 6.,
+                                },
+                                &brush,
+                                1.,
+                                None,
+                            );
+                            text(s, r, &fm.center, &fg)
                         }
                         Kind::Button(s) => {
                             text(&c.label, label, title, &fg);
                             text(
                                 s,
                                 D2D_RECT_F {
-                                    left: if c.id == "record" { r.left + 6. } else { r.right - 130. },
-                                    ..label
+                                    left: r.right - 160.,
+                                    top: r.top,
+                                    right: r.right - 16.,
+                                    bottom: r.bottom,
                                 },
-                                title,
-                                &p.accent,
+                                &fm.trailing,
+                                if c.enabled { &p.accent } else { &p.placeholder },
                             );
                         }
                         Kind::Select { choices, selected } => {
                             text(
                                 &c.label,
                                 D2D_RECT_F {
-                                    right: r.right - 218.,
-                                    top: r.top + 12.,
-                                    bottom: r.top + 40.,
+                                    right: r.right - 252.,
                                     ..label
                                 },
                                 title,
                                 &fg,
                             );
                             if let Some((_, s)) = choices.get(*selected) {
+                                let mid = (r.top + r.bottom) / 2.;
+                                let field = D2D_RECT_F {
+                                    left: r.right - 240.,
+                                    top: mid - 16.,
+                                    right: r.right - 16.,
+                                    bottom: mid + 16.,
+                                };
                                 brush.SetColor(&p.divider);
                                 rt.DrawRoundedRectangle(
                                     &D2D1_ROUNDED_RECT {
                                         rect: D2D_RECT_F {
-                                            left: r.right - 210.,
-                                            top: r.top + 12.,
-                                            right: r.right - 12.,
-                                            bottom: r.top + 44.,
+                                            left: field.left + 0.5,
+                                            top: field.top + 0.5,
+                                            right: field.right - 0.5,
+                                            bottom: field.bottom - 0.5,
                                         },
-                                        radiusX: 4.,
-                                        radiusY: 4.,
+                                        radiusX: 6.,
+                                        radiusY: 6.,
                                     },
                                     &brush,
                                     1.,
                                     None,
                                 );
                                 text(
-                                    &format!("{s}  ▾"),
+                                    s,
                                     D2D_RECT_F {
-                                        left: r.right - 210.,
-                                        top: r.top + 12.,
-                                        right: r.right - 12.,
-                                        bottom: r.top + 40.,
+                                        left: field.left + 12.,
+                                        right: field.right - 32.,
+                                        ..field
                                     },
-                                    small,
+                                    title,
                                     &fg,
+                                );
+                                text(
+                                    "\u{E70D}",
+                                    D2D_RECT_F {
+                                        right: field.right - 12.,
+                                        ..field
+                                    },
+                                    &fm.chevron,
+                                    &p.subtext,
                                 );
                             }
                         }
                         Kind::Slider { value, min, max } => {
-                            text(&format!("{}  ({value} DIP)", c.label), label, title, &fg);
-                            let y = r.top + 56.;
+                            let row = D2D_RECT_F {
+                                top: r.top + 12.,
+                                bottom: r.top + 34.,
+                                ..label
+                            };
+                            text(&c.label, row, title, &fg);
+                            text(
+                                &format!("{value} DIP"),
+                                D2D_RECT_F {
+                                    right: r.right - 16.,
+                                    ..row
+                                },
+                                &fm.trailing,
+                                &p.subtext,
+                            );
+                            let y = r.top + 50.;
                             brush.SetColor(&p.divider);
                             rt.DrawLine(
                                 windows_numerics::Vector2 { X: r.left + 16., Y: y },
@@ -1107,6 +1213,13 @@ impl Settings {
                             let x =
                                 r.left + 16. + (r.right - r.left - 32.) * (*value - *min) as f32 / (*max - *min) as f32;
                             brush.SetColor(&p.accent);
+                            rt.DrawLine(
+                                windows_numerics::Vector2 { X: r.left + 16., Y: y },
+                                windows_numerics::Vector2 { X: x, Y: y },
+                                &brush,
+                                4.,
+                                None,
+                            );
                             rt.FillEllipse(
                                 &D2D1_ELLIPSE {
                                     point: windows_numerics::Vector2 { X: x, Y: y },
@@ -1118,7 +1231,7 @@ impl Settings {
                         }
                         Kind::Text(s) => {
                             let label = D2D_RECT_F {
-                                right: label.right - 116.,
+                                right: label.right - 92.,
                                 ..label
                             };
                             text(&c.label, label, title, &fg);
@@ -1131,15 +1244,26 @@ impl Settings {
                             brush.SetColor(&p.divider);
                             rt.DrawRoundedRectangle(
                                 &D2D1_ROUNDED_RECT {
-                                    rect: field,
-                                    radiusX: 4.,
-                                    radiusY: 4.,
+                                    rect: D2D_RECT_F {
+                                        left: field.left + 0.5,
+                                        top: field.top + 0.5,
+                                        right: field.right - 0.5,
+                                        bottom: field.bottom - 0.5,
+                                    },
+                                    radiusX: 6.,
+                                    radiusY: 6.,
                                 },
                                 &brush,
                                 1.,
                                 None,
                             );
                             let shown = if focus == Some(i) { edit } else { s };
+                            // Text and caret share this inset box.
+                            let label = D2D_RECT_F {
+                                left: field.left + 12.,
+                                right: field.right - 12.,
+                                ..label
+                            };
                             text(
                                 shown,
                                 D2D_RECT_F {
@@ -1204,11 +1328,20 @@ impl Settings {
                     if !c.hint.is_empty() && !matches!(c.kind, Kind::Slider { .. }) {
                         text(
                             &c.hint,
-                            D2D_RECT_F {
-                                left: r.left + 16.,
-                                top: r.bottom - 26.,
-                                right: r.right - 12.,
-                                bottom: r.bottom - 4.,
+                            if matches!(c.kind, Kind::Text(_)) {
+                                D2D_RECT_F {
+                                    left: r.left + 16.,
+                                    top: r.bottom - 24.,
+                                    right: r.right - 12.,
+                                    bottom: r.bottom - 6.,
+                                }
+                            } else {
+                                D2D_RECT_F {
+                                    left: r.left + 16.,
+                                    top: label.bottom,
+                                    right: r.right - if matches!(c.kind, Kind::Toggle(_)) { 72. } else { 12. },
+                                    bottom: label.bottom + 18.,
+                                }
                             },
                             small,
                             &p.subtext,
@@ -1241,12 +1374,16 @@ impl Settings {
                     let h = self.height * self.height / self.extent;
                     let y = scroll / self.extent * self.height;
                     brush.SetColor(&p.scrollbar);
-                    rt.FillRectangle(
-                        &D2D_RECT_F {
-                            left: self.width - 6.,
-                            top: y,
-                            right: self.width - 2.,
-                            bottom: y + h,
+                    rt.FillRoundedRectangle(
+                        &D2D1_ROUNDED_RECT {
+                            rect: D2D_RECT_F {
+                                left: self.width - 6.,
+                                top: y + 2.,
+                                right: self.width - 3.,
+                                bottom: y + h - 2.,
+                            },
+                            radiusX: 1.5,
+                            radiusY: 1.5,
                         },
                         &brush,
                     );
@@ -1445,6 +1582,7 @@ mod tests {
             preview: true,
             width: 820.,
             height: 580.,
+            formats: std::cell::OnceCell::new(),
         };
         s.rebuild();
         s

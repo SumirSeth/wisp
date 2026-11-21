@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$Exe,[Parameter(Mandatory=$true)][string]$Name,[switch]$Native)
+param([Parameter(Mandatory=$true)][string]$Exe,[Parameter(Mandatory=$true)][string]$Name,[switch]$Native,[int]$Wheel=0)
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName System.Drawing
 Add-Type @'
@@ -39,6 +39,9 @@ foreach($theme in 'dark','light') {
   $ownedProcess=$process.Id
   [SettingsWindowCapture]::EnumWindows({param($h,$p) [uint32]$windowProcess=0;[void][SettingsWindowCapture]::GetWindowThreadProcessId($h,[ref]$windowProcess);if($windowProcess -eq $ownedProcess -and [SettingsWindowCapture]::IsWindowVisible($h)) {$script:settingsCaptureHandle=$h;return $false};return $true},[IntPtr]::Zero) | Out-Null
   if($script:settingsCaptureHandle -eq [IntPtr]::Zero) {if(!$process.HasExited) {$process.Kill();$process.WaitForExit()};throw "No Settings window for process $ownedProcess (exited=$($process.HasExited)). $($process.StandardError.ReadToEnd())"}
+  # -Wheel N scrolls the window down N notches before the capture.
+  for($k=0;$k -lt $Wheel;$k++) {[void][SettingsWindowCapture]::PostMessageW($script:settingsCaptureHandle,0x020A,[IntPtr](-120 -shl 16),[IntPtr]::Zero)}
+  if($Wheel) {Start-Sleep -Milliseconds 400}
   $rect=New-Object SettingsWindowCapture+Rect
   [void][SettingsWindowCapture]::GetWindowRect($script:settingsCaptureHandle,[ref]$rect)
   $bitmap=New-Object Drawing.Bitmap(($rect.Right-$rect.Left),($rect.Bottom-$rect.Top))

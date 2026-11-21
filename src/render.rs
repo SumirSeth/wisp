@@ -454,7 +454,7 @@ impl Renderer {
     }
 }
 
-unsafe fn text_format(
+pub(crate) unsafe fn text_format(
     dw: &IDWriteFactory,
     family: PCWSTR,
     size: f32,

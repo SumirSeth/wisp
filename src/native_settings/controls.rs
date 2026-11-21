@@ -48,7 +48,7 @@ pub fn layout(controls: &mut [Control], width: f32) -> f32 {
     for c in controls {
         if c.id == "record" {
             c.rect = D2D_RECT_F {
-                left: previous.right - 116.,
+                left: previous.right - 92.,
                 top: previous.top + 44.,
                 right: previous.right - 12.,
                 bottom: previous.top + 76.,
@@ -59,9 +59,7 @@ pub fn layout(controls: &mut [Control], width: f32) -> f32 {
             if c.id == "launcher" { 28. } else { 56. }
         } else if matches!(c.kind, Kind::Text(_)) {
             88.
-        } else if matches!(c.kind, Kind::Slider { .. }) {
-            84.
-        } else if !c.hint.is_empty() {
+        } else if matches!(c.kind, Kind::Slider { .. }) || !c.hint.is_empty() {
             68.
         } else if matches!(c.kind, Kind::Select { .. }) {
             56.
