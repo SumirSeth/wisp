@@ -109,7 +109,9 @@ To open Wisp with the Windows key instead, turn on **Use Win key** in Settings. 
 
 ### Now
 
-Type `now`, or click the status icons in the dock. **Now** puts Wi-Fi, Bluetooth, Night light, Dark mode, Mute and Lock in tiles beside what's playing, with time and battery above and volume below.
+Type `now`, or click the status icons in the dock. **Now** puts Wi-Fi, Bluetooth, Night light, Dark mode, Mute and Power saver in tiles beside what's playing, with time and battery above and volume below. Lock sits in the footer beside Sleep, Restart, Shut down and Wisp Settings.
+
+Power saver uses Windows Energy Saver status, including when plugged in. Its toggle works where Windows exposes the legacy saver threshold; unsupported systems keep their current state. The fallback restores the saved threshold after applying the request, so reloading the power plan resumes your automatic policy.
 
 Click a radio tile to turn it on or off. Its **›** opens networks or devices. The output name beside volume opens **Sound** for outputs and app volumes. Press <kbd>Esc</kbd> or choose **Back to Now** to return. Use arrow keys to move, and <kbd>Enter</kbd> or <kbd>Space</kbd> to activate.
 

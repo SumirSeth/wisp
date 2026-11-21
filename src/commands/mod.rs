@@ -14,6 +14,7 @@ pub mod media;
 pub mod night_light;
 pub mod open_windows;
 pub mod power;
+pub mod power_saver;
 pub(crate) mod radio;
 pub mod settings;
 pub mod time;
@@ -66,6 +67,7 @@ pub mod glyph {
     pub const CLOSE: &str = "\u{E711}";
     pub const SETTINGS: &str = "\u{E713}";
     pub const CHECK: &str = "\u{E73E}";
+    pub const POWER_SAVER: &str = "\u{E863}";
     pub const LOCK: &str = "\u{E72E}";
     pub const OPEN: &str = "\u{E785}";
     pub const LOCATION: &str = "\u{E81D}";
@@ -77,6 +79,7 @@ pub enum Command {
     RadioView(bool),
     RadioSelect(String),
     NightLight(bool),
+    PowerSaver(bool),
     LightMode(bool),
     WindowControl(open_windows::Target, open_windows::Control),
     WifiPower(bool),
@@ -121,6 +124,8 @@ impl Command {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct State {
     pub night_light: Option<bool>,
+    /// Saver state is independent of battery presence and AC/DC supply.
+    pub power_saver: Option<bool>,
     pub color_modes: Option<[bool; 2]>,
     pub wifi: Option<Option<wifi::State>>,
     pub bluetooth: Option<Option<bluetooth::State>>,
@@ -232,6 +237,7 @@ fn worker(requests: Receiver<Request>, events: Sender<Event>, icon_size: i32, no
                         match &command {
                             Command::NightLight(on) => night_light::set(*on, &mut night_light_written),
                             Command::LightMode(light) => appearance::set(*light),
+                            Command::PowerSaver(on) => power_saver::set(*on),
                             Command::WindowControl(target, control) => target.run(*control),
                             Command::WifiPower(on) => wifi::set_power(*on),
                             Command::WifiConnect(profile) => wifi::connect(profile),
@@ -296,6 +302,7 @@ fn setting(command: &Command) -> Option<(std::mem::Discriminant<Command>, u32)> 
     let pid = match command {
         Command::AppVolume { pid, .. } => *pid,
         Command::NightLight(_)
+        | Command::PowerSaver(_)
         | Command::LightMode(_)
         | Command::WifiPower(_)
         | Command::BluetoothPower(_)
@@ -313,6 +320,7 @@ fn read_state() -> State {
     // Capture runs must never read the owner's media or connected-device names.
     if crate::util::perf::hook_on("WISP_CAPTURE") {
         return State {
+            power_saver: Some(false),
             night_light: Some(true),
             color_modes: Some([false; 2]),
             wifi: Some(Some(wifi::State {
@@ -344,6 +352,7 @@ fn read_state() -> State {
         };
     }
     State {
+        power_saver: power_saver::read(),
         night_light: night_light::read(),
         color_modes: appearance::read(),
         wifi: Some(wifi::state()),
@@ -1293,6 +1302,9 @@ mod system_action_tests {
         assert!(!superseded(&Command::NightLight(true), &requests, &mut queued));
         queued.pop_front();
         assert!(!superseded(&Command::LightMode(true), &requests, &mut queued));
+        queued.clear();
+        send.send(Request::Run(Command::PowerSaver(false))).unwrap();
+        assert!(superseded(&Command::PowerSaver(true), &requests, &mut queued));
         // Radios, volume and mute: the latest press wins too.
         queued.clear();
         send.send(Request::Run(Command::BluetoothPower(false))).unwrap();

@@ -125,6 +125,21 @@ pub fn widgets(state: &State) -> Vec<Widget> {
             state.audio.as_ref().and_then(|v| v.as_ref()).is_some_and(|v| v.muted),
             Command::Mute(!state.audio.as_ref().and_then(|v| v.as_ref()).is_some_and(|v| v.muted)),
         ),
+        (
+            3,
+            "Power saver",
+            glyph::POWER_SAVER,
+            state
+                .power_saver
+                .or_else(|| state.battery.flatten().map(|v| v.saver))
+                .unwrap_or(false),
+            Command::PowerSaver(
+                !state
+                    .power_saver
+                    .or_else(|| state.battery.flatten().map(|v| v.saver))
+                    .unwrap_or(false),
+            ),
+        ),
     ] {
         out.push(tile(
             Slot::Small(col),
@@ -132,11 +147,6 @@ pub fn widgets(state: &State) -> Vec<Widget> {
             Widget::new(label, "", icon, Input::Toggle { on, command: cmd }),
         ));
     }
-    out.push(tile(
-        Slot::Small(3),
-        "lock",
-        command("Lock", glyph::LOCK, Command::Power(Power::Lock)),
-    ));
     if let Some(mut volume) = super::widgets(&Part::Volume, state).pop() {
         volume.detail.clear();
         out.push(tile(Slot::Volume, "volume", volume));
@@ -159,10 +169,11 @@ pub fn widgets(state: &State) -> Vec<Widget> {
         ),
     ));
     for (col, label, icon, cmd) in [
-        (0, "Sleep", "\u{E708}", Command::Power(Power::Sleep)),
-        (1, "Restart", "\u{E72C}", Command::Power(Power::Restart)),
-        (2, "Shut down", "\u{E7E8}", Command::Power(Power::ShutDown)),
-        (3, "Wisp Settings", glyph::SETTINGS, Command::WispSettings),
+        (0, "Lock", glyph::LOCK, Command::Power(Power::Lock)),
+        (1, "Sleep", "\u{E708}", Command::Power(Power::Sleep)),
+        (2, "Restart", "\u{E72C}", Command::Power(Power::Restart)),
+        (3, "Shut down", "\u{E7E8}", Command::Power(Power::ShutDown)),
+        (4, "Wisp Settings", glyph::SETTINGS, Command::WispSettings),
     ] {
         out.push(tile(Slot::Footer(col), label, command(label, icon, cmd)));
     }
@@ -193,7 +204,7 @@ pub fn layout(widgets: &[Widget], width: f32) -> Vec<Rect> {
         .iter()
         .map(|w| {
             let (x, y, w, h) = match w.quick {
-                Some(Slot::Hint) => (0.0, small_y + 160.0, width - 170.0, 34.0),
+                Some(Slot::Hint) => (0.0, small_y + 160.0, width - 210.0, 34.0),
                 Some(Slot::Clock) => (0.0, 0.0, width - 150.0, 46.0),
                 Some(Slot::Battery) => (width - 150.0, 0.0, 150.0, 46.0),
                 Some(Slot::Radio(row) | Slot::RadioList(row)) => {
@@ -214,7 +225,7 @@ pub fn layout(widgets: &[Widget], width: f32) -> Vec<Rect> {
                 Some(Slot::Small(col)) => (col as f32 * (col_width(width) + gap), small_y, col_width(width), 82.0),
                 Some(Slot::Volume) => (0.0, small_y + 92.0, width - 178.0, 58.0),
                 Some(Slot::Output) => (width - 178.0, small_y + 92.0, 178.0, 58.0),
-                Some(Slot::Footer(col)) => (width - 4.0 * 40.0 + col as f32 * 40.0, small_y + 160.0, 34.0, 34.0),
+                Some(Slot::Footer(col)) => (width - 5.0 * 40.0 + col as f32 * 40.0, small_y + 160.0, 34.0, 34.0),
                 None => (0.0, small_y + 204.0, width, 44.0),
             };
             Rect { x, y, w, h }
@@ -302,6 +313,38 @@ mod tests {
         );
     }
     #[test]
+    fn saver_tile_tracks_ac_and_batteryless_states() {
+        for battery in [
+            None,
+            Some(crate::commands::battery::State {
+                percent: 82,
+                plugged_in: true,
+                saver: true,
+            }),
+        ] {
+            for on in [false, true] {
+                let state = State {
+                    power_saver: Some(on),
+                    battery: Some(battery),
+                    ..State::default()
+                };
+                let widgets = widgets(&state);
+                let tile = &widgets[index(&widgets, Slot::Small(3))];
+                assert_eq!(tile.label, "Power saver");
+                assert!(
+                    matches!(tile.input, Input::Toggle { on: shown, command: Command::PowerSaver(target) } if shown == on && target != on)
+                );
+                assert!(Command::PowerSaver(!on).stays_open());
+                let footer: Vec<_> = widgets
+                    .iter()
+                    .filter(|w| matches!(w.quick, Some(Slot::Footer(_))))
+                    .map(|w| w.label.as_str())
+                    .collect();
+                assert_eq!(footer, ["Lock", "Sleep", "Restart", "Shut down", "Wisp Settings"]);
+            }
+        }
+    }
+    #[test]
     fn arrows_reach_segments_and_adjacent_rows() {
         let widgets = widgets(&state());
         let rects = layout(&widgets, crate::render::surface_width());
@@ -334,12 +377,13 @@ mod tests {
             (Slot::Small(0), Action::Command(Command::NightLight(false))),
             (Slot::Small(1), Action::Command(Command::LightMode(true))),
             (Slot::Small(2), Action::Command(Command::Mute(true))),
-            (Slot::Small(3), Action::Command(Command::Power(Power::Lock))),
+            (Slot::Small(3), Action::Command(Command::PowerSaver(true))),
             (Slot::Output, Action::SoundView),
-            (Slot::Footer(0), Action::Command(Command::Power(Power::Sleep))),
-            (Slot::Footer(1), Action::Command(Command::Power(Power::Restart))),
-            (Slot::Footer(2), Action::Command(Command::Power(Power::ShutDown))),
-            (Slot::Footer(3), Action::Command(Command::WispSettings)),
+            (Slot::Footer(0), Action::Command(Command::Power(Power::Lock))),
+            (Slot::Footer(1), Action::Command(Command::Power(Power::Sleep))),
+            (Slot::Footer(2), Action::Command(Command::Power(Power::Restart))),
+            (Slot::Footer(3), Action::Command(Command::Power(Power::ShutDown))),
+            (Slot::Footer(4), Action::Command(Command::WispSettings)),
         ] {
             assert_eq!(widgets[index(&widgets, slot)].activate(0), Some(action));
         }

@@ -1792,6 +1792,7 @@ impl Launcher {
                     if ran < self.commands_sent {
                         let shown = &self.command_state;
                         state.night_light = shown.night_light;
+                        state.power_saver = shown.power_saver;
                         state.color_modes = shown.color_modes;
                         state.wifi = shown.wifi.clone();
                         state.bluetooth = shown.bluetooth.clone();
@@ -1809,7 +1810,11 @@ impl Launcher {
                         }
                     }
                     changed |= !icons.is_empty() || self.command_state != *state;
+                    let saver_changed = self.command_state.power_saver != state.power_saver;
                     self.command_state = *state;
+                    if saver_changed {
+                        self.apply_theme();
+                    }
                     self.icons.extend(icons);
                 }
                 commands::Event::List(drill, items) => {
@@ -3142,7 +3147,12 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
         WM_ERASEBKGND => return LRESULT(1),
         // Battery saver and theme changes can turn transparency off.
         WM_THEMECHANGED | WM_POWERBROADCAST => {
-            with_launcher(Launcher::apply_theme);
+            with_launcher(|l| {
+                l.apply_theme();
+                if msg == WM_POWERBROADCAST {
+                    l.commands.refresh();
+                }
+            });
         }
         WM_SETTINGCHANGE => {
             // Explorer waits for every window while it broadcasts this, and
