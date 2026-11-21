@@ -16,5 +16,5 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       # Nightly names and the perf-trace hooks compile only with these features.
-      - run: cargo clippy --workspace --all-targets --features wisp/nightly,wisp-settings/nightly,wisp/perf-trace -- -D warnings
+      - run: cargo clippy --workspace --all-targets --features wisp/nightly,wisp/perf-trace -- -D warnings
       - run: cargo test --workspace

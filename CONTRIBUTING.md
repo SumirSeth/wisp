@@ -52,7 +52,7 @@ Changes made end to end by an agent with no verifiable check, no real testing an
    ```sh
    cargo fmt --all --check
    cargo clippy --workspace --all-targets -- -D warnings
-   cargo clippy --workspace --all-targets --features wisp/nightly,wisp-settings/nightly,wisp/perf-trace -- -D warnings
+   cargo clippy --workspace --all-targets --features wisp/nightly,wisp/perf-trace -- -D warnings
    cargo test --workspace
    ```
 

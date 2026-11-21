@@ -1,6 +1,6 @@
 # Values for keys missing from config.toml that differ from
 # default-config.toml. A config from Wisp 0.3 has no dock keys, and it keeps
-# the taskbar and the centered launcher. Wisp and wisp-settings both read this
+# the taskbar and the centered launcher. The launcher and native Settings both read this
 # file, so they agree on what such a config means.
 position = "center"
 dock = false

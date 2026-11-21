@@ -1,5 +1,5 @@
 use super::*;
-use windows::Win32::{System::Com::*, UI::Shell::*};
+use windows::Win32::UI::Shell::*;
 const PRESETS: [&str; 9] = [
     "#000000FF",
     "#0F172ABF",
@@ -205,12 +205,6 @@ impl Settings {
                     Kind::Text(self.folder.clone()),
                 );
                 add("add-folder", "", "", Kind::Button("Add".into()));
-                add(
-                    "browse-folder",
-                    "Folder name to skip",
-                    "",
-                    Kind::Button("Browse…".into()),
-                );
                 for (i, name) in c.file_search_exclude.iter().enumerate() {
                     add(&format!("remove:{i}"), name, "", Kind::Button("Remove".into()));
                 }
@@ -222,27 +216,31 @@ impl Settings {
                     &format!("Version {}", env!("CARGO_PKG_VERSION")),
                     Kind::Heading,
                 );
-                let state = crate::update_notice::State::load(&self.store.path.with_file_name("update.toml"));
-                let status = if crate::channel::NIGHTLY {
-                    "Nightly builds skip checks.".into()
-                } else if state.available() {
-                    format!("Wisp {} is available.", state.version)
-                } else {
-                    "No saved update available.".into()
+                let (status, label) = match &self.updates {
+                    Updates::Idle => ("".into(), "Check for updates"),
+                    Updates::Checking => ("Checking for updates...".into(), "Checking..."),
+                    Updates::Latest => (
+                        if crate::channel::NIGHTLY {
+                            "Nightly builds skip checks."
+                        } else {
+                            "Up to date."
+                        }
+                        .into(),
+                        "Check again",
+                    ),
+                    Updates::Available(release) => (
+                        format!("Wisp {} is available.", release.version()),
+                        "Install and restart",
+                    ),
+                    Updates::Installing => ("Installing and restarting...".into(), "Installing..."),
+                    Updates::Failed(error) => (error.clone(), "Try again"),
                 };
                 add("update-status", "Updates", &status, Kind::Heading);
                 if let Some(manager) = crate::install::current_manager() {
                     add("manager", manager.instruction(), "", Kind::Heading);
                 }
-                add(
-                    "update-info",
-                    "Check and install updates in the current Settings app.",
-                    "",
-                    Kind::Heading,
-                );
-                if state.available() {
-                    add("release-notes", "", "", Kind::Link("What's new".into()));
-                }
+                add("update-action", "", "", Kind::Button(label.into()));
+                add("release-notes", "", "", Kind::Link("What's new".into()));
                 add(
                     "open-config",
                     "Config file",
@@ -404,11 +402,13 @@ impl Settings {
             "add-folder" => {
                 self.add_folder(&self.folder.clone());
             }
-            "browse-folder" => match pick_folder(self.hwnd) {
-                Ok(Some(name)) => self.add_folder(&name),
-                Ok(None) => {}
-                Err(e) => self.error = Some(format!("Cannot open folder picker: {e}")),
-            },
+            "update-action" => {
+                if matches!(self.updates, Updates::Available(_)) {
+                    self.install_update();
+                } else if !self.preview {
+                    self.check_updates();
+                }
+            }
             "source" | "release-notes" => {
                 let url = windows::core::HSTRING::from(if c.id == "source" {
                     "https://github.com/SumirSeth/wisp"
@@ -497,31 +497,4 @@ pub(super) fn rgba(text: &str) -> [u8; 4] {
         }
     }
     result
-}
-fn pick_folder(hwnd: HWND) -> Result<Option<String>> {
-    unsafe {
-        let initialized = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
-        struct Apartment(bool);
-        impl Drop for Apartment {
-            fn drop(&mut self) {
-                if self.0 {
-                    unsafe {
-                        CoUninitialize();
-                    }
-                }
-            }
-        }
-        let _apartment = Apartment(initialized);
-        let dialog: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
-        dialog.SetOptions(dialog.GetOptions()? | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM)?;
-        if dialog.Show(Some(hwnd)).is_err() {
-            return Ok(None);
-        }
-        let path = dialog.GetResult()?.GetDisplayName(SIGDN_FILESYSPATH)?;
-        let name = path.to_string()?;
-        CoTaskMemFree(Some(path.0.cast()));
-        Ok(PathBuf::from(name)
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned()))
-    }
 }

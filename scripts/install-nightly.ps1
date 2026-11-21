@@ -9,7 +9,7 @@ $dir = Join-Path $env:LOCALAPPDATA 'Programs\Wisp Nightly'
 $data = Join-Path $env:APPDATA 'wisp-nightly'
 
 if (-not $NoBuild) {
-    cargo build --release --workspace --features 'wisp/nightly,wisp-settings/nightly' `
+    cargo build --release --workspace --features 'wisp/nightly' `
         --manifest-path (Join-Path $repo 'Cargo.toml') --target-dir $target
     if ($LASTEXITCODE) { throw "cargo build failed ($LASTEXITCODE)" }
 }
@@ -17,10 +17,16 @@ if (-not $NoBuild) {
 $exe = Join-Path $dir 'wisp.exe'
 if (Test-Path $exe) {
     & $exe --quit
-    Start-Sleep -Seconds 2
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    do {
+        $running = @(Get-Process -Name wisp -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe })
+        if (-not $running.Count) { break }
+        if ([DateTime]::UtcNow -ge $deadline) { throw 'Wisp Nightly did not exit; no files were changed.' }
+        Start-Sleep -Milliseconds 100
+    } while ($true)
 }
 New-Item -ItemType Directory -Force $dir | Out-Null
-foreach ($file in 'wisp.exe', 'wisp-settings.exe') {
+foreach ($file in 'wisp.exe') {
     Copy-Item (Join-Path $target "release\$file") (Join-Path $dir $file) -Force
 }
 

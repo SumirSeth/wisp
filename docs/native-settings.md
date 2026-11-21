@@ -1,5 +1,9 @@
 # Native Settings migration
 
+## Current status
+
+Phase 3 is implemented. `wisp.exe --settings [--page general|appearance|search|about]` and `--welcome` open native Settings; the former `--settings-native` alias is removed with the GPUI crate. The release is one application executable plus the temporary 0.8 updater compatibility ZIP. See the phase 3 implementation and validation notes at the end. The inventories below record the original migration plan and phase history.
+
 ## Scope and sequencing
 
 Phase 1 adds an opt-in `wisp.exe --settings-native [--page general]` window and the complete General page. Requests reach the existing channel-specific launcher via `channel::NATIVE_SETTINGS_MESSAGE` (WM_APP+10, numeric page in WPARAM). Default tray, command, onboarding and update launch paths stay on GPUI until migration is complete. Phase 2 completes the other native pages and hidden welcome flow.
@@ -108,3 +112,23 @@ Owner review: phase 3 must settle updater compatibility with older two-executabl
 Phase 2 checks: `cargo fmt` and `cargo fmt --check`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo clippy --workspace --all-targets --features 'wisp/nightly,wisp-settings/nightly' -- -D warnings`; `cargo test --workspace`. All passed: 264 launcher tests and 40 Settings tests, four existing launcher tests ignored. Captures use the final debug build from the same source; release size is measured with `cargo build --release -p wisp` and `CARGO_TARGET_DIR=C:\Users\clash\.t3\projects\wisp-screen\target`. No real profile configuration, other checkout, push or PR was touched.
 
 Phase 2 release wisp.exe: **2463744 bytes**, against the post-polish baseline **2,452,992 bytes**: **+10752 bytes (0.44%)**.
+
+
+## Phase 3 implementation
+
+Settings and updating now live in wisp.exe. Public entry points are `--settings`, `--page` and `--welcome`; all launcher/dock/tray routes post the native window request. The GPUI crate, assets, workspace dependency and release profile overrides are removed. Shared config and Windows integration live in src/settings_config.rs and src/settings_system.rs.
+
+The portable updater resolves the single executable plus SHA256SUMS.txt, verifies before staging wisp.exe.new, then rename-swaps with rollback. A worker holds the update lock through shutdown; main releases the single-instance handle and hotkeys before allowing restart. Failed restart restores and starts the old binary. About checks on a worker and receives completion messages. Hidden daily checks, unrestricted-network checks, nightly skip, notices, package-manager guidance and What's new remain.
+
+0.9 packaging produces the main standalone executable and a temporary compatibility ZIP with a versioned folder containing two byte-identical copies of that executable named wisp.exe and wisp-settings.exe. The old updater verifies the ZIP checksum and installs both. A process started under the old Settings name only forwards Settings to the same-folder launcher or starts the adjacent wisp.exe with Settings flags, then exits. Cleanup waits while any Settings or Settings.old process from this install folder exists, preserving the old About page's Restart Settings action; it retries briefly and again on future starts. Remove this ZIP after a couple of releases. No 0.8.3 bridge release is needed.
+
+The welcome navigation is below the card at bottom right. Search uses the existing text field plus Add; the redundant Browse row and folder picker are removed.
+
+Validation: scripts/test-update-migration.py builds the tagged 0.8.2 updater with only a local asset download seam, in its own target dir. Fixture hosts compile current Settings/migration/updater code with a hidden launcher window instead of dock startup and isolated class names. They use temporary APPDATA and install folders, never global hotkeys or taskbar changes. This checks both swaps, restart, --page about forwarding, deferred cleanup, and a subsequent single-exe update/restart. scripts/capture-native-settings.ps1 uses --settings with an explicit temporary config and local release fixtures for About states; all messages target only the owned child window. Production downloads still require HTTPS; file:// is the explicit offline fixture seam.
+
+Before release: update the SignPath project artifact configuration to one exe, review winget's migration from nested ZIP to portable EXE, move Unreleased notes into the release section, and release 0.9 directly. Keep the compatibility ZIP for the agreed transition period. UI Automation and mixed-DPI review remain the existing manual review items.
+
+
+Phase 3 verification completed on 2026-11-22: formatting, stable and nightly workspace/all-target Clippy with warnings denied, and all 268 active workspace tests pass (four existing tests ignored). The release workspace build passes with package version 0.9.0. The migration harness passes with the actual v0.8.2 updater implementation, including About/welcome/hidden-check alias forwarding and next-start cleanup, followed by the single-exe update to fake 0.9.1. Packaging manifest generation was tested with a local executable. Window-only dark/light captures of General, Appearance, Search, About, welcome and About latest/available/error states are listed in target/native-settings-shots/phase3-paths.txt. The harness evidence location is printed in target/migration-final.log. Real profile configuration and installed stable/nightly copies were not changed.
+
+Final 0.9.0 release wisp.exe: 2,573,312 bytes. No wisp-settings crate or separate Settings executable is built. The compatibility ZIP alone carries a byte-identical copy named wisp-settings.exe.

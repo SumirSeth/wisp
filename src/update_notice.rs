@@ -1,7 +1,7 @@
-//! Small shared update state. TOML keeps JSON and network code out of Wisp.
+//! Persisted update notices shared by hidden checks, Settings and the launcher.
 use std::{io::Write, path::Path};
 
-/// Shared with the settings app, so it's defined here; listed in `messages`.
+/// Update-check completion notification; listed in `messages`.
 pub const MESSAGE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 9;
 
 #[derive(Default)]
@@ -58,7 +58,16 @@ mod tests {
         let path = dir.path().join("update.toml");
         assert!(!State::load(&path).available());
         let mut state = State {
-            version: "0.9.0".into(),
+            version: format!(
+                "{}.0.0",
+                env!("CARGO_PKG_VERSION")
+                    .split('.')
+                    .next()
+                    .unwrap()
+                    .parse::<u32>()
+                    .unwrap()
+                    + 1
+            ),
             ..Default::default()
         };
         assert!(state.available());

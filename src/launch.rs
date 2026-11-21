@@ -1,11 +1,11 @@
 //! Opens apps and URLs and runs commands through the Windows shell.
 
-use windows::Win32::Foundation::{E_FAIL, ERROR_CANCELLED};
-use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize};
+use windows::Win32::Foundation::ERROR_CANCELLED;
+use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::SystemInformation::GetWindowsDirectoryW;
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::*;
-use windows::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONINFORMATION, MB_YESNO, MessageBoxW, SW_SHOWNORMAL};
+use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use windows::core::{HSTRING, PCWSTR, Result, w};
 
 /// Uses `AppsFolder` to open both desktop and Microsoft Store apps.
@@ -69,52 +69,32 @@ pub fn reveal(path: &str) -> Result<()> {
     )
 }
 
-/// Starts `wisp-settings.exe` from the folder that contains `wisp.exe`.
-/// Offers the release download if the settings app is not there.
+/// Opens Settings in the launcher process through its deferred window message.
 pub fn settings(welcome: bool) -> Result<()> {
-    let exe = std::env::current_exe().map_err(|e| windows::core::Error::new(E_FAIL, e.to_string()))?;
-    let settings = exe.with_file_name("wisp-settings.exe");
-    if !settings.is_file() {
-        // One dialog at a time, however often Settings is chosen.
-        static ASKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        if ASKING.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            return Ok(());
+    unsafe {
+        if let Ok(hwnd) = windows::Win32::UI::WindowsAndMessaging::FindWindowW(crate::channel::LAUNCHER_CLASS, None) {
+            windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                Some(hwnd),
+                crate::channel::NATIVE_SETTINGS_MESSAGE,
+                windows::Win32::Foundation::WPARAM(if welcome { 4 } else { 0 }),
+                windows::Win32::Foundation::LPARAM(0),
+            )?;
         }
-        // Keep onboarding optional and avoid a modal loop while the launcher is borrowed.
-        std::thread::spawn(|| {
-            let com_initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok() };
-            let answer = unsafe {
-                MessageBoxW(
-                    None,
-                    w!(
-                        "Settings and updates need wisp-settings.exe beside wisp.exe. Both come in the release zip.\n\nOpen the download page?"
-                    ),
-                    w!("Wisp Settings"),
-                    MB_YESNO | MB_ICONINFORMATION,
-                )
-            };
-            if answer == IDYES
-                && let Err(error) = open("https://github.com/SumirSeth/wisp/releases/latest")
-            {
-                crate::util::error_box(&format!("Could not open the download page: {}", error.message()));
-            }
-            if com_initialized {
-                unsafe { CoUninitialize() };
-            }
-            ASKING.store(false, std::sync::atomic::Ordering::Release);
-        });
-        return Ok(());
     }
-    execute(&settings.to_string_lossy(), welcome.then_some("--welcome"), false)
+    Ok(())
 }
-
 pub fn update_settings() -> Result<()> {
-    let exe = std::env::current_exe().map_err(|e| windows::core::Error::new(E_FAIL, e.to_string()))?;
-    execute(
-        &exe.with_file_name("wisp-settings.exe").to_string_lossy(),
-        Some("--page about"),
-        false,
-    )
+    unsafe {
+        if let Ok(hwnd) = windows::Win32::UI::WindowsAndMessaging::FindWindowW(crate::channel::LAUNCHER_CLASS, None) {
+            windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                Some(hwnd),
+                crate::channel::NATIVE_SETTINGS_MESSAGE,
+                windows::Win32::Foundation::WPARAM(3),
+                windows::Win32::Foundation::LPARAM(0),
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Uses an absolute path to avoid running a same-named executable in the

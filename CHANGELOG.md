@@ -4,6 +4,11 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ## Unreleased
 
+### Changes
+
+- Settings is built into Wisp. Open it from the dock, launcher or tray, or run `wisp.exe --settings`.
+- Wisp ships as one executable, with verified updates and restart from Settings. Updates from 0.8.x migrate automatically through a compatibility zip containing two identical copies of Wisp.
+
 ### New
 
 - `dock_margin` in the config, or **Gap below the dock** under Appearance › Advanced in Settings, sets the gap below the dock, from 0 to 24 DIP. At 0 the dock sits on the screen edge, and with the dock kept visible, maximized windows get the space back. (#126, by @SorbetMango, fixes #125)

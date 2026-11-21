@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$Exe,[Parameter(Mandatory=$true)][string]$Name,[switch]$Native,[int]$Wheel=0,[ValidateSet("general","appearance","search","about")][string]$Page="general",[switch]$Welcome,[switch]$Advanced,[switch]$Picker)
+param([Parameter(Mandatory=$true)][string]$Exe,[Parameter(Mandatory=$true)][string]$Name,[switch]$Native,[int]$Wheel=0,[ValidateSet("general","appearance","search","about")][string]$Page="general",[switch]$Welcome,[switch]$Advanced,[switch]$Picker,[ValidateSet("none","latest","available","error")][string]$UpdateState="none")
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName System.Drawing
 Add-Type @'
@@ -32,8 +32,17 @@ foreach($theme in 'dark','light') {
  $start.RedirectStandardError=$true
  $start.EnvironmentVariables['APPDATA']=$root
  $start.EnvironmentVariables['WISP_RELEASE_URL']='file:///nonexistent-native-settings-fixture.json'
- $start.Arguments=if($Native) {"--settings-native-preview --config `"$config`" --page $Page"} else {"--page $Page"}
+ $start.Arguments=if($Native) {"--settings --config `"$config`" --page $Page"} else {"--page $Page"}
  if($Welcome) {$start.Arguments += " --welcome"}
+ if($UpdateState -ne 'none') {
+  $fixture=Join-Path $root 'release.json'
+  $tag=if($UpdateState -eq 'latest'){'v0.0.0'}else{'v99.0.0'}
+  if($UpdateState -eq 'error') { Set-Content $fixture 'broken release response' } else {
+   @{tag_name=$tag;html_url='https://example.invalid/fixture';assets=@()} | ConvertTo-Json | Set-Content $fixture
+  }
+  $start.EnvironmentVariables['WISP_RELEASE_URL']="file://$fixture"
+  $start.EnvironmentVariables['WISP_SETTINGS_FIXTURE']='1'
+ }
  $process=[Diagnostics.Process]::Start($start)
  try {
   Start-Sleep -Seconds $(if($Native) {1} else {12})

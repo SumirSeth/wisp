@@ -31,7 +31,6 @@ jobs:
           name: unsigned
           path: |
             target/release/wisp.exe
-            target/release/wisp-settings.exe
           if-no-files-found: error
       - name: Sign
         uses: signpath/github-action-submit-signing-request@v3

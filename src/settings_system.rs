@@ -31,7 +31,7 @@ pub fn set_autostart(enabled: bool) -> Result<(), String> {
             let scoop = std::env::var_os("SCOOP").map(PathBuf::from);
             let launcher = crate::install::autostart_path(&launcher, scoop.as_deref());
             if !launcher.is_file() {
-                return Err("Place wisp.exe next to wisp-settings.exe, then try again.".into());
+                return Err("Cannot find wisp.exe in the install folder.".into());
             }
             let command = wide(format!("\"{}\"", launcher.display()));
             RegSetKeyValueW(

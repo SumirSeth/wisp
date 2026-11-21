@@ -39,7 +39,7 @@ use crate::messages::WM_APP_FILES;
 use crate::messages::WM_APP_FRAME;
 use crate::messages::WM_APP_INDEX;
 use crate::messages::WM_APP_QUIT;
-/// wisp-settings posts this message after it changes the config.
+/// Settings posts this message after it changes the config.
 #[path = "app/capture.rs"]
 mod capture;
 /// Drives the scripted capture of the dock and the launcher.
@@ -146,17 +146,37 @@ pub fn run() -> Result<()> {
         let _radio_runtime = commands::radio::UiRuntime::new()?;
 
         // The mutex limits Wisp to one running instance.
-        let _mutex = CreateMutexW(None, true, crate::channel::INSTANCE_MUTEX)?;
+        struct Instance(windows::Win32::Foundation::HANDLE);
+        impl Drop for Instance {
+            fn drop(&mut self) {
+                unsafe {
+                    let _ = CloseHandle(self.0);
+                }
+            }
+        }
+        let _mutex = Instance(CreateMutexW(None, true, crate::channel::INSTANCE_MUTEX)?);
         if GetLastError() == ERROR_ALREADY_EXISTS {
             // Wait up to 3 s for a starting instance to create its window.
             for _ in 0..30 {
                 if let Ok(existing) = FindWindowW(CLASS_NAME, PCWSTR::null()) {
+                    if (flag("--settings") || flag("--welcome") || flag("--page"))
+                        && let Ok(exe) = std::env::current_exe()
+                        && !crate::migration::same_install_window(
+                            existing,
+                            exe.parent().unwrap_or(std::path::Path::new("")),
+                        )
+                    {
+                        return Err(windows::core::Error::new(
+                            E_FAIL,
+                            "Wisp is running from another folder. Quit that copy before opening this installation.",
+                        ));
+                    }
                     let mut pid = 0;
                     GetWindowThreadProcessId(existing, Some(&mut pid));
                     let _ = AllowSetForegroundWindow(pid);
                     let msg = if flag("--quit") {
                         WM_APP_QUIT
-                    } else if flag("--settings-native") {
+                    } else if flag("--settings") || flag("--welcome") || flag("--page") {
                         crate::channel::NATIVE_SETTINGS_MESSAGE
                     } else {
                         WM_APP_SHOW
@@ -317,7 +337,7 @@ pub fn run() -> Result<()> {
             if let Some(error) = config_error {
                 tray::notify(l.hwnd, "Wisp config", &error, true);
             }
-            if flag("--settings-native") {
+            if flag("--settings") || flag("--welcome") || flag("--page") {
                 let _ = PostMessageW(
                     Some(l.hwnd),
                     crate::channel::NATIVE_SETTINGS_MESSAGE,
@@ -2964,7 +2984,7 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
                     && let Ok(exe) = std::env::current_exe()
                 {
                     use std::os::windows::process::CommandExt;
-                    let _ = std::process::Command::new(exe.with_file_name("wisp-settings.exe"))
+                    let _ = std::process::Command::new(exe)
                         .arg("--check-updates")
                         .creation_flags(0x08000000)
                         .spawn();

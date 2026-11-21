@@ -1,38 +1,21 @@
-#Requires -Version 7.0
+#Requires -Version 5.1
 <#
 .SYNOPSIS
-Generate winget manifests and a Scoop manifest from a release zip, without publishing.
+Generate winget manifests and a Scoop manifest from a release executable, without publishing.
 .EXAMPLE
-pwsh -File packaging/winget/generate.ps1 -Tag v0.6.0 -ZipPath ./wisp-v0.6.0-x86_64-windows.zip -OutputDirectory ./manifests
+pwsh -File packaging/winget/generate.ps1 -Tag v0.6.0 -ExePath ./wisp-v0.9.0-x86_64.exe -OutputDirectory ./manifests
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][ValidatePattern('^v\d+\.\d+\.\d+$')][string] $Tag,
-    [Parameter(Mandatory)][string] $ZipPath,
+    [Parameter(Mandatory)][string] $ExePath,
     [Parameter(Mandatory)][string] $OutputDirectory
 )
 $ErrorActionPreference = 'Stop'
 $version = $Tag.Substring(1)
 $repo = 'https://github.com/SumirSeth/wisp'
-$url = "$repo/releases/download/$Tag/wisp-$Tag-x86_64-windows.zip"
-$sha256 = (Get-FileHash -LiteralPath $ZipPath -Algorithm SHA256).Hash
-
-# Old releases have a versioned top folder. Inspect exact entries rather than
-# guessing from the version, so this also works with local packaging dry runs.
-$archive = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $ZipPath))
-try {
-    $entries = @($archive.Entries | ForEach-Object { $_.FullName.Replace('\', '/') })
-    $folder = "wisp-$Tag-x86_64-windows"
-    if ('wisp.exe' -cin $entries -and 'wisp-settings.exe' -cin $entries) {
-        $prefix = ''
-    } elseif ("$folder/wisp.exe" -cin $entries -and "$folder/wisp-settings.exe" -cin $entries) {
-        $prefix = "$folder\"
-    } else {
-        throw 'The zip must contain both executables at its root or in its release folder.'
-    }
-} finally {
-    $archive.Dispose()
-}
+$url = "$repo/releases/download/$Tag/wisp-$Tag-x86_64.exe"
+$sha256 = (Get-FileHash -LiteralPath $ExePath -Algorithm SHA256).Hash
 
 $winget = Join-Path $OutputDirectory "winget/$version"
 $scoop = Join-Path $OutputDirectory 'scoop'
@@ -74,13 +57,9 @@ ManifestVersion: 1.10.0
 PackageIdentifier: SumirSeth.Wisp
 PackageVersion: $version
 MinimumOSVersion: 10.0.19041.0
-InstallerType: zip
-NestedInstallerType: portable
-NestedInstallerFiles:
-- RelativeFilePath: ${prefix}wisp.exe
-  PortableCommandAlias: wisp
-- RelativeFilePath: ${prefix}wisp-settings.exe
-  PortableCommandAlias: wisp-settings
+InstallerType: portable
+Commands:
+- wisp
 Installers:
 - Architecture: x64
   InstallerUrl: $url
@@ -90,14 +69,12 @@ ManifestVersion: 1.10.0
 "@ | Set-Content -Encoding utf8 (Join-Path $winget 'SumirSeth.Wisp.installer.yaml')
 
 # The checked-in manifest provides Scoop metadata and future update rules.
-$manifest = Get-Content (Join-Path $PSScriptRoot '../scoop/wisp.json') -Raw | ConvertFrom-Json -AsHashtable
+$manifest = Get-Content (Join-Path $PSScriptRoot '../scoop/wisp.json') -Raw | ConvertFrom-Json
 $manifest.version = $version
-$manifest.architecture.'64bit'.url = $url
+$manifest.architecture.'64bit'.url = "$url#/wisp.exe"
 $manifest.architecture.'64bit'.hash = $sha256.ToLowerInvariant()
-if ($prefix) {
-    $manifest.extract_dir = $prefix.TrimEnd('\')
-} else {
-    $manifest.Remove('extract_dir')
-}
+$manifest.PSObject.Properties.Remove('extract_dir')
+$manifest.autoupdate.PSObject.Properties.Remove('extract_dir')
+$manifest.shortcuts = @(@('wisp.exe', 'Wisp'), @('wisp.exe', 'Wisp Settings', '--settings'))
 $manifest | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 (Join-Path $scoop 'wisp.json')
 Write-Output "Generated winget $version ($sha256) in $winget and Scoop in $scoop."

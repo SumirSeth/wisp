@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- SignPath's artifact configuration for Wisp's releases: paste it into the
-     SignPath project. The release workflow uploads wisp.exe and wisp-settings.exe
+     SignPath project. The release workflow uploads wisp.exe
      as one artifact, and passes the version without its leading v. -->
 <artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
   <parameters>
@@ -9,7 +9,6 @@
   <zip-file>
     <pe-file-set product-name="Wisp" product-version="${version}">
       <include path="wisp.exe" />
-      <include path="wisp-settings.exe" />
       <for-each>
         <authenticode-sign />
       </for-each>

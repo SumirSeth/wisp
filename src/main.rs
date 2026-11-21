@@ -26,16 +26,15 @@ mod win_key;
 mod install;
 mod launch;
 mod messages;
+mod migration;
 mod morph;
 mod native_settings;
 mod render;
 mod screens;
 mod search;
 #[allow(dead_code)]
-#[path = "../settings/src/config.rs"]
 mod settings_config;
 #[allow(dead_code)]
-#[path = "../settings/src/system.rs"]
 mod settings_system;
 mod surface;
 mod system;
@@ -43,22 +42,39 @@ mod taskbar;
 mod theme;
 mod tray;
 mod tray_host;
+mod update;
 mod update_notice;
 mod util;
 
 fn main() {
     panic_log::install();
     let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|a| a == "--settings-native-preview") {
+    match migration::dispatch(&args) {
+        Ok(true) => return,
+        Err(error) => {
+            util::error_box(&error);
+            return;
+        }
+        Ok(false) => {}
+    }
+    if args.iter().any(|a| a == "--settings-native-preview")
+        || (args.iter().any(|a| a == "--settings") && args.iter().any(|a| a == "--config"))
+    {
         if let Err(e) = native_settings::preview(&args) {
             util::error_box(&e.message());
         }
         return;
     }
+    if args.iter().any(|a| a == "--check-updates") {
+        update::check_hidden();
+        return;
+    }
+    update::remove_old_files();
     if taskbar::dispatch_watchdog() {
         return;
     }
     if let Err(e) = app::run() {
         util::error_box(&format!("Wisp could not start:\n{}", e.message()));
     }
+    update::finish_restart();
 }

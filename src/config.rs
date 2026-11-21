@@ -9,9 +9,9 @@ use crate::util;
 
 use crate::config_write as write;
 
-/// wisp-settings includes the same file, so both apps create the same config.
+/// Native Settings uses the same defaults.
 const DEFAULT_CONFIG: &str = include_str!("default-config.toml");
-/// Values for missing keys that differ from the default config, shared with wisp-settings.
+/// Values for missing keys that differ from the default config, shared with native Settings.
 const MISSING_KEYS: &str = include_str!("config-0.3.toml");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -50,7 +50,7 @@ pub enum WindowListMode {
 }
 
 /// Keys missing from the user's file take their value from `config-0.3.toml`,
-/// then from the default config, as in wisp-settings, so both apps agree on
+/// then from the default config, as in native Settings, so both readers agree on
 /// what an old config means.
 #[derive(Debug, Deserialize)]
 pub struct Config {

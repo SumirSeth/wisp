@@ -1,6 +1,6 @@
 [package]
 name = "wisp"
-version = "0.8.2"
+version = "0.9.0"
 edition = "2024"
 description = "A dock and a launcher for Windows"
 license = "MIT"
@@ -11,7 +11,7 @@ keywords = ["dock", "launcher", "taskbar", "windows", "productivity"]
 categories = ["command-line-utilities"]
 
 [workspace]
-members = ["settings"]
+members = []
 
 [features]
 # Side-by-side build with its own data folder and window names.
@@ -22,6 +22,7 @@ perf-trace = ["windows/Win32_System_Performance"]
 [dependencies]
 serde_json = "1"
 nucleo-matcher = "0.3"
+sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 toml_edit = "0.23"
@@ -59,6 +60,7 @@ features = [
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_WiFi",
     "Win32_Networking_NetworkListManager",
+    "Win32_Networking_WinHttp",
     "Win32_Networking_WinSock",
     "Win32_Security",
     "Win32_Storage_FileSystem",
@@ -96,46 +98,3 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
-
-# Keep the launcher on the release profile above.
-[profile.release.package]
-wisp-settings = { opt-level = "z" }
-
-# These crates are exclusive to Settings. Shared dependencies retain opt-level 3.
-# Recheck this list when adding launcher dependencies.
-accesskit_consumer = { opt-level = "z" }
-accesskit_windows = { opt-level = "z" }
-aho-corasick = { opt-level = "z" }
-exr = { opt-level = "z" }
-fontdb = { opt-level = "z" }
-gif = { opt-level = "z" }
-gpui-base = { opt-level = "z" }
-gpui-component = { opt-level = "z" }
-gpui-pre = { opt-level = "z" }
-gpui-pre-sum-tree = { opt-level = "z" }
-gpui-pre-windows = { opt-level = "z" }
-html5ever = { opt-level = "z" }
-image = { opt-level = "z" }
-image-webp = { opt-level = "z" }
-lyon_tessellation = { opt-level = "z" }
-markdown = { opt-level = "z" }
-markup5ever = { opt-level = "z" }
-miniz_oxide = { opt-level = "z" }
-png = { opt-level = "z" }
-regex = { opt-level = "z" }
-regex-automata = { opt-level = "z" }
-regex-syntax = { opt-level = "z" }
-resvg = { opt-level = "z" }
-roxmltree = { opt-level = "z" }
-rustybuzz = { opt-level = "z" }
-serde_json = { opt-level = "z" }
-smallvec = { opt-level = "z" }
-svgtypes = { opt-level = "z" }
-taffy = { opt-level = "z" }
-tiff = { opt-level = "z" }
-tiny-skia = { opt-level = "z" }
-tiny-skia-path = { opt-level = "z" }
-toml_edit = { opt-level = "z" }
-ttf-parser = { opt-level = "z" }
-usvg = { opt-level = "z" }
-zune-jpeg = { opt-level = "z" }

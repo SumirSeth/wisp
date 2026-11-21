@@ -9,10 +9,10 @@ use crate::status_options;
 use status_options::StatusPlacement;
 
 /// The launcher creates its config from the same file.
-pub const DEFAULT_CONFIG: &str = include_str!("../../src/default-config.toml");
+pub const DEFAULT_CONFIG: &str = include_str!("default-config.toml");
 /// Values for missing keys that differ from the default config. The launcher
 /// reads the same file.
-const MISSING_KEYS: &str = include_str!("../../src/config-0.3.toml");
+const MISSING_KEYS: &str = include_str!("config-0.3.toml");
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {

@@ -11,9 +11,9 @@ mod config;
 mod config_write;
 #[path = "../src/native_settings.rs"]
 mod native_settings;
-#[path = "../settings/src/config.rs"]
+#[path = "../src/settings_config.rs"]
 mod settings_config;
-#[path = "../settings/src/system.rs"]
+#[path = "../src/settings_system.rs"]
 mod settings_system;
 #[path = "../src/dock/status_options.rs"]
 mod status_options;
@@ -42,6 +42,8 @@ mod install;
 mod launch;
 #[path = "../src/messages.rs"]
 mod messages;
+#[path = "../src/migration.rs"]
+mod migration;
 #[path = "../src/morph.rs"]
 mod morph;
 #[path = "../src/render.rs"]
@@ -62,6 +64,8 @@ mod theme;
 mod tray;
 #[path = "../src/tray_host.rs"]
 mod tray_host;
+#[path = "../src/update.rs"]
+mod update;
 #[path = "../src/update_notice.rs"]
 mod update_notice;
 #[path = "../src/util.rs"]

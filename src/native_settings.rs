@@ -1,4 +1,4 @@
-//! Native Settings: no worker, timer or rendering resources survive WM_NCDESTROY.
+//! Native Settings. Update workers post completions without borrowing UI state.
 #[path = "native_settings/controls.rs"]
 mod controls;
 #[path = "native_settings/pages.rs"]
@@ -24,6 +24,21 @@ thread_local! {
     static WINDOW: RefCell<Option<Settings>> = const { RefCell::new(None) };
     static HANDLE: Cell<HWND> = const { Cell::new(HWND(std::ptr::null_mut())) };
     static PENDING_PAGE: Cell<Option<usize>> = const { Cell::new(None) };
+}
+const UPDATE_DONE: u32 = WM_APP + 31;
+#[derive(Default)]
+enum Updates {
+    #[default]
+    Idle,
+    Checking,
+    Latest,
+    Available(crate::update::Release),
+    Installing,
+    Failed(String),
+}
+enum UpdateEvent {
+    Checked(std::result::Result<Option<crate::update::Release>, String>),
+    Installed(std::result::Result<(), String>),
 }
 const PAGES: [&str; 4] = ["General", "Appearance", "Search", "About"];
 pub fn page_arg(args: &[String]) -> usize {
@@ -64,6 +79,8 @@ struct Settings {
     welcome: Option<usize>,
     hover: Option<usize>,
     pressed: Option<usize>,
+    updates: Updates,
+    update_rx: Option<std::sync::mpsc::Receiver<UpdateEvent>>,
     formats: std::cell::OnceCell<Formats>,
 }
 /// Settings' own type scale, matching the GPUI app it replaces.
@@ -222,9 +239,14 @@ fn open_path(page: usize, path: PathBuf, preview: bool) -> Result<()> {
             welcome: (page == 4).then_some(0),
             hover: None,
             pressed: None,
+            updates: Updates::Idle,
+            update_rx: None,
             formats: std::cell::OnceCell::new(),
         };
         state.renderer.set_dpi(GetDpiForWindow(hwnd));
+        if !preview || std::env::var_os("WISP_SETTINGS_FIXTURE").is_some() {
+            state.check_updates();
+        }
         state.rebuild();
         state.style();
         HANDLE.with(|h| h.set(hwnd));
@@ -263,6 +285,59 @@ impl Settings {
             _ => !crate::system::system_uses_light_theme(),
         };
         crate::theme::apply_backdrop(self.hwnd, dark, crate::config::Backdrop::Mica, false, None);
+    }
+    fn check_updates(&mut self) {
+        if matches!(self.updates, Updates::Checking | Updates::Installing) {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.update_rx = Some(rx);
+        self.updates = Updates::Checking;
+        let hwnd = self.hwnd.0 as usize;
+        std::thread::spawn(move || {
+            let _ = tx.send(UpdateEvent::Checked(crate::update::check()));
+            unsafe {
+                let _ = PostMessageW(Some(HWND(hwnd as _)), UPDATE_DONE, WPARAM(0), LPARAM(0));
+            }
+        });
+    }
+    fn install_update(&mut self) {
+        if self.preview {
+            return;
+        }
+        let Updates::Available(release) = &self.updates else {
+            return;
+        };
+        let release = release.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.update_rx = Some(rx);
+        self.updates = Updates::Installing;
+        let hwnd = self.hwnd.0 as usize;
+        crate::update::set_worker(std::thread::spawn(move || {
+            crate::update::install(&release, move |result| {
+                let installed = result.is_ok();
+                let _ = tx.send(UpdateEvent::Installed(result));
+                unsafe {
+                    let _ = PostMessageW(Some(HWND(hwnd as _)), UPDATE_DONE, WPARAM(0), LPARAM(0));
+                    if installed && let Ok(launcher) = FindWindowW(crate::channel::LAUNCHER_CLASS, None) {
+                        let _ = PostMessageW(Some(launcher), crate::messages::WM_APP_QUIT, WPARAM(0), LPARAM(0));
+                    }
+                }
+            });
+        }));
+    }
+    fn update_done(&mut self) {
+        let event = self.update_rx.as_ref().and_then(|rx| rx.try_recv().ok());
+        if let Some(event) = event {
+            self.updates = match event {
+                UpdateEvent::Checked(Ok(Some(release))) => Updates::Available(release),
+                UpdateEvent::Checked(Ok(None)) => Updates::Latest,
+                UpdateEvent::Checked(Err(error)) | UpdateEvent::Installed(Err(error)) => Updates::Failed(error),
+                UpdateEvent::Installed(Ok(())) => Updates::Installing,
+            };
+            self.update_rx = None;
+            self.rebuild();
+        }
     }
     fn rebuild(&mut self) {
         let focused_id = self.focus.and_then(|i| self.controls.get(i)).map(|c| c.id.clone());
@@ -512,6 +587,20 @@ impl Settings {
                 }
             }
         }
+        if self.welcome.is_some() {
+            for c in &mut rows[4..] {
+                if c.id == "next" || c.id == "back" {
+                    let right = self.width - if c.id == "next" { 32. } else { 140. };
+                    c.rect = D2D_RECT_F {
+                        left: right - 96.,
+                        right,
+                        top: self.height - 52. + self.scroll,
+                        bottom: self.height - 16. + self.scroll,
+                    };
+                }
+            }
+            self.extent = self.extent.min(self.height);
+        }
         for (i, c) in rows[..4].iter_mut().enumerate() {
             c.rect = D2D_RECT_F {
                 left: 12.,
@@ -519,6 +608,12 @@ impl Settings {
                 right: 184.,
                 bottom: 98. + i as f32 * 38.,
             };
+        }
+        if (matches!(self.updates, Updates::Checking | Updates::Installing)
+            || (crate::install::current_manager().is_some() && matches!(self.updates, Updates::Available(_))))
+            && let Some(c) = rows.iter_mut().find(|c| c.id == "update-action")
+        {
+            c.enabled = false;
         }
         self.focus = focused_id.and_then(|id| rows.iter().position(|c| c.id == id && c.focusable()));
         self.controls = rows;
@@ -1007,7 +1102,7 @@ impl Settings {
                     );
                 };
                 for c in &self.controls[4..] {
-                    if matches!(c.kind, Kind::Heading) {
+                    if matches!(c.kind, Kind::Heading) || c.id == "back" || c.id == "next" {
                         if let Some(r) = group.take() {
                             card(r);
                         }
@@ -1659,6 +1754,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     );
                 }
             }
+            UPDATE_DONE => s.update_done(),
             WM_SETTINGCHANGE | WM_THEMECHANGED => s.style(),
             WM_ACTIVATE if wp.0 & 0xffff != WA_INACTIVE as usize => {
                 s.rebuild();
@@ -1824,6 +1920,8 @@ mod tests {
             welcome: None,
             hover: None,
             pressed: None,
+            updates: Updates::Idle,
+            update_rx: None,
             formats: std::cell::OnceCell::new(),
         };
         s.rebuild();

@@ -49,7 +49,7 @@ Wisp uses [semantic versioning](https://semver.org). While the version is 0.x:
 
 To release:
 
-1. Open a release pull request that renames the `Unreleased` section of [CHANGELOG.md](CHANGELOG.md) to the version and date, adds a new empty `Unreleased` section, and bumps the version in `Cargo.toml` and `settings/Cargo.toml`. Label it `release`.
+1. Open a release pull request that renames the `Unreleased` section of [CHANGELOG.md](CHANGELOG.md) to the version and date, adds a new empty `Unreleased` section, and bumps the version in `Cargo.toml`. Label it `release`.
 2. Merge it once CI passes.
 3. Tag the merged commit on `main` and push the tag:
 
@@ -58,7 +58,7 @@ To release:
    git push origin v0.6.0
    ```
 
-4. The release workflow tests, builds and publishes the release. Its notes are the version's changelog section, followed by the pull requests. The settings app's updater then offers it to users.
+4. The release workflow tests, builds and publishes the release. Its notes are the version's changelog section, followed by the pull requests. Wisp's built-in updater then offers it to users.
 5. Download the workflow's `package-manifests-vX.Y.Z` artifact. It contains winget's three schema 1.10 manifests in `winget/X.Y.Z/` and Scoop's filled `scoop/wisp.json`. These are workflow artifacts, not release assets; the workflow does not submit them anywhere.
 6. For the first winget submission, run `winget validate --manifest <winget-version-directory>` and submit those files by hand to [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) under `manifests/s/SumirSeth/Wisp/X.Y.Z/`. Test installation and upgrade on an unlocked test desktop before submitting. Later releases can automate submissions once the package is accepted; that automation is not configured yet.
 7. For Scoop, first create a bucket or arrange a submission to an existing bucket, then submit the generated `scoop/wisp.json` by hand. It includes GitHub `checkver` and `autoupdate` rules using `SHA256SUMS.txt`; enable the bucket's update automation for later releases. Do not advertise `scoop install wisp` until a bucket exists.
@@ -66,13 +66,13 @@ To release:
 To regenerate the manifests locally with PowerShell 7:
 
 ```powershell
-pwsh -File packaging/winget/generate.ps1 -Tag v0.6.0 -ZipPath ./wisp-v0.6.0-x86_64-windows.zip -OutputDirectory ./manifests
-winget validate --manifest ./manifests/winget/0.6.0
+pwsh -File packaging/winget/generate.ps1 -Tag v0.9.0 -ExePath ./wisp-v0.9.0-x86_64.exe -OutputDirectory ./manifests
+winget validate --manifest ./manifests/winget/0.9.0
 ```
 
-The generator hashes the zip and detects whether its files are at the root or in the old versioned folder. The checked-in Scoop manifest describes the published 0.6.0 zip; its autoupdate rule changes `extract_dir` to `.` for future root-layout zips. Generate each release's manifest from its actual archive. The new root layout keeps winget's executable paths stable across upgrades. Both autostart entry points use the current executable's folder; Scoop installs use the `apps/wisp/current` junction so upgrades can remove old versions. Winget's package folder is already stable and needs no path rewrite.
+The generator hashes the signed executable and emits a winget portable installer and Scoop manifest. Review winget migration from the older nested ZIP installer before submission. The checked-in Scoop manifest keeps its published 0.6.0 hash; generated release manifests use the actual executable hash. SignPath signs only wisp.exe; packaging copies those signed bytes into both compatibility ZIP entries. Keep the ZIP for a couple of releases so 0.8 updaters can migrate directly. Both autostart entry points use the current executable's folder; Scoop uses the apps/wisp/current junction.
 
-Use the next release containing package-manager detection for the first public submission. The 0.6.0 manifests are useful for validation, but that binary still offers in-app updates and its versioned archive folder would leave stale paths on upgrade to the root layout.
+Use the 0.9.0 generated manifests for the next package-manager submission. Review upgrades from the older nested ZIP package to the portable executable before publishing.
 
 Never move or delete a published tag. If a release is broken, ship a patch release.
 

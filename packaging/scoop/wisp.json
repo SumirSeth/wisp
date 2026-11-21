@@ -9,26 +9,27 @@
             "hash": "ad64f65fae8d0e27dad1cdc63c501c262a3a83687218b4e82ba3dcda7705517a"
         }
     },
-    "extract_dir": "wisp-v0.6.0-x86_64-windows",
     "bin": [
-        "wisp.exe",
-        "wisp-settings.exe"
+        "wisp.exe"
     ],
     "shortcuts": [
-        ["wisp.exe", "Wisp"],
-        ["wisp-settings.exe", "Wisp Settings"]
+        [
+            "wisp.exe",
+            "Wisp"
+        ]
     ],
     "checkver": "github",
     "autoupdate": {
         "architecture": {
             "64bit": {
-                "url": "https://github.com/SumirSeth/wisp/releases/download/v$version/wisp-v$version-x86_64-windows.zip",
+                "url": "https://github.com/SumirSeth/wisp/releases/download/v$version/wisp-v$version-x86_64.exe#/wisp.exe",
                 "hash": {
                     "url": "https://github.com/SumirSeth/wisp/releases/download/v$version/SHA256SUMS.txt",
-                    "regex": "(?m)^$sha256\\s+\\*?wisp-v$version-x86_64-windows\\.zip\\r?$"
+                    "regex": "(?m)^$sha256\\s+\\*?wisp-v$version-x86_64\\.exe\\r?$"
                 }
             }
         },
         "extract_dir": "."
-    }
+    },
+    "extract_dir": "wisp-v0.6.0-x86_64-windows"
 }

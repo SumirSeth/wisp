@@ -39,11 +39,11 @@ The dock and launcher are one 2.2 MB executable, written in Rust with Win32 and 
 
 ## Install
 
-1. Download `wisp-vX-x86_64-windows.zip` from the [latest release](https://github.com/SumirSeth/wisp/releases/latest).
-2. Extract it to `%LOCALAPPDATA%\Programs\Wisp`.
+1. Download `wisp-vX.Y.Z-x86_64.exe` from the [latest release](https://github.com/SumirSeth/wisp/releases/latest).
+2. Save it as `wisp.exe` in `%LOCALAPPDATA%\Programs\Wisp`.
 3. Run `wisp.exe`. The settings app opens and sets your shortcut and **Start with Windows**.
 
-Keep `wisp-settings.exe` beside `wisp.exe` for Settings and updates. To update, select **Update** on the **About** page in Settings.
+Wisp is one executable, with Settings built into `wisp.exe`. Updates from 0.8.x migrate automatically through a compatibility zip containing two identical copies of Wisp. To update, select **Install and restart** on the **About** page in Settings.
 
 Once available, you can also install with winget:
 
@@ -234,7 +234,7 @@ Releases are built from this repository by GitHub Actions, and each one is appro
 Wisp sends nothing about you or your PC. It connects to the internet only to:
 
 - Check GitHub for a new release once a day. Turn this off in Settings, under Updates.
-- Download an update when you select **Update**.
+- Download an update when you select **Install and restart**.
 - Connect to Wi-Fi networks and Bluetooth devices you pick.
 - Open web searches and links you choose, in your browser.
 
