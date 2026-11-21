@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$Exe,[Parameter(Mandatory=$true)][string]$Name,[switch]$Native,[int]$Wheel=0)
+param([Parameter(Mandatory=$true)][string]$Exe,[Parameter(Mandatory=$true)][string]$Name,[switch]$Native,[int]$Wheel=0,[ValidateSet("general","appearance","search","about")][string]$Page="general",[switch]$Welcome,[switch]$Advanced,[switch]$Picker)
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName System.Drawing
 Add-Type @'
@@ -23,6 +23,7 @@ foreach($theme in 'dark','light') {
  $config=Join-Path $data 'config.toml'
  $text=Get-Content (Join-Path $PSScriptRoot '../src/default-config.toml') -Raw
  $text=$text -replace '(?m)^theme\s*=.*$',"theme = `"$theme`""
+ if($Page -eq 'appearance') {$text=$text -replace '(?m)^dock_color\s*=.*$', 'dock_color = "#1E3A8ABF"'}
  $text=$text -replace '(?m)^check_for_updates\s*=.*$','check_for_updates = false'
  Set-Content -LiteralPath $config -Value $text
  $start=New-Object Diagnostics.ProcessStartInfo
@@ -31,7 +32,8 @@ foreach($theme in 'dark','light') {
  $start.RedirectStandardError=$true
  $start.EnvironmentVariables['APPDATA']=$root
  $start.EnvironmentVariables['WISP_RELEASE_URL']='file:///nonexistent-native-settings-fixture.json'
- $start.Arguments=if($Native) {"--settings-native-preview --config `"$config`" --page general"} else {'--page general'}
+ $start.Arguments=if($Native) {"--settings-native-preview --config `"$config`" --page $Page"} else {"--page $Page"}
+ if($Welcome) {$start.Arguments += " --welcome"}
  $process=[Diagnostics.Process]::Start($start)
  try {
   Start-Sleep -Seconds $(if($Native) {1} else {12})
@@ -39,6 +41,20 @@ foreach($theme in 'dark','light') {
   $ownedProcess=$process.Id
   [SettingsWindowCapture]::EnumWindows({param($h,$p) [uint32]$windowProcess=0;[void][SettingsWindowCapture]::GetWindowThreadProcessId($h,[ref]$windowProcess);if($windowProcess -eq $ownedProcess -and [SettingsWindowCapture]::IsWindowVisible($h)) {$script:settingsCaptureHandle=$h;return $false};return $true},[IntPtr]::Zero) | Out-Null
   if($script:settingsCaptureHandle -eq [IntPtr]::Zero) {if(!$process.HasExited) {$process.Kill();$process.WaitForExit()};throw "No Settings window for process $ownedProcess (exited=$($process.HasExited)). $($process.StandardError.ReadToEnd())"}
+  if($Advanced -and $Page -eq 'appearance') {
+   # Messages go only to the window owned by the child process above.
+   $x=400;$y=if($Native){290}else{250}
+   $point=[IntPtr](($y -shl 16) -bor $x)
+   [void][SettingsWindowCapture]::PostMessageW($script:settingsCaptureHandle,0x0201,[IntPtr]1,$point)
+   [void][SettingsWindowCapture]::PostMessageW($script:settingsCaptureHandle,0x0202,[IntPtr]0,$point)
+   Start-Sleep -Milliseconds 300
+  }
+  if($Picker -and $Native -and $Page -eq 'appearance') {
+   $point=[IntPtr]((480 -shl 16) -bor 400)
+   [void][SettingsWindowCapture]::PostMessageW($script:settingsCaptureHandle,0x0201,[IntPtr]1,$point)
+   [void][SettingsWindowCapture]::PostMessageW($script:settingsCaptureHandle,0x0202,[IntPtr]0,$point)
+   Start-Sleep -Milliseconds 300
+  }
   # -Wheel N scrolls the window down N notches before the capture.
   for($k=0;$k -lt $Wheel;$k++) {[void][SettingsWindowCapture]::PostMessageW($script:settingsCaptureHandle,0x020A,[IntPtr](-120 -shl 16),[IntPtr]::Zero)}
   if($Wheel) {Start-Sleep -Milliseconds 400}
@@ -65,7 +81,8 @@ foreach($theme in 'dark','light') {
 # Keep the original pixels; put the two window-only captures beside each other.
 if($Native) {
  foreach($theme in 'dark','light') {
-  $reference=Join-Path $shots "old-$theme.png"
+  $reference=Join-Path $shots "old-$Page-$(if($Wheel){'scrolled'}else{'top'})-$theme.png"
+  if($Welcome) {$reference=Join-Path $shots "old-welcome-$theme.png"}
   $current=Join-Path $shots "$Name-$theme.png"
   if((Test-Path $reference) -and (Test-Path $current)) {
    $old=[Drawing.Image]::FromFile($reference);$new=[Drawing.Image]::FromFile($current)
@@ -78,7 +95,8 @@ if($Native) {
      $g.DrawString('Current Settings (GPUI)',$font,[Drawing.Brushes]::White,8,4)
      $g.DrawString('Native Settings (Direct2D)',$font,[Drawing.Brushes]::White,($old.Width+8),4)
      $g.DrawImageUnscaled($old,0,32);$g.DrawImageUnscaled($new,$old.Width,32)
-     $comparison.Save((Join-Path $shots "comparison-$theme.png"),[Drawing.Imaging.ImageFormat]::Png)
+     $comparisonName=if($Picker){"comparison-appearance-picker-$theme.png"}elseif($Welcome){"comparison-welcome-$theme.png"}else{"comparison-$Page-$(if($Wheel){'scrolled'}else{'top'})-$theme.png"}
+     $comparison.Save((Join-Path $shots $comparisonName),[Drawing.Imaging.ImageFormat]::Png)
     } finally {$font.Dispose();$g.Dispose();$comparison.Dispose()}
    } finally {$old.Dispose();$new.Dispose()}
   }

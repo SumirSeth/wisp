@@ -117,7 +117,7 @@ impl Settings {
                     "advanced",
                     "Advanced",
                     "",
-                    Kind::Button(if self.advanced { "?" } else { "›" }.into()),
+                    Kind::Button(if self.advanced { "\u{2304}" } else { "›" }.into()),
                 );
                 if self.advanced {
                     add(
@@ -140,7 +140,7 @@ impl Settings {
                         add(
                             "picker",
                             "Dock color",
-                            "Acrylic uses alpha; Mica and Solid show full strength.",
+                            "With Acrylic, the color's alpha sets how much of the theme's acrylic shows through. Mica and Solid show the color at full strength.",
                             Kind::Button(self.shown_color().into()),
                         );
                         if self.picker {
@@ -160,7 +160,7 @@ impl Settings {
                                 ("red", "Red"),
                                 ("green", "Green"),
                                 ("blue", "Blue"),
-                                ("alpha", "Opacity (0–255)"),
+                                ("alpha", "Opacity"),
                             ]
                             .iter()
                             .enumerate()
@@ -348,6 +348,13 @@ impl Settings {
             let mut folders = self.config.file_search_exclude.clone();
             folders.push(name.into());
             self.folder.clear();
+            if self
+                .focus
+                .and_then(|i| self.controls.get(i))
+                .is_some_and(|c| c.id == "folder")
+            {
+                self.editor = Editor::default();
+            }
             self.save(
                 "file_search_exclude",
                 toml_edit::Value::Array(folders.iter().map(String::as_str).collect()),
@@ -409,7 +416,7 @@ impl Settings {
                 Err(e) => self.error = Some(format!("Cannot open folder picker: {e}")),
             },
             "source" | "release-notes" => {
-                let url = crate::util::wide(if c.id == "source" {
+                let url = windows::core::HSTRING::from(if c.id == "source" {
                     "https://github.com/SumirSeth/wisp"
                 } else {
                     "https://github.com/SumirSeth/wisp/releases/latest"
@@ -487,7 +494,7 @@ impl Settings {
         })
     }
 }
-fn rgba(text: &str) -> [u8; 4] {
+pub(super) fn rgba(text: &str) -> [u8; 4] {
     let hex = text.trim().trim_start_matches('#');
     let mut result = [0, 0, 0, 255];
     for (i, value) in result.iter_mut().enumerate() {

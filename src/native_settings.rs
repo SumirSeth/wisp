@@ -89,10 +89,12 @@ impl Formats {
             chevron.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING)?;
             let trailing = f(fonts.text, 14.0, DWRITE_FONT_WEIGHT_NORMAL)?;
             trailing.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING)?;
+            let hint = f(fonts.text, 12.0, DWRITE_FONT_WEIGHT_NORMAL)?;
+            hint.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP)?;
             Ok(Self {
                 body: f(fonts.text, 14.0, DWRITE_FONT_WEIGHT_NORMAL)?,
                 center,
-                hint: f(fonts.text, 12.0, DWRITE_FONT_WEIGHT_NORMAL)?,
+                hint,
                 section: f(fonts.text, 12.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?,
                 title: f(fonts.display, 20.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?,
                 brand: f(fonts.display, 17.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?,
@@ -173,7 +175,7 @@ fn open_path(page: usize, path: PathBuf, preview: bool) -> Result<()> {
         AdjustWindowRectExForDpi(&mut bounds, WS_OVERLAPPEDWINDOW, false, WINDOW_EX_STYLE::default(), dpi)?;
         let width = bounds.right - bounds.left;
         let height = bounds.bottom - bounds.top;
-        let title = crate::util::wide(&format!("{} Settings", crate::channel::NAME));
+        let title = windows::core::HSTRING::from(format!("{} Settings", crate::channel::NAME));
         let hwnd = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             class,
@@ -677,7 +679,7 @@ impl Settings {
         unsafe {
             let menu = CreatePopupMenu().ok()?;
             for (i, (_, label)) in choices.iter().enumerate() {
-                let label = crate::util::wide(label);
+                let label = windows::core::HSTRING::from(label);
                 let _ = AppendMenuW(
                     menu,
                     MF_STRING | if i == selected { MF_CHECKED } else { MF_UNCHECKED },
@@ -936,7 +938,7 @@ impl Settings {
                         ["Welcome to Wisp", "Check the shortcut", "Start with Windows"][step]
                     }),
                     D2D_RECT_F {
-                        left: if self.welcome.is_some() { 32. } else { 228. },
+                        left: if self.welcome.is_some() { 56. } else { 228. },
                         top: 16.,
                         right: self.width - 24.,
                         bottom: 60.,
@@ -1079,7 +1081,11 @@ impl Settings {
                         );
                     }
                     // Label and hint sit as one block, centred in the row like the GPUI rows.
-                    let block = if c.hint.is_empty() || matches!(c.kind, Kind::Slider { .. }) {
+                    let block = if matches!(c.id.as_str(), "backdrop" | "picker")
+                        || (c.id == "open-config" && !c.hint.is_empty())
+                    {
+                        56.
+                    } else if c.hint.is_empty() || matches!(c.kind, Kind::Slider { .. }) {
                         20.
                     } else {
                         38.
@@ -1109,7 +1115,9 @@ impl Settings {
                                     bottom: r.bottom - if c.hint.is_empty() { 6. } else { 28. },
                                     ..label
                                 },
-                                if c.label.chars().any(|ch| ch.is_lowercase()) {
+                                if c.id == "version" {
+                                    &fm.brand
+                                } else if c.label.chars().any(|ch| ch.is_lowercase()) {
                                     small
                                 } else {
                                     &fm.section
@@ -1227,14 +1235,42 @@ impl Settings {
                             text(s, r, &fm.center, &fg)
                         }
                         Kind::Button(s) => {
+                            if c.id == "picker" {
+                                let color = pages::rgba(s);
+                                brush.SetColor(&D2D1_COLOR_F {
+                                    r: color[0] as f32 / 255.,
+                                    g: color[1] as f32 / 255.,
+                                    b: color[2] as f32 / 255.,
+                                    a: 1.,
+                                });
+                                rt.FillEllipse(
+                                    &D2D1_ELLIPSE {
+                                        point: windows_numerics::Vector2 {
+                                            X: r.right - 124.,
+                                            Y: r.top + 26.,
+                                        },
+                                        radiusX: 8.,
+                                        radiusY: 8.,
+                                    },
+                                    &brush,
+                                );
+                            }
                             text(&c.label, label, title, &fg);
                             text(
                                 s,
                                 D2D_RECT_F {
                                     left: r.right - 160.,
-                                    top: r.top,
+                                    top: if c.id == "picker" || c.id == "open-config" {
+                                        r.top + 8.
+                                    } else {
+                                        r.top
+                                    },
                                     right: r.right - 16.,
-                                    bottom: r.bottom,
+                                    bottom: if c.id == "picker" || c.id == "open-config" {
+                                        r.top + 44.
+                                    } else {
+                                        r.bottom
+                                    },
                                 },
                                 &fm.trailing,
                                 if c.enabled { &p.accent } else { &p.placeholder },
@@ -1455,8 +1491,20 @@ impl Settings {
                                 D2D_RECT_F {
                                     left: r.left + 16.,
                                     top: label.bottom,
-                                    right: r.right - if matches!(c.kind, Kind::Toggle(_)) { 72. } else { 12. },
-                                    bottom: label.bottom + 18.,
+                                    right: r.right
+                                        - if c.id == "backdrop" {
+                                            252.
+                                        } else if matches!(c.kind, Kind::Toggle(_)) {
+                                            72.
+                                        } else {
+                                            12.
+                                        },
+                                    bottom: label.bottom
+                                        + if matches!(c.id.as_str(), "backdrop" | "picker" | "open-config") {
+                                            36.
+                                        } else {
+                                            18.
+                                        },
                                 }
                             },
                             small,
@@ -1772,6 +1820,14 @@ mod tests {
         assert_eq!(c.dock_margin, 24);
         assert_eq!(c.max_results, 20);
         assert_eq!(c.dock_color, "#112233BF");
+        let red = s.controls.iter().find(|c| c.id == "red").unwrap().rect;
+        let alpha = s.controls.iter().find(|c| c.id == "alpha").unwrap().rect;
+        assert_eq!(red.top, alpha.top);
+        assert!(red.right <= alpha.left);
+        s.edit_color("#AABBCCDD", None);
+        s.cancel_color();
+        s.flush_color();
+        assert_eq!(s.store.load().unwrap().dock_color, "#112233BF");
         s.edit_color("256", Some("green"));
         assert!(s.error.is_some());
         s.error = None;

@@ -55,7 +55,24 @@ pub fn layout(controls: &mut [Control], width: f32) -> f32 {
             };
             continue;
         }
-        let height = if matches!(c.kind, Kind::Heading) {
+        if let Some(column) = ["red", "green", "blue", "alpha"].iter().position(|id| *id == c.id) {
+            let span = ((width - 32.).max(260.) - 228.) / 4.;
+            if column == 0 {
+                y += 88.;
+            }
+            c.rect = D2D_RECT_F {
+                left: 228. + column as f32 * span,
+                right: 228. + (column + 1) as f32 * span,
+                top: y - 88.,
+                bottom: y,
+            };
+            continue;
+        }
+        let height = if c.id == "picker" || (c.id == "open-config" && !c.hint.is_empty()) {
+            100.
+        } else if c.id == "backdrop" {
+            88.
+        } else if matches!(c.kind, Kind::Heading) {
             if c.label.len() > 100 {
                 112.
             } else if c.id == "launcher" {
