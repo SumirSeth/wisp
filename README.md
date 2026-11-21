@@ -101,6 +101,8 @@ Press <kbd>Alt</kbd>+<kbd>Space</kbd>, type, then press <kbd>Enter</kbd>. Apps y
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> | Copy the path |
 | <kbd>Esc</kbd> | Close |
 
+To pin an app without opening it, select its result, press <kbd>Tab</kbd>, then choose **Pin to dock**. The same menu offers **Unpin from dock** for pinned apps.
+
 Drag a result out of the launcher to drop it elsewhere: a file into a chat or a folder, an app onto the desktop as a shortcut, text or a link into any text box.
 
 To open Wisp with the Windows key instead, turn on **Use Win key** in Settings. It replaces your shortcut; Windows shortcuts such as <kbd>Win</kbd>+<kbd>E</kbd> still work. While an elevated app is in front, the key may open Start.

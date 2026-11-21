@@ -45,6 +45,15 @@ fn render<'a>(apps: impl IntoIterator<Item = &'a Pin>) -> Option<String> {
     toml::to_string(&file).ok()
 }
 
+/// Sets a pin without moving existing pins or adding duplicate app IDs.
+pub fn set(pins: &mut Vec<Pin>, app: Pin, pinned: bool) {
+    if !pinned {
+        pins.retain(|pin| !pin.id.eq_ignore_ascii_case(&app.id));
+    } else if !pins.iter().any(|pin| pin.id.eq_ignore_ascii_case(&app.id)) {
+        pins.push(app);
+    }
+}
+
 /// The pinned apps, in dock order. A missing or unreadable file pins nothing.
 pub fn load(path: &Path) -> Vec<Pin> {
     std::fs::read_to_string(path)
@@ -70,6 +79,22 @@ pub fn save<'a>(path: &Path, apps: impl IntoIterator<Item = &'a Pin>) -> std::io
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setting_a_pin_preserves_order_and_matches_case_insensitively() {
+        let pin = |id: &str| Pin {
+            id: id.into(),
+            name: id.into(),
+            path: None,
+        };
+        let mut pins = vec![pin("One"), pin("Two")];
+        set(&mut pins, pin("ONE"), true);
+        assert_eq!(pins.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["One", "Two"]);
+        set(&mut pins, pin("Three"), true);
+        set(&mut pins, pin("one"), false);
+        set(&mut pins, pin("missing"), false);
+        assert_eq!(pins.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["Two", "Three"]);
+    }
 
     #[test]
     fn pins_keep_their_order_through_the_file() {

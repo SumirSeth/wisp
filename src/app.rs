@@ -1539,6 +1539,28 @@ impl Launcher {
                 }
                 result
             }
+            Action::DockPin { id, name, path, pinned } => {
+                let file = util::data_dir().join("dock-pins.toml");
+                let mut pins = crate::dock::pins::load(&file);
+                crate::dock::pins::set(
+                    &mut pins,
+                    crate::dock::pins::Pin {
+                        id: id.clone(),
+                        name: name.clone(),
+                        path: path.clone(),
+                    },
+                    *pinned,
+                );
+                if let Err(error) = crate::dock::pins::save(&file, &pins) {
+                    tray::notify(self.hwnd, "Could not save dock pins", &error.to_string(), true);
+                    return;
+                }
+                if let Some(dock) = &mut self.dock {
+                    dock.reload_pins();
+                }
+                self.leave_scope();
+                return;
+            }
             Action::SoundView => {
                 if let Some(index) = self.surfaces.specs.iter().position(|s| s.title == "Sound") {
                     self.open_surface(index);
@@ -1721,7 +1743,12 @@ impl Launcher {
                 (drill.title().to_string(), Some(drill), Vec::new())
             }
             None => {
-                let actions = item.actions();
+                let mut actions = item.actions();
+                let pins = crate::dock::pins::load(&util::data_dir().join("dock-pins.toml"));
+                let pinned = matches!(&item.action, Action::Launch { id, .. } if pins.iter().any(|pin| pin.id.eq_ignore_ascii_case(id)));
+                if let Some(action) = item.dock_action(pinned) {
+                    actions.push(action);
+                }
                 if actions.is_empty() {
                     return;
                 }

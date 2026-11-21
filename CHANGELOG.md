@@ -10,6 +10,7 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 - With autohide on, the dock can stay up until a window covers it: turn on **Hide only when windows overlap**. (#128, fixes #110)
 - Touching the bottom edge brings up the dock over fullscreen apps, also with **Keep the dock visible** on. (#129, fixes #114)
 - Now opens the Sound controls in place, under its volume slider. (#130, fixes #100)
+- Apps can be pinned to the dock from the launcher without opening them: select one and press Tab. (#127, part of #109)
 
 ## 0.8.2 - 2026-11-20
 

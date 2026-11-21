@@ -1,6 +1,8 @@
 #![windows_subsystem = "windows"]
 
 mod assets;
+// Shared with the launcher, which also adds and removes individual pins.
+#[allow(dead_code)]
 #[path = "../../src/dock/pins.rs"]
 mod pins;
 

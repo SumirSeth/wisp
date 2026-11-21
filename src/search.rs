@@ -48,6 +48,12 @@ pub enum Action {
         path: Option<String>,
         admin: bool,
     },
+    DockPin {
+        id: String,
+        name: String,
+        path: Option<String>,
+        pinned: bool,
+    },
     SoundView,
     SurfaceBack,
     Update,
@@ -185,6 +191,28 @@ impl ResultItem {
             );
         }
         actions
+    }
+
+    /// Pinning is offered only for apps, including apps without an exe path.
+    pub fn dock_action(&self, pinned: bool) -> Option<ResultItem> {
+        let Action::Launch { id, path, .. } = &self.action else {
+            return None;
+        };
+        Some(
+            ResultItem::new(
+                Kind::App,
+                if pinned { "Unpin from dock" } else { "Pin to dock" },
+                self.title.clone(),
+                Action::DockPin {
+                    id: id.clone(),
+                    name: self.title.clone(),
+                    path: path.clone(),
+                    pinned: !pinned,
+                },
+            )
+            .glyph("\u{E718}")
+            .verb(if pinned { "Unpin" } else { "Pin" }),
+        )
     }
 
     /// Filesystem path of the result, for "Show in File Explorer" and "Copy path".
@@ -654,5 +682,37 @@ mod tests {
         assert_eq!(url_encode("a b&c"), "a+b%26c");
         assert_eq!(host("https://www.google.com/search?q={query}"), Some("www.google.com"));
         assert_eq!(utf16_ranges("a🎉bc", &[0, 2, 3]), vec![(0, 1), (3, 2)]);
+    }
+}
+
+#[cfg(test)]
+mod dock_action_tests {
+    use super::*;
+    #[test]
+    fn apps_offer_pin_and_unpin_without_a_path() {
+        let app = ResultItem::new(
+            Kind::App,
+            "Store",
+            "",
+            Action::Launch {
+                id: "Package!App".into(),
+                path: None,
+                admin: false,
+            },
+        );
+        assert!(matches!(
+            app.dock_action(false).unwrap().action,
+            Action::DockPin {
+                pinned: true,
+                path: None,
+                ..
+            }
+        ));
+        assert_eq!(app.dock_action(true).unwrap().title, "Unpin from dock");
+        assert!(
+            ResultItem::new(Kind::File, "File", "", Action::Open("file".into()))
+                .dock_action(false)
+                .is_none()
+        );
     }
 }

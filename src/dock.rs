@@ -12,7 +12,7 @@ mod jump_lists;
 #[path = "dock/logic.rs"]
 pub(crate) mod logic;
 #[path = "dock/pins.rs"]
-mod pins;
+pub(crate) mod pins;
 #[path = "dock/render.rs"]
 mod render;
 #[path = "dock/space.rs"]
