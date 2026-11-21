@@ -1627,6 +1627,8 @@ impl Settings {
                                     right: r.right
                                         - if c.id == "backdrop" {
                                             252.
+                                        } else if matches!(c.kind, Kind::Button(_)) {
+                                            176.
                                         } else if matches!(c.kind, Kind::Toggle(_)) {
                                             72.
                                         } else {
@@ -2038,7 +2040,11 @@ mod tests {
         let before = std::fs::read_to_string(&s.store.path).unwrap();
         s.page = 3;
         s.rebuild();
-        assert!(s.controls.iter().any(|c| c.id == "update-status"));
+        assert!(
+            s.controls
+                .iter()
+                .any(|c| c.id == "update-action" && c.label == "Updates")
+        );
         assert_eq!(before, std::fs::read_to_string(&s.store.path).unwrap());
         s.welcome = Some(0);
         s.rebuild();

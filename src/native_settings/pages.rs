@@ -235,12 +235,16 @@ impl Settings {
                     Updates::Installing => ("Installing and restarting...".into(), "Installing..."),
                     Updates::Failed(error) => (error.clone(), "Try again"),
                 };
-                add("update-status", "Updates", &status, Kind::Heading);
-                if let Some(manager) = crate::install::current_manager() {
-                    add("manager", manager.instruction(), "", Kind::Heading);
+                // Package-manager installs update through their manager.
+                let status = match crate::install::current_manager() {
+                    Some(manager) if status.is_empty() => manager.instruction().to_string(),
+                    _ => status,
+                };
+                add("update-action", "Updates", &status, Kind::Button(label.into()));
+                if matches!(self.updates, Updates::Available(_)) {
+                    add("release-notes", "", "", Kind::Link("What's new".into()));
                 }
-                add("update-action", "", "", Kind::Button(label.into()));
-                add("release-notes", "", "", Kind::Link("What's new".into()));
+                add("links", "", "", Kind::Heading);
                 add(
                     "open-config",
                     "Config file",

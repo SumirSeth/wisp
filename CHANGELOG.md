@@ -6,8 +6,8 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ### Changes
 
-- Settings is built into Wisp. Open it from the dock, launcher or tray, or run `wisp.exe --settings`.
-- Wisp ships as one executable, with verified updates and restart from Settings. Updates from 0.8.x migrate automatically through a compatibility zip containing two identical copies of Wisp.
+- Settings is built into Wisp: it opens faster, uses less memory, and Wisp is now a single `wisp.exe` of about 2.5 MB instead of two files of 12 MB. Run `wisp.exe --settings` to open it from a script.
+- Updates from 0.8 install as usual and remove the old `wisp-settings.exe`.
 
 ### New
 

@@ -77,7 +77,10 @@ pub fn layout(controls: &mut [Control], width: f32) -> f32 {
         } else if c.id == "backdrop" {
             88.
         } else if matches!(c.kind, Kind::Heading) {
-            if c.label.len() > 100 {
+            // An empty heading only separates two cards.
+            if c.label.is_empty() {
+                16.
+            } else if c.label.len() > 100 {
                 112.
             } else if y == 72. && c.hint.is_empty() {
                 28.

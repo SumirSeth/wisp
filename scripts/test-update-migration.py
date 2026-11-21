@@ -1,3 +1,4 @@
+import re
 """Offline integration: tagged 0.8.2 updater + current native window/update sources.
 The hidden fixture host replaces dock startup, so global hotkeys/taskbar are untouched.
 """
@@ -77,7 +78,7 @@ fn main(){
     tagged=tagged.replace('fn get(url: &str) -> Result<Vec<u8>, String> {','fn get(url: &str) -> Result<Vec<u8>, String> {\n if let Some(path)=url.strip_prefix("file://"){return std::fs::read(path).map_err(|e|e.to_string());}')
     (old/'update.rs').write_text(tagged)
     text=manifest.replace('update-fixture','old-updater').replace('[dependencies]','[dependencies]\nzip = {version="2",default-features=false,features=["deflate"]}')
-    text=text.replace('version = "0.9.0"','version = "0.8.2"',1)
+    text=re.sub(r'version = "0\.[0-9]+\.[0-9]+"','version = "0.8.2"',text,count=1)
     (old/'Cargo.toml').write_text(text)
     shutil.copy2(REPO/'Cargo.lock',old/'Cargo.lock')
     source=r'''
