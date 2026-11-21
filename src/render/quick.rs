@@ -3,6 +3,33 @@ use super::*;
 use crate::surface::quick::Slot;
 type TextCache = HashMap<(String, u8, u32, u32), IDWriteTextLayout>;
 
+// Measurements and drawing share the target's layout cache.
+unsafe fn text_layout(
+    dw: &IDWriteFactory,
+    fm: &Formats,
+    cache: &mut TextCache,
+    value: &str,
+    font: u8,
+    width: f32,
+    height: f32,
+) -> Result<IDWriteTextLayout> {
+    let key = (value.to_string(), font, width.to_bits(), height.to_bits());
+    if !cache.contains_key(&key) {
+        let format = match font {
+            1 => &fm.subtitle,
+            2 => &fm.glyph,
+            3 => &fm.value,
+            4 => &fm.small,
+            5 => &fm.hint,
+            _ => &fm.title,
+        };
+        cache.insert(key.clone(), unsafe {
+            dw.CreateTextLayout(&wide(value), format, width, height)?
+        });
+    }
+    Ok(cache[&key].clone())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) unsafe fn draw(
     dw: &IDWriteFactory,
@@ -27,13 +54,34 @@ pub(super) unsafe fn draw(
         let (l, top, right, bottom) = (tile.left, tile.top, tile.right, tile.bottom);
         let focused = index == s.focus;
         let header = matches!(slot, Slot::Clock | Slot::Battery | Slot::Hint);
-        if !header {
-            brush.SetColor(if focused { &p.row_selected } else { &p.tile });
-            rt.FillRoundedRectangle(&rounded(tile, 12.0), brush);
+        // Each split control has one background; its hit rectangles still abut.
+        let segment = matches!(slot, Slot::RadioList(_) | Slot::Output);
+        let shared = match slot {
+            Slot::Radio(_) => rect(l, top, right + 36.0, bottom),
+            Slot::Volume => rect(l, top, right + 178.0, bottom),
+            _ => tile,
+        };
+        if !header && !segment {
+            brush.SetColor(&p.tile);
+            rt.FillRoundedRectangle(&rounded(shared, 12.0), brush);
+        }
+        if segment {
+            brush.SetColor(&p.scrollbar);
+            rt.DrawLine(
+                Vector2 { X: l, Y: top + 14.0 },
+                Vector2 { X: l, Y: bottom - 14.0 },
+                brush,
+                1.0,
+                None,
+            );
         }
         if focused && !header {
+            let inset = if segment { 4.0 } else { 0.75 };
             rt.DrawRoundedRectangle(
-                &rounded(rect(l + 0.75, top + 0.75, right - 0.75, bottom - 0.75), 11.0),
+                &rounded(
+                    rect(shared.left + inset, top + inset, shared.right - inset, bottom - inset),
+                    if segment { 8.0 } else { 11.0 },
+                ),
                 accent,
                 1.5,
                 None,
@@ -42,39 +90,45 @@ pub(super) unsafe fn draw(
         if cache.len() > 256 {
             cache.clear();
         }
-        let mut text = |value: &str, font: u8, bounds: D2D_RECT_F, color: &D2D1_COLOR_F| -> Result<()> {
-            let key = (
-                value.to_string(),
-                font,
-                (bounds.right - bounds.left).to_bits(),
-                (bounds.bottom - bounds.top).to_bits(),
-            );
-            if !cache.contains_key(&key) {
-                let format = match font {
-                    1 => &fm.subtitle,
-                    2 => &fm.glyph,
-                    3 => &fm.value,
-                    4 => &fm.small,
-                    5 => &fm.hint,
-                    _ => &fm.title,
-                };
-                cache.insert(
-                    key.clone(),
-                    dw.CreateTextLayout(
-                        &wide(value),
-                        format,
-                        bounds.right - bounds.left,
-                        bounds.bottom - bounds.top,
-                    )?,
-                );
+        let (mut time_width, mut date_offset, mut battery_width) = (0.0, 0.0, 0.0);
+        if let Input::Info { value } = &widget.input {
+            if slot == Slot::Clock {
+                let time = text_layout(dw, fm, cache, value, 3, r.w, r.h)?;
+                let date = text_layout(dw, fm, cache, &widget.detail, 1, r.w, r.h)?;
+                let mut metrics = DWRITE_TEXT_METRICS::default();
+                time.GetMetrics(&mut metrics)?;
+                time_width = metrics.width;
+                let mut time_line = [DWRITE_LINE_METRICS::default()];
+                let mut date_line = [DWRITE_LINE_METRICS::default()];
+                let mut count = 0;
+                time.GetLineMetrics(Some(&mut time_line), &mut count)?;
+                date.GetLineMetrics(Some(&mut date_line), &mut count)?;
+                date_offset =
+                    (date_line[0].height - time_line[0].height) / 2.0 + time_line[0].baseline - date_line[0].baseline;
+            } else if slot == Slot::Battery {
+                let label = text_layout(dw, fm, cache, value, 5, r.w, r.h)?;
+                let mut metrics = DWRITE_TEXT_METRICS::default();
+                label.GetMetrics(&mut metrics)?;
+                battery_width = metrics.width;
             }
+        }
+        let mut text = |value: &str, font: u8, bounds: D2D_RECT_F, color: &D2D1_COLOR_F| -> Result<()> {
+            let layout = text_layout(
+                dw,
+                fm,
+                cache,
+                value,
+                font,
+                bounds.right - bounds.left,
+                bounds.bottom - bounds.top,
+            )?;
             brush.SetColor(color);
             rt.DrawTextLayout(
                 Vector2 {
                     X: bounds.left,
                     Y: bounds.top,
                 },
-                &cache[&key],
+                &layout,
                 brush,
                 D2D1_DRAW_TEXT_OPTIONS_CLIP,
             );
@@ -82,28 +136,34 @@ pub(super) unsafe fn draw(
         };
         match slot {
             Slot::Hint => {
-                let label = s
-                    .widgets
-                    .get(s.focus)
-                    .filter(|w| matches!(w.quick, Some(Slot::Footer(_))))
-                    .map_or(widget.label.as_str(), |w| {
-                        if widget.detail.is_empty() {
-                            w.label.as_str()
-                        } else {
-                            widget.label.as_str()
-                        }
-                    });
-                text(label, 1, tile, &p.subtext)?;
+                text(&widget.label, 1, tile, &p.subtext)?;
             }
             Slot::Clock => {
                 if let Input::Info { value } = &widget.input {
-                    text(value, 3, rect(l + 4.0, top, l + 100.0, bottom), &p.text)?;
-                    text(&widget.detail, 1, rect(l + 108.0, top + 4.0, right, bottom), &p.subtext)?;
+                    // A ten-pixel gap and a shared baseline, independent of font fallback.
+                    text(value, 3, rect(l + 4.0, top, right, bottom), &p.text)?;
+                    text(
+                        &widget.detail,
+                        1,
+                        rect(
+                            l + 4.0 + time_width + 10.0,
+                            top + date_offset,
+                            right,
+                            bottom + date_offset,
+                        ),
+                        &p.subtext,
+                    )?;
                 }
             }
             Slot::Battery => {
                 if let Input::Info { value } = &widget.input {
-                    text(value, 5, rect(l, top, right, bottom), &p.subtext)?;
+                    text(
+                        widget.glyph,
+                        2,
+                        rect(right - battery_width - 28.0, top, right - battery_width - 6.0, bottom),
+                        &p.subtext,
+                    )?;
+                    text(value, 5, tile, &p.subtext)?;
                 }
             }
             Slot::RadioList(_) | Slot::Footer(_) => {
@@ -153,29 +213,31 @@ pub(super) unsafe fn draw(
                 {
                     rt.DrawBitmap(
                         &icon,
-                        Some(&rect(l + 12.0, top + 10.0, l + 50.0, top + 48.0)),
+                        Some(&rect(l + 12.0, top + 10.0, l + 58.0, top + 56.0)),
                         1.0,
                         D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
                         None,
                     );
                 } else {
+                    brush.SetColor(&p.scrollbar);
+                    rt.FillRoundedRectangle(&rounded(rect(l + 12.0, top + 10.0, l + 58.0, top + 56.0), 8.0), brush);
                     text(
-                        widget.glyph,
+                        "\u{E8D6}",
                         2,
-                        rect(l + 14.0, top + 12.0, l + 48.0, top + 48.0),
+                        rect(l + 23.0, top + 21.0, l + 47.0, top + 45.0),
                         &p.subtext,
                     )?;
                 }
                 text(
                     &widget.label,
                     0,
-                    rect(l + 58.0, top + 10.0, right - 12.0, top + 32.0),
+                    rect(l + 68.0, top + 10.0, right - 12.0, top + 32.0),
                     &p.text,
                 )?;
                 text(
                     &widget.detail,
                     1,
-                    rect(l + 58.0, top + 32.0, right - 12.0, top + 52.0),
+                    rect(l + 68.0, top + 32.0, right - 12.0, top + 52.0),
                     &p.subtext,
                 )?;
                 if let Input::Buttons { buttons } = &widget.input {

@@ -169,12 +169,7 @@ pub fn widgets(state: &State) -> Vec<Widget> {
     out.push(tile(
         Slot::Hint,
         "hint",
-        Widget::new(
-            "Arrows move \u{b7} Enter activates",
-            "",
-            "",
-            Input::Info { value: String::new() },
-        ),
+        Widget::new("", "", "", Input::Info { value: String::new() }),
     ));
     out
 }
@@ -207,7 +202,7 @@ pub fn layout(widgets: &[Widget], width: f32) -> Vec<Rect> {
                     if matches!(w.quick, Some(Slot::RadioList(_))) {
                         (half - 36.0, y, 36.0, h)
                     } else {
-                        (0.0, y, half - 38.0, h)
+                        (0.0, y, half - 36.0, h)
                     }
                 }
                 Some(Slot::Media) => (
@@ -217,7 +212,7 @@ pub fn layout(widgets: &[Widget], width: f32) -> Vec<Rect> {
                     media_h,
                 ),
                 Some(Slot::Small(col)) => (col as f32 * (col_width(width) + gap), small_y, col_width(width), 82.0),
-                Some(Slot::Volume) => (0.0, small_y + 92.0, width - 180.0, 58.0),
+                Some(Slot::Volume) => (0.0, small_y + 92.0, width - 178.0, 58.0),
                 Some(Slot::Output) => (width - 178.0, small_y + 92.0, 178.0, 58.0),
                 Some(Slot::Footer(col)) => (width - 4.0 * 40.0 + col as f32 * 40.0, small_y + 160.0, 34.0, 34.0),
                 None => (0.0, small_y + 204.0, width, 44.0),
