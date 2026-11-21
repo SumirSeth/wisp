@@ -734,6 +734,10 @@ mod more_tests {
 
     #[test]
     fn more_matches_available_lists() {
+        let mut drill = ResultItem::new(Kind::Command, "Wi-Fi", "", Action::Copy(String::new()));
+        drill.drill = Some(Drill::WifiNetworks);
+        assert!(drill.has_more());
+
         let actions = [
             Action::Copy("text".into()),
             Action::Surface(0),

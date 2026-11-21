@@ -676,11 +676,8 @@ unsafe fn draw_frame(
                     }
                 }
 
-                let hint_w = if selected && item.has_more() {
-                    HINT_W + 58.0
-                } else {
-                    HINT_W
-                };
+                let more = f.chip.is_none() && item.has_more();
+                let hint_w = if selected && more { HINT_W + 58.0 } else { HINT_W };
                 let text_right = width - PAD - hint_w;
                 if t.titles.len() < f.rows {
                     t.titles.resize_with(f.rows, || None);
@@ -738,7 +735,7 @@ unsafe fn draw_frame(
                     let hint = format!(
                         "{} \u{21B5}{}",
                         item.enter_label(),
-                        if item.has_more() { "   Tab \u{21E5}" } else { "" }
+                        if more { "   Tab \u{21E5}" } else { "" }
                     );
                     draw_text(
                         rt,
