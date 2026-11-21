@@ -1,6 +1,8 @@
 //! Native Settings: no worker, timer or rendering resources survive WM_NCDESTROY.
 #[path = "native_settings/controls.rs"]
 mod controls;
+#[path = "native_settings/pages.rs"]
+mod pages;
 use crate::{
     editor::Editor,
     settings_config::{Config, Store},
@@ -25,6 +27,9 @@ thread_local! {
 }
 const PAGES: [&str; 4] = ["General", "Appearance", "Search", "About"];
 pub fn page_arg(args: &[String]) -> usize {
+    if args.iter().any(|a| a == "--welcome") {
+        return 4;
+    }
     args.iter()
         .position(|a| a == "--page")
         .and_then(|i| args.get(i + 1))
@@ -51,6 +56,14 @@ struct Settings {
     preview: bool,
     width: f32,
     height: f32,
+    folder: String,
+    advanced: bool,
+    picker: bool,
+    color: String,
+    pending_color: Option<String>,
+    welcome: Option<usize>,
+    hover: Option<usize>,
+    pressed: Option<usize>,
     formats: std::cell::OnceCell<Formats>,
 }
 /// Settings' own type scale, matching the GPUI app it replaces.
@@ -112,12 +125,13 @@ fn open_path(page: usize, path: PathBuf, preview: bool) -> Result<()> {
         (!hwnd.is_invalid()).then_some(hwnd)
     });
     if let Some(hwnd) = existing {
-        PENDING_PAGE.with(|p| p.set(Some(page.min(3))));
+        PENDING_PAGE.with(|p| p.set(Some(page)));
         WINDOW.with(|w| {
             if let Ok(mut w) = w.try_borrow_mut()
                 && let Some(s) = w.as_mut()
             {
                 s.page = page.min(3);
+                s.welcome = (page == 4).then_some(0);
                 s.scroll = 0.;
                 s.rebuild();
             }
@@ -153,8 +167,8 @@ fn open_path(page: usize, path: PathBuf, preview: bool) -> Result<()> {
         let mut bounds = RECT {
             left: 0,
             top: 0,
-            right: (820. * scale) as i32,
-            bottom: (580. * scale) as i32,
+            right: (if page == 4 { 560. } else { 820. } * scale) as i32,
+            bottom: (if page == 4 { 460. } else { 580. } * scale) as i32,
         };
         AdjustWindowRectExForDpi(&mut bounds, WS_OVERLAPPEDWINDOW, false, WINDOW_EX_STYLE::default(), dpi)?;
         let width = bounds.right - bounds.left;
@@ -194,6 +208,14 @@ fn open_path(page: usize, path: PathBuf, preview: bool) -> Result<()> {
             preview,
             width: 820.,
             height: 580.,
+            folder: String::new(),
+            advanced: false,
+            picker: false,
+            color: "#1E3A8ABF".into(),
+            pending_color: None,
+            welcome: (page == 4).then_some(0),
+            hover: None,
+            pressed: None,
             formats: std::cell::OnceCell::new(),
         };
         state.renderer.set_dpi(GetDpiForWindow(hwnd));
@@ -249,14 +271,8 @@ impl Settings {
                 true,
             ));
         }
-        if self.page != 0 {
-            rows.push(Control::new(
-                "later",
-                "This page will move in a later phase.",
-                "Use the current Settings app for this page.",
-                Kind::Heading,
-                true,
-            ));
+        if self.welcome.is_some() || self.page != 0 {
+            self.page_rows(&mut rows);
         } else {
             let mut add = |id: &str, label: &str, hint: &str, kind: Kind, enabled: bool| {
                 rows.push(Control::new(id, label, hint, kind, enabled))
@@ -477,7 +493,19 @@ impl Settings {
             let error_rows: Vec<_> = rows.drain(at..).collect();
             rows.splice(4..4, error_rows);
         }
+        if self.welcome.is_some() {
+            for c in &mut rows[..4] {
+                c.enabled = false;
+            }
+        }
         self.extent = controls::layout(&mut rows[4..], self.width);
+        if self.welcome.is_some() {
+            for c in &mut rows[4..] {
+                if c.id != "record" {
+                    c.rect.left = 32.;
+                }
+            }
+        }
         for (i, c) in rows[..4].iter_mut().enumerate() {
             c.rect = D2D_RECT_F {
                 left: 12.,
@@ -505,13 +533,28 @@ impl Settings {
         self.rebuild();
     }
     fn commit_text(&mut self) {
-        if self
-            .focus
-            .is_some_and(|i| self.controls.get(i).is_some_and(|c| c.id == "hotkey"))
-        {
-            self.save("hotkey", self.editor.text().into());
+        let Some(id) = self.focus.and_then(|i| self.controls.get(i)).map(|c| c.id.clone()) else {
+            return;
+        };
+        let text = self.editor.text().to_owned();
+        match id.as_str() {
+            "hotkey" | "search_url" => self.save(&id, text.into()),
+            "folder" => self.folder = text,
+            "dock_color_hex" => self.edit_color(&text, None),
+            "red" | "green" | "blue" | "alpha" => {
+                if !text.is_empty() {
+                    self.edit_color(&text, Some(&id));
+                }
+                self.rebuild();
+                if let Some(Kind::Text(value)) = self.focus.and_then(|i| self.controls.get(i)).map(|c| &c.kind) {
+                    self.editor = Editor::default();
+                    self.editor.insert(value);
+                }
+            }
+            _ => {}
         }
     }
+
     fn activate(&mut self, index: usize, delta: i64, popup: bool) {
         let Some(c) = self.controls.get(index).cloned().filter(|c| c.focusable()) else {
             return;
@@ -524,12 +567,16 @@ impl Settings {
             self.rebuild();
             return;
         }
+        if self.page_action(&c, delta, popup) {
+            return;
+        }
         match c.id.as_str() {
             "record" => {
                 self.recording = true;
                 self.rebuild();
             }
             "reload" => {
+                self.cancel_color();
                 match self.store.load() {
                     Ok(c) => {
                         self.config = c;
@@ -537,6 +584,7 @@ impl Settings {
                     }
                     Err(e) => self.error = Some(e),
                 }
+                self.style();
                 self.rebuild();
             }
             "open-config" => {
@@ -727,6 +775,11 @@ impl Settings {
             self.save("hotkey", parts.join("+").into());
             return;
         }
+        if vk == VK_ESCAPE.0 && self.picker {
+            self.picker = false;
+            self.rebuild();
+            return;
+        }
         if vk == VK_TAB.0 {
             let next = controls::next_focus(&self.controls, self.focus, shift);
             self.focus_to(next);
@@ -744,7 +797,12 @@ impl Settings {
         let text = self.controls.get(i).is_some_and(|c| matches!(c.kind, Kind::Text(_)));
         if text {
             match vk {
-                0x0d => self.commit_text(),
+                0x0d => {
+                    self.commit_text();
+                    if self.controls.get(i).is_some_and(|c| c.id == "folder") {
+                        self.add_folder(&self.folder.clone());
+                    }
+                }
                 0x08 => {
                     self.editor.backspace(ctrl);
                 }
@@ -769,9 +827,20 @@ impl Settings {
                 }
                 _ => {}
             }
+            if matches!(vk, 0x08 | 0x2e | 0x58 | 0x56) {
+                self.text_changed();
+            }
         } else {
             match vk {
                 0x20 | 0x0d => self.activate(i, 1, true),
+                0x26 | 0x28 if self.controls.get(i).is_some_and(|c| c.id.starts_with("remove:")) => {
+                    let next = if vk == 0x26 { i.checked_sub(1) } else { Some(i + 1) };
+                    if let Some(next) =
+                        next.filter(|n| self.controls.get(*n).is_some_and(|c| c.id.starts_with("remove:")))
+                    {
+                        self.focus_to(Some(next));
+                    }
+                }
                 0x25 | 0x26
                     if self
                         .controls
@@ -796,7 +865,8 @@ impl Settings {
     }
     fn paint(&mut self) -> Result<()> {
         if let Some(page) = PENDING_PAGE.with(Cell::take) {
-            self.page = page;
+            self.page = page.min(3);
+            self.welcome = (page == 4).then_some(0);
             self.scroll = 0.;
             self.rebuild();
         }
@@ -851,7 +921,7 @@ impl Settings {
                     );
                 };
                 text(
-                    "wisp",
+                    if self.welcome.is_some() { "" } else { "wisp" },
                     D2D_RECT_F {
                         left: 56.,
                         top: 16.,
@@ -862,9 +932,11 @@ impl Settings {
                     &p.text,
                 );
                 text(
-                    PAGES[page],
+                    self.welcome.map_or(PAGES[page], |step| {
+                        ["Welcome to Wisp", "Check the shortcut", "Start with Windows"][step]
+                    }),
                     D2D_RECT_F {
-                        left: 228.,
+                        left: if self.welcome.is_some() { 32. } else { 228. },
                         top: 16.,
                         right: self.width - 24.,
                         bottom: 60.,
@@ -872,10 +944,28 @@ impl Settings {
                     &fm.title,
                     &p.text,
                 );
+                if let Some(step) = self.welcome {
+                    for n in 0..3 {
+                        brush.SetColor(if n <= step { &p.accent } else { &p.divider });
+                        rt.FillRoundedRectangle(
+                            &D2D1_ROUNDED_RECT {
+                                rect: D2D_RECT_F {
+                                    left: self.width - 116. + n as f32 * 28.,
+                                    top: 56.,
+                                    right: self.width - 92. + n as f32 * 28.,
+                                    bottom: 59.,
+                                },
+                                radiusX: 1.5,
+                                radiusY: 1.5,
+                            },
+                            &brush,
+                        );
+                    }
+                }
                 // Section cards share a surface; individual rows draw only their divider.
                 rt.PushAxisAlignedClip(
                     &D2D_RECT_F {
-                        left: 196.,
+                        left: if self.welcome.is_some() { 0. } else { 196. },
                         top: 68.,
                         right: self.width,
                         bottom: self.height,
@@ -930,6 +1020,9 @@ impl Settings {
                 }
                 rt.PopAxisAlignedClip();
                 for (i, c) in self.controls.iter().enumerate() {
+                    if self.welcome.is_some() && i < 4 {
+                        continue;
+                    }
                     let mut r = c.rect;
                     if i >= 4 {
                         r.top -= scroll;
@@ -939,7 +1032,7 @@ impl Settings {
                         }
                         rt.PushAxisAlignedClip(
                             &D2D_RECT_F {
-                                left: 196.,
+                                left: if self.welcome.is_some() { 0. } else { 196. },
                                 top: 68.,
                                 right: self.width,
                                 bottom: self.height,
@@ -950,6 +1043,19 @@ impl Settings {
                     let fg = if c.enabled { p.text } else { p.placeholder };
                     if (i < 4 && i == page) || c.id == "record" {
                         brush.SetColor(&p.tile);
+                        rt.FillRoundedRectangle(
+                            &D2D1_ROUNDED_RECT {
+                                rect: r,
+                                radiusX: 6.,
+                                radiusY: 6.,
+                            },
+                            &brush,
+                        );
+                    }
+                    if c.focusable() && (self.hover == Some(i) || self.pressed == Some(i)) {
+                        let mut fill = p.divider;
+                        fill.a *= if self.pressed == Some(i) { 0.8 } else { 0.4 };
+                        brush.SetColor(&fill);
                         rt.FillRoundedRectangle(
                             &D2D1_ROUNDED_RECT {
                                 rect: r,
@@ -995,8 +1101,12 @@ impl Settings {
                                 &c.label,
                                 D2D_RECT_F {
                                     left: r.left + 4.,
-                                    top: r.bottom - 32.,
-                                    bottom: r.bottom - 6.,
+                                    top: if c.label.len() > 100 || !c.hint.is_empty() {
+                                        r.top + 12.
+                                    } else {
+                                        r.bottom - 32.
+                                    },
+                                    bottom: r.bottom - if c.hint.is_empty() { 6. } else { 28. },
                                     ..label
                                 },
                                 if c.label.chars().any(|ch| ch.is_lowercase()) {
@@ -1193,7 +1303,13 @@ impl Settings {
                             };
                             text(&c.label, row, title, &fg);
                             text(
-                                &format!("{value} DIP"),
+                                &if c.id == "max_results" {
+                                    value.to_string()
+                                } else if c.id == "dock_margin" && *value == 0 {
+                                    "On the edge".into()
+                                } else {
+                                    format!("{value} DIP")
+                                },
                                 D2D_RECT_F {
                                     right: r.right - 16.,
                                     ..row
@@ -1231,7 +1347,7 @@ impl Settings {
                         }
                         Kind::Text(s) => {
                             let label = D2D_RECT_F {
-                                right: label.right - 92.,
+                                right: label.right - if c.id == "hotkey" { 92. } else { 0. },
                                 ..label
                             };
                             text(&c.label, label, title, &fg);
@@ -1328,7 +1444,7 @@ impl Settings {
                     if !c.hint.is_empty() && !matches!(c.kind, Kind::Slider { .. }) {
                         text(
                             &c.hint,
-                            if matches!(c.kind, Kind::Text(_)) {
+                            if matches!(c.kind, Kind::Text(_) | Kind::Heading) {
                                 D2D_RECT_F {
                                     left: r.left + 16.,
                                     top: r.bottom - 24.,
@@ -1464,16 +1580,31 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             WM_SYSKEYDOWN if !s.recording => return false,
             WM_KEYDOWN | WM_SYSKEYDOWN => s.key(wp.0 as u16),
             WM_CHAR => {
+                if s.focus
+                    .and_then(|i| s.controls.get(i))
+                    .is_some_and(|c| matches!(c.id.as_str(), "red" | "green" | "blue" | "alpha"))
+                    && wp.0 >= 32
+                    && !(48..=57).contains(&wp.0)
+                {
+                    return true;
+                }
                 if !s.recording
                     && s.focus
                         .is_some_and(|i| s.controls.get(i).is_some_and(|c| matches!(c.kind, Kind::Text(_))))
                     && s.editor.push_utf16(wp.0 as u16)
                 {
-                    s.error = crate::hotkey::parse(s.editor.text()).err();
-                    s.rebuild();
+                    s.text_changed();
                 }
             }
+            WM_TIMER if wp.0 == 42 => {
+                s.flush_color();
+            }
+            WM_CLOSE => {
+                s.flush_color();
+                return false;
+            }
             WM_LBUTTONUP | WM_CAPTURECHANGED => {
+                s.pressed = None;
                 s.dragging = None;
                 unsafe {
                     let _ = ReleaseCapture();
@@ -1498,6 +1629,22 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     }
                 }
             }
+            WM_MOUSEMOVE => {
+                s.hover = s.hit(lp);
+                unsafe {
+                    let mut track = TRACKMOUSEEVENT {
+                        cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                        dwFlags: TME_LEAVE,
+                        hwndTrack: hwnd,
+                        ..Default::default()
+                    };
+                    let _ = TrackMouseEvent(&mut track);
+                }
+            }
+            windows::Win32::UI::Controls::WM_MOUSELEAVE => {
+                s.hover = None;
+                s.pressed = None;
+            }
             WM_MOUSEWHEEL => {
                 s.scroll = (s.scroll - ((wp.0 >> 16) as u16 as i16) as f32 / 120. * 48.)
                     .clamp(0., (s.extent - s.height).max(0.));
@@ -1519,6 +1666,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         && yy >= c.rect.top
                         && yy < c.rect.bottom
                 });
+                s.pressed = hit;
                 if let Some(i) = hit {
                     s.focus_to(Some(i));
                     if let Some(Control {
@@ -1582,6 +1730,14 @@ mod tests {
             preview: true,
             width: 820.,
             height: 580.,
+            folder: String::new(),
+            advanced: false,
+            picker: false,
+            color: "#1E3A8ABF".into(),
+            pending_color: None,
+            welcome: None,
+            hover: None,
+            pressed: None,
             formats: std::cell::OnceCell::new(),
         };
         s.rebuild();
@@ -1591,6 +1747,120 @@ mod tests {
         let i = s.controls.iter().position(|c| c.id == id).unwrap();
         s.activate(i, delta, false);
         assert!(s.error.is_none(), "{:?}", s.error);
+    }
+    #[test]
+    fn appearance_search_about_and_welcome_use_shared_store_and_focus_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = fixture(dir.path().join("config.toml"));
+        s.page = 1;
+        s.rebuild();
+        activate(&mut s, "theme", 1);
+        activate(&mut s, "backdrop", 1);
+        activate(&mut s, "advanced", 1);
+        activate(&mut s, "dock_margin", 99);
+        activate(&mut s, "custom-color", 1);
+        activate(&mut s, "picker", 1);
+        s.edit_color("12", Some("red"));
+        s.edit_color("#112233", None);
+        assert_eq!(s.pending_color.as_deref(), Some("#112233BF"));
+        assert_eq!(s.store.load().unwrap().dock_color, "#1E3A8ABF");
+        s.flush_color();
+        activate(&mut s, "max_results", 99);
+        let c = s.store.load().unwrap();
+        assert_eq!(c.theme, "dark");
+        assert_eq!(c.backdrop, "mica");
+        assert_eq!(c.dock_margin, 24);
+        assert_eq!(c.max_results, 20);
+        assert_eq!(c.dock_color, "#112233BF");
+        s.edit_color("256", Some("green"));
+        assert!(s.error.is_some());
+        s.error = None;
+        s.page = 2;
+        s.rebuild();
+        activate(&mut s, "show_recent", 1);
+        activate(&mut s, "file_search", 1);
+        activate(&mut s, "file_search_everything", 1);
+        s.add_folder(" sample ");
+        assert!(s.store.load().unwrap().file_search_exclude.contains(&"sample".into()));
+        s.add_folder("SAMPLE");
+        assert!(s.error.is_some());
+        s.add_folder("a/b");
+        assert!(s.error.is_some());
+        s.save("search_url", "invalid".into());
+        assert!(s.error.is_some());
+        s.save("search_url", "https://example.com/?q={query}".into());
+        assert_eq!(s.store.load().unwrap().search_url, "https://example.com/?q={query}");
+        let index = s.config.file_search_exclude.iter().position(|v| v == "sample").unwrap();
+        activate(&mut s, &format!("remove:{index}"), 1);
+        assert!(!s.store.load().unwrap().file_search_exclude.contains(&"sample".into()));
+        for page in 0..4 {
+            s.page = page;
+            s.rebuild();
+            let expected: Vec<_> = s
+                .controls
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.focusable())
+                .map(|(i, _)| i)
+                .collect();
+            let mut focus = None;
+            for index in &expected {
+                focus = controls::next_focus(&s.controls, focus, false);
+                assert_eq!(focus, Some(*index));
+            }
+            assert_eq!(
+                controls::next_focus(&s.controls, focus, false),
+                expected.first().copied()
+            );
+        }
+        s.page = 1;
+        s.rebuild();
+        let ids: Vec<_> = s
+            .controls
+            .iter()
+            .filter(|c| c.focusable())
+            .map(|c| c.id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "nav:0",
+                "nav:1",
+                "nav:2",
+                "nav:3",
+                "theme",
+                "backdrop",
+                "advanced",
+                "dock_margin",
+                "custom-color",
+                "picker",
+                "preset",
+                "dock_color_hex",
+                "red",
+                "green",
+                "blue",
+                "alpha",
+                "max_results"
+            ]
+        );
+        let before = std::fs::read_to_string(&s.store.path).unwrap();
+        s.page = 3;
+        s.rebuild();
+        assert!(s.controls.iter().any(|c| c.id == "update-status"));
+        assert_eq!(before, std::fs::read_to_string(&s.store.path).unwrap());
+        s.welcome = Some(0);
+        s.rebuild();
+        assert_eq!(
+            controls::next_focus(&s.controls, None, false),
+            s.controls.iter().position(|c| c.id == "hotkey")
+        );
+        activate(&mut s, "win_key", 1);
+        activate(&mut s, "next", 1);
+        assert_eq!(s.welcome, Some(1));
+        activate(&mut s, "next", 1);
+        assert_eq!(s.welcome, Some(2));
+        activate(&mut s, "back", 1);
+        assert_eq!(s.welcome, Some(1));
     }
     #[test]
     fn general_actions_persist_correct_keys_and_inverse_values_without_losing_external_edits() {

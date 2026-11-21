@@ -56,9 +56,15 @@ pub fn layout(controls: &mut [Control], width: f32) -> f32 {
             continue;
         }
         let height = if matches!(c.kind, Kind::Heading) {
-            if c.id == "launcher" { 28. } else { 56. }
+            if c.label.len() > 100 {
+                112.
+            } else if c.id == "launcher" {
+                28.
+            } else {
+                56.
+            }
         } else if matches!(c.kind, Kind::Text(_)) {
-            88.
+            if c.hint.is_empty() { 88. } else { 112. }
         } else if matches!(c.kind, Kind::Slider { .. }) || !c.hint.is_empty() {
             68.
         } else if matches!(c.kind, Kind::Select { .. }) {
