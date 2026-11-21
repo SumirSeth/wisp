@@ -6,7 +6,7 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ### New
 
-- Now is laid out like quick settings: tiles for Wi-Fi, Bluetooth, Night light, Dark mode, Mute and Lock, what's playing, and volume with its output. (#PR)
+- Now is laid out like quick settings: tiles for Wi-Fi, Bluetooth, Night light, Dark mode, Mute and Lock, what's playing, and volume with its output. (#132)
 
 - `dock_margin` in the config, or **Gap below the dock** under Appearance › Advanced in Settings, sets the gap below the dock, from 0 to 24 DIP. At 0 the dock sits on the screen edge, and with the dock kept visible, maximized windows get the space back. (#126, by @SorbetMango, fixes #125)
 - With autohide on, the dock can stay up until a window covers it: turn on **Hide only when windows overlap**. (#128, fixes #110)
