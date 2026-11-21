@@ -95,7 +95,7 @@ Press <kbd>Alt</kbd>+<kbd>Space</kbd>, type, then press <kbd>Enter</kbd>. Apps y
 | --- | --- |
 | <kbd>Alt</kbd>+<kbd>Space</kbd> | Show or hide the launcher |
 | <kbd>Enter</kbd> | Open the selected result |
-| <kbd>Tab</kbd> | Show more actions, such as **Run as administrator** |
+| <kbd>Tab</kbd> or right-click a result | Show more actions, such as **Run as administrator** |
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd> | Run as administrator |
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> | Show in File Explorer |
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> | Copy the path |

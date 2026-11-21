@@ -1732,6 +1732,9 @@ impl Launcher {
         let Some(item) = self.results.get(self.selected) else {
             return;
         };
+        if !item.has_more() {
+            return;
+        }
         if let Action::Surface(index) = item.action {
             self.open_surface(index);
             return;
@@ -2966,6 +2969,22 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
         }
         // Suppress the Windows beep for Alt shortcuts handled by the launcher.
         WM_SYSCHAR => return LRESULT(0),
+        WM_RBUTTONUP => {
+            let (_, y) = mouse_pos(lparam);
+            with_launcher(|l| {
+                if l.visible
+                    && l.surface.is_none()
+                    && l.morph.is_none()
+                    && let Some(row) = l.row_at(y)
+                    && row < l.results.len()
+                {
+                    l.move_selection(row as isize - l.selected as isize, false);
+                    l.enter_scope();
+                    l.invalidate();
+                }
+            });
+            return LRESULT(0);
+        }
         WM_LBUTTONDOWN => {
             let point = mouse_pos(lparam);
             with_launcher(|l| {

@@ -145,6 +145,17 @@ impl ResultItem {
         self.verb.unwrap_or(self.kind.verb())
     }
 
+    /// Whether Tab can open a list for this result.
+    pub fn has_more(&self) -> bool {
+        self.drill.is_some()
+            || matches!(
+                self.action,
+                Action::Surface(_) | Action::Launch { .. } | Action::Command(Command::FocusWindow(_))
+            )
+            || matches!(&self.action, Action::Shell { command, .. } if !command.is_empty())
+            || self.path().is_some()
+    }
+
     /// The list Tab opens: the result's actions. Empty if it has none.
     pub fn actions(&self) -> Vec<ResultItem> {
         let mut actions = Vec::new();
@@ -714,5 +725,42 @@ mod dock_action_tests {
                 .dock_action(false)
                 .is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+
+    #[test]
+    fn more_matches_available_lists() {
+        let actions = [
+            Action::Copy("text".into()),
+            Action::Surface(0),
+            Action::Launch {
+                id: "app".into(),
+                path: None,
+                admin: false,
+            },
+            Action::Shell {
+                command: String::new(),
+                admin: false,
+            },
+            Action::Shell {
+                command: "dir".into(),
+                admin: false,
+            },
+            Action::Open("C:\\file.txt".into()),
+            Action::Command(Command::FocusWindow(1)),
+        ];
+        for action in actions {
+            let item = ResultItem::new(Kind::File, "Item", "", action);
+            assert_eq!(
+                item.has_more(),
+                matches!(item.action, Action::Surface(_))
+                    || !item.actions().is_empty()
+                    || item.dock_action(false).is_some()
+            );
+        }
     }
 }
