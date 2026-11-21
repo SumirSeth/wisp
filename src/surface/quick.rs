@@ -266,6 +266,11 @@ mod tests {
     #[test]
     fn grid_fits_and_media_stays_put() {
         let mut state = state();
+        state.battery = Some(Some(crate::commands::battery::State {
+            percent: 82,
+            plugged_in: true,
+            saver: false,
+        }));
         let widgets = widgets(&state);
         let width = crate::render::surface_width();
         let rects = layout(&widgets, width);
@@ -292,6 +297,9 @@ mod tests {
         let missing = super::widgets(&state);
         assert_eq!(layout(&missing, width)[index(&missing, Slot::Media)].w, width);
         // Battery absence never shifts the grid.
+        assert!(widgets.iter().any(|w| w.quick == Some(Slot::Battery)));
+        state.battery = Some(None);
+        let missing = super::widgets(&state);
         assert!(!missing.iter().any(|w| w.quick == Some(Slot::Battery)));
         assert_eq!(
             layout(&missing, width)[index(&missing, Slot::Small(0))].y,
