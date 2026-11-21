@@ -449,6 +449,7 @@ struct State {
     fullscreen: bool,
     dodge_watch: Option<dodge::Watch>,
     overlapped: bool,
+    fullscreen_reveal: Option<HWND>,
     scheduled: bool,
     scroll: usize,
     capacity: usize,
@@ -808,6 +809,7 @@ impl Dock {
             fullscreen: false,
             dodge_watch: None,
             overlapped: false,
+            fullscreen_reveal: None,
             scheduled: false,
             scroll: 0,
             capacity: usize::MAX,
@@ -1400,7 +1402,7 @@ impl Dock {
     }
     /// Whether the dock stays on screen instead of auto-hiding.
     pub fn stays_visible(&self) -> bool {
-        !self.autohide.get()
+        !self.autohide.get() && self.state.try_borrow().is_ok_and(|s| !s.fullscreen)
     }
 
     /// The room a dock that stays visible keeps at the bottom of the primary
@@ -1675,17 +1677,20 @@ impl State {
             return;
         }
         self.update_dodge();
-        self.fullscreen = fullscreen_foreground(self.hwnd);
+        let fullscreen = fullscreen_foreground(self.hwnd);
+        self.set_fullscreen(fullscreen);
         if !self.fullscreen {
             self.refresh_window_titles();
         }
-        if self.fullscreen {
+        if self.fullscreen && !self.revealed_over_fullscreen() {
             self.retract();
             self.revealed = false;
         }
         unsafe {
             let was_shown = IsWindowVisible(self.hwnd).as_bool();
-            let shown = self.visible && (self.revealed || self.slide.is_some()) && !self.fullscreen;
+            let shown = self.visible
+                && (self.revealed || self.slide.is_some())
+                && (!self.fullscreen || self.revealed_over_fullscreen());
             let _ = ShowWindow(self.hwnd, if shown { SW_SHOWNOACTIVATE } else { SW_HIDE });
             if unchanged && shown && was_shown {
                 // Nothing to draw: the same apps, windows and status.
@@ -1849,6 +1854,28 @@ impl State {
         }
     }
 
+    fn revealed_over_fullscreen(&self) -> bool {
+        let foreground = unsafe { GetForegroundWindow() };
+        self.fullscreen_reveal == Some(foreground)
+    }
+
+    fn set_fullscreen(&mut self, fullscreen: bool) {
+        if !fullscreen {
+            self.fullscreen_reveal = None;
+        }
+        if self.fullscreen != fullscreen {
+            self.fullscreen = fullscreen;
+            unsafe {
+                let _ = PostMessageW(
+                    Some(self.owner),
+                    crate::messages::WM_DOCK_FULLSCREEN,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
+            }
+        }
+    }
+
     /// Slides the dock in when the pointer reaches a bottom edge, and out once
     /// it has been away for a moment.
     /// `waiting`: a menu or a launch of the dock's is waiting on the user.
@@ -1861,7 +1888,9 @@ impl State {
         }
         self.hold_bottom_crossing(&mut cursor);
         let hidden = !self.revealed && self.slide.is_none();
-        if !hidden && fullscreen_foreground(self.hwnd) {
+        let fullscreen = fullscreen_foreground(self.hwnd);
+        self.set_fullscreen(fullscreen);
+        if !hidden && fullscreen && !self.revealed_over_fullscreen() {
             self.retract();
             self.revealed = false;
             unsafe {
@@ -1873,7 +1902,7 @@ impl State {
             self.finish_press(true);
         }
         if !self.revealed {
-            if !self.autohide || self.dodge_windows && !self.overlapped {
+            if (!self.autohide || self.dodge_windows && !self.overlapped) && !fullscreen {
                 // Back after a fullscreen app, or after the launcher closed.
                 if !fullscreen_foreground(self.hwnd) {
                     self.reveal();
@@ -1890,7 +1919,8 @@ impl State {
             let at_edge = monitor.is_some_and(|m| cursor.y >= m.bottom - 2);
             self.reveal_at = None;
             let near_edge = monitor.is_some_and(|m| cursor.y >= m.bottom - (m.bottom - m.top) / 3);
-            if !dragging && at_edge && !fullscreen_foreground(self.hwnd) {
+            if !dragging && at_edge {
+                self.fullscreen_reveal = fullscreen.then(|| unsafe { GetForegroundWindow() });
                 self.listen(false);
                 self.reveal_at = Some(cursor);
                 self.reveal();
@@ -1924,7 +1954,7 @@ impl State {
         self.listen(false);
         // Once the dock hides, a resting pointer counts its rest afresh.
         self.still_polls = 0;
-        if self.autohide && self.poll_ms != POLL_MS {
+        if (self.autohide || fullscreen) && self.poll_ms != POLL_MS {
             // HIDE_AFTER counts slow polls.
             self.start_poll(POLL_MS);
         }
@@ -1953,8 +1983,7 @@ impl State {
             && cursor.y >= windows_rect.top
             && cursor.y < windows_rect.bottom;
         // The dock stays under its own menu, wherever the pointer goes in it.
-        let near = !self.autohide
-            || self.dodge_windows && !self.overlapped
+        let near = (!self.autohide || self.dodge_windows && !self.overlapped) && !fullscreen
             || waiting
             || self.held
             || self.press.is_some()
@@ -1974,7 +2003,7 @@ impl State {
                 return;
             }
         }
-        if !self.autohide {
+        if !self.autohide && !fullscreen {
             // Nothing to count: only fullscreen apps and clicks away from the
             // flyout matter, and the flyout and window list need a quick answer.
             let busy = self.press.is_some() || self.flyout_open || windows_open || self.held;
@@ -2166,6 +2195,7 @@ impl State {
             if progress.is_some_and(|t| t >= 1.0) {
                 self.slide = None;
                 if !self.revealed {
+                    self.fullscreen_reveal = None;
                     let _ = ShowWindow(self.hwnd, SW_HIDE);
                 }
                 // Once per slide, where the icons came to rest.
@@ -3709,15 +3739,7 @@ fn fullscreen_foreground(dock: HWND) -> bool {
         {
             return false;
         }
-        let covers = rect.left <= info.rcMonitor.left
-            && rect.top <= info.rcMonitor.top
-            && rect.right >= info.rcMonitor.right
-            && rect.bottom >= info.rcMonitor.bottom;
-        // Maximized windows have resize borders outside the monitor; don't
-        // treat those as fullscreen. Some apps go fullscreen from maximized,
-        // though: that shows when the window fills the monitor exactly while
-        // the work area, and so a plain maximize, stops short of it.
-        covers && (!IsZoomed(hwnd).as_bool() || (rect == info.rcMonitor && info.rcWork != info.rcMonitor))
+        logic::covers_screen(rect, info.rcMonitor, IsZoomed(hwnd).as_bool())
     }
 }
 

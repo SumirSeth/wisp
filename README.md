@@ -116,7 +116,7 @@ Type `wifi` or `bluetooth` to go straight to a list.
 
 ### Dock
 
-The dock appears when the pointer touches the bottom edge of a screen, and hides when you move away. To keep it on screen, turn on **Keep the dock visible** in Settings; maximized windows then stop above it. Full-screen apps hide it. With autohide on, turn on **Hide only when windows overlap** to keep the dock shown on an empty desktop.
+The dock appears when the pointer touches the bottom edge of a screen, and hides when you move away. To keep it on screen, turn on **Keep the dock visible** in Settings; maximized windows then stop above it. Full-screen apps hide it; touch the bottom edge to reveal it until you move away, in either mode. This works with borderless fullscreen apps; exclusive fullscreen games may block overlays. With autohide on, turn on **Hide only when windows overlap** to keep the dock shown on an empty desktop.
 
 | Do this | To |
 | --- | --- |

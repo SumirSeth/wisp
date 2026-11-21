@@ -1875,3 +1875,41 @@ mod tests {
         assert_eq!(margin(100.0, 1.0), MAX_MARGIN);
     }
 }
+
+/// Borderless fullscreen fills the screen exactly, even when it retains the
+/// maximized style. Ordinary maximized windows include resize borders outside it.
+pub fn covers_screen(
+    rect: windows::Win32::Foundation::RECT,
+    screen: windows::Win32::Foundation::RECT,
+    maximized: bool,
+) -> bool {
+    let covers = rect.left <= screen.left
+        && rect.top <= screen.top
+        && rect.right >= screen.right
+        && rect.bottom >= screen.bottom;
+    covers && (!maximized || rect == screen)
+}
+#[cfg(test)]
+mod fullscreen_tests {
+    use super::*;
+    use windows::Win32::Foundation::RECT;
+    #[test]
+    fn fullscreen_survives_releasing_work_area_but_maximize_does_not_count() {
+        let screen = RECT {
+            left: -1920,
+            top: 0,
+            right: 0,
+            bottom: 1080,
+        };
+        assert!(covers_screen(screen, screen, false));
+        assert!(covers_screen(screen, screen, true));
+        let maximized = RECT {
+            left: -1928,
+            top: -8,
+            right: 8,
+            bottom: 1088,
+        };
+        assert!(!covers_screen(maximized, screen, true));
+        assert!(!covers_screen(RECT { bottom: 1000, ..screen }, screen, false));
+    }
+}
