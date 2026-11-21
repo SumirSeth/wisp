@@ -310,6 +310,39 @@ fn setting(command: &Command) -> Option<(std::mem::Discriminant<Command>, u32)> 
 }
 
 fn read_state() -> State {
+    // Capture runs must never read the owner's media or connected-device names.
+    if crate::util::perf::hook_on("WISP_CAPTURE") {
+        return State {
+            night_light: Some(true),
+            color_modes: Some([false; 2]),
+            wifi: Some(Some(wifi::State {
+                on: true,
+                network: Some("Home-5G".into()),
+                signal: Some(80),
+            })),
+            bluetooth: Some(Some(bluetooth::State {
+                on: true,
+                connected: vec!["AirPods Pro".into()],
+            })),
+            audio: Some(Some(audio::State {
+                volume: 62,
+                muted: false,
+                device: "Speakers".into(),
+            })),
+            media: Some(Some(media::State {
+                title: "Midnight City".into(),
+                artist: "M83".into(),
+                app: "Spotify".into(),
+                playing: true,
+            })),
+            battery: Some(Some(battery::State {
+                percent: 82,
+                plugged_in: true,
+                saver: false,
+            })),
+            ..State::default()
+        };
+    }
     State {
         night_light: night_light::read(),
         color_modes: appearance::read(),
