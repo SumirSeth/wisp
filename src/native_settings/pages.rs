@@ -17,7 +17,6 @@ impl Settings {
         let mut add =
             |id: &str, label: &str, hint: &str, kind: Kind| rows.push(Control::new(id, label, hint, kind, true));
         if let Some(step) = self.welcome {
-            add("progress", ["1 of 3", "2 of 3", "3 of 3"][step], "", Kind::Heading);
             if step == 0 {
                 add(
                     "intro",
@@ -113,12 +112,7 @@ impl Settings {
                         },
                     );
                 }
-                add(
-                    "advanced",
-                    "Advanced",
-                    "",
-                    Kind::Button(if self.advanced { "\u{2304}" } else { "›" }.into()),
-                );
+                add("advanced", "Advanced", "", Kind::Button(String::new()));
                 if self.advanced {
                     add(
                         "dock_margin",

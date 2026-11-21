@@ -45,15 +45,19 @@ impl Control {
 pub fn layout(controls: &mut [Control], width: f32) -> f32 {
     let mut y = 72.;
     let mut previous = D2D_RECT_F::default();
+    let mut field_top = 44.;
     for c in controls {
-        if c.id == "record" {
+        if inline(&c.id) {
             c.rect = D2D_RECT_F {
                 left: previous.right - 92.,
-                top: previous.top + 44.,
+                top: previous.top + field_top,
                 right: previous.right - 12.,
-                bottom: previous.top + 76.,
+                bottom: previous.top + field_top + 32.,
             };
             continue;
+        }
+        if matches!(c.kind, Kind::Text(_)) {
+            field_top = text_field_top(c);
         }
         if let Some(column) = ["red", "green", "blue", "alpha"].iter().position(|id| *id == c.id) {
             let span = ((width - 32.).max(260.) - 228.) / 4.;
@@ -75,13 +79,13 @@ pub fn layout(controls: &mut [Control], width: f32) -> f32 {
         } else if matches!(c.kind, Kind::Heading) {
             if c.label.len() > 100 {
                 112.
-            } else if c.id == "launcher" {
+            } else if y == 72. && c.hint.is_empty() {
                 28.
             } else {
                 56.
             }
         } else if matches!(c.kind, Kind::Text(_)) {
-            if c.hint.is_empty() { 88. } else { 112. }
+            text_field_top(c) + 44.
         } else if matches!(c.kind, Kind::Slider { .. }) || !c.hint.is_empty() {
             68.
         } else if matches!(c.kind, Kind::Select { .. }) {
@@ -99,6 +103,14 @@ pub fn layout(controls: &mut [Control], width: f32) -> f32 {
         y += height;
     }
     y + 24.
+}
+/// Buttons drawn beside the text field above them, such as Record and Add.
+pub fn inline(id: &str) -> bool {
+    matches!(id, "record" | "add-folder")
+}
+/// A text row stacks label, hint and field; the field moves down for a hint.
+pub fn text_field_top(c: &Control) -> f32 {
+    if c.hint.is_empty() { 44. } else { 62. }
 }
 pub fn next_focus(controls: &[Control], current: Option<usize>, backwards: bool) -> Option<usize> {
     let order: Vec<_> = controls

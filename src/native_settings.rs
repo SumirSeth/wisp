@@ -175,7 +175,11 @@ fn open_path(page: usize, path: PathBuf, preview: bool) -> Result<()> {
         AdjustWindowRectExForDpi(&mut bounds, WS_OVERLAPPEDWINDOW, false, WINDOW_EX_STYLE::default(), dpi)?;
         let width = bounds.right - bounds.left;
         let height = bounds.bottom - bounds.top;
-        let title = windows::core::HSTRING::from(format!("{} Settings", crate::channel::NAME));
+        let title = windows::core::HSTRING::from(if page == 4 {
+            format!("Welcome to {}", crate::channel::NAME)
+        } else {
+            format!("{} Settings", crate::channel::NAME)
+        });
         let hwnd = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             class,
@@ -1007,7 +1011,7 @@ impl Settings {
                         if let Some(r) = group.take() {
                             card(r);
                         }
-                    } else if c.id != "record" {
+                    } else if !controls::inline(&c.id) {
                         group = Some(match group {
                             Some(r) => D2D_RECT_F {
                                 bottom: c.rect.bottom,
@@ -1043,7 +1047,7 @@ impl Settings {
                         );
                     }
                     let fg = if c.enabled { p.text } else { p.placeholder };
-                    if (i < 4 && i == page) || c.id == "record" {
+                    if (i < 4 && i == page) || controls::inline(&c.id) {
                         brush.SetColor(&p.tile);
                         rt.FillRoundedRectangle(
                             &D2D1_ROUNDED_RECT {
@@ -1122,7 +1126,13 @@ impl Settings {
                                 } else {
                                     &fm.section
                                 },
-                                if c.id == "error" { &p.accent } else { &p.subtext },
+                                if c.id == "error" {
+                                    &p.accent
+                                } else if c.id == "version" || c.id == "intro" {
+                                    &p.text
+                                } else {
+                                    &p.subtext
+                                },
                             );
                         }
                         Kind::Link(s) => {
@@ -1204,7 +1214,21 @@ impl Settings {
                                 &brush,
                             );
                         }
-                        Kind::Button(s) if c.id == "record" => {
+                        Kind::Button(_) if c.id == "advanced" => {
+                            text(&c.label, label, title, &fg);
+                            text(
+                                if self.advanced { "\u{E70E}" } else { "\u{E70D}" },
+                                D2D_RECT_F {
+                                    left: r.right - 60.,
+                                    top: r.top,
+                                    right: r.right - 18.,
+                                    bottom: r.bottom,
+                                },
+                                &fm.chevron,
+                                &p.subtext,
+                            );
+                        }
+                        Kind::Button(s) if controls::inline(&c.id) => {
                             let mut fill = p.divider;
                             fill.a *= 0.6;
                             brush.SetColor(&fill);
@@ -1383,15 +1407,21 @@ impl Settings {
                         }
                         Kind::Text(s) => {
                             let label = D2D_RECT_F {
-                                right: label.right - if c.id == "hotkey" { 92. } else { 0. },
+                                right: label.right
+                                    - if self.controls.get(i + 1).is_some_and(|n| controls::inline(&n.id)) {
+                                        92.
+                                    } else {
+                                        0.
+                                    },
                                 ..label
                             };
                             text(&c.label, label, title, &fg);
+                            let field_top = r.top + controls::text_field_top(c);
                             let field = D2D_RECT_F {
                                 left: label.left,
-                                top: r.top + 44.,
+                                top: field_top,
                                 right: label.right,
-                                bottom: r.top + 76.,
+                                bottom: field_top + 32.,
                             };
                             brush.SetColor(&p.divider);
                             rt.DrawRoundedRectangle(
@@ -1416,15 +1446,16 @@ impl Settings {
                                 right: field.right - 12.,
                                 ..label
                             };
+                            let placeholder = shown.is_empty() && c.id == "folder";
                             text(
-                                shown,
+                                if placeholder { "Folder name" } else { shown },
                                 D2D_RECT_F {
-                                    top: r.top + 44.,
-                                    bottom: r.top + 76.,
+                                    top: field.top,
+                                    bottom: field.bottom,
                                     ..label
                                 },
                                 title,
-                                &fg,
+                                if placeholder { &p.placeholder } else { &fg },
                             );
                             if focus == Some(i) {
                                 let units: Vec<_> = edit.encode_utf16().collect();
@@ -1480,7 +1511,14 @@ impl Settings {
                     if !c.hint.is_empty() && !matches!(c.kind, Kind::Slider { .. }) {
                         text(
                             &c.hint,
-                            if matches!(c.kind, Kind::Text(_) | Kind::Heading) {
+                            if matches!(c.kind, Kind::Text(_)) {
+                                D2D_RECT_F {
+                                    left: r.left + 16.,
+                                    top: label.bottom,
+                                    right: r.right - 12.,
+                                    bottom: label.bottom + 18.,
+                                }
+                            } else if matches!(c.kind, Kind::Heading) {
                                 D2D_RECT_F {
                                     left: r.left + 16.,
                                     top: r.bottom - 24.,
@@ -1512,7 +1550,7 @@ impl Settings {
                         );
                     }
                     if i >= 4 {
-                        if c.id != "record"
+                        if !controls::inline(&c.id)
                             && !matches!(c.kind, Kind::Heading)
                             && self
                                 .controls
