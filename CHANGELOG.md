@@ -6,7 +6,7 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ### New
 
-- `dock_margin` in the config and a slider in Settings set the gap below the dock, from 0 to 24 DIP. At 0 the dock sits on the screen edge, and with the dock kept visible, maximized windows get the space back. (#126, by @SorbetMango, fixes #125)
+- `dock_margin` in the config, or **Gap below the dock** under Appearance › Advanced in Settings, sets the gap below the dock, from 0 to 24 DIP. At 0 the dock sits on the screen edge, and with the dock kept visible, maximized windows get the space back. (#126, by @SorbetMango, fixes #125)
 
 ## 0.8.2 - 2026-11-20
 

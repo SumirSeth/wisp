@@ -540,10 +540,23 @@ impl Settings {
         }
     }
 
-    /// The Advanced section's rows: the switch, then the color while it is on.
+    /// The Advanced section's rows: the gap below the dock, the color switch,
+    /// then the color while it is on.
     fn advanced_rows(&self, p: Palette, cx: &mut Context<Self>) -> Div {
         let custom = !self.config.dock_color.trim().is_empty();
         v_flex()
+            .child(divider(p))
+            .child(
+                item(
+                    "Gap below the dock",
+                    match self.config.dock_margin {
+                        0 => "On the edge".to_string(),
+                        gap => format!("{gap} DIP"),
+                    },
+                    p,
+                )
+                .child(Slider::new(&self.dock_margin).accessibility_label("Gap below the dock")),
+            )
             .child(divider(p))
             .child(row(
                 "Custom dock color",
@@ -1127,18 +1140,6 @@ impl Settings {
                             })),
                         p,
                     ))
-                    .child(divider(p))
-                    .child(
-                        item(
-                            "Gap below the dock",
-                            match self.config.dock_margin {
-                                0 => "On the edge".to_string(),
-                                gap => format!("{gap} DIP"),
-                            },
-                            p,
-                        )
-                        .child(Slider::new(&self.dock_margin).accessibility_label("Gap below the dock")),
-                    )
                     .child(divider(p))
                     .child(row(
                         "Screen",
