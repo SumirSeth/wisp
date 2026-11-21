@@ -6,13 +6,12 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ### New
 
-- Right-click a result, or press Tab, for more actions such as Pin to dock. The selected result shows Tab when it has more. (#127)
-
 - `dock_margin` in the config, or **Gap below the dock** under Appearance › Advanced in Settings, sets the gap below the dock, from 0 to 24 DIP. At 0 the dock sits on the screen edge, and with the dock kept visible, maximized windows get the space back. (#126, by @SorbetMango, fixes #125)
 - With autohide on, the dock can stay up until a window covers it: turn on **Hide only when windows overlap**. (#128, fixes #110)
 - Touching the bottom edge brings up the dock over fullscreen apps, also with **Keep the dock visible** on. (#129, fixes #114)
 - Now opens the Sound controls in place, under its volume slider. (#130, fixes #100)
 - Apps can be pinned to the dock from the launcher without opening them: select one and press Tab. (#127, part of #109)
+- Right-click a result, or press Tab, for more actions such as Pin to dock. The selected result shows Tab when it has more. (#127)
 
 ## 0.8.2 - 2026-11-20
 
