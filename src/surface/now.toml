@@ -15,6 +15,9 @@ kind = "wifi"
 kind = "bluetooth"
 
 [[part]]
+kind = "volume"
+
+[[part]]
 kind = "sound"
 
 [[part]]

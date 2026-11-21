@@ -2242,7 +2242,12 @@ impl Launcher {
         } else {
             surface::resolve(spec, &self.command_state, self.editor.text())
         };
-        if open.parent.is_some() && self.radios.wifi.is_none() {
+        if spec.title == "Sound"
+            && open
+                .parent
+                .and_then(|index| self.surfaces.specs.get(index))
+                .is_some_and(|parent| parent.title == "Now")
+        {
             open.widgets.push(surface::back_widget());
         }
         open.rects = nav::layout(&open.widgets, crate::render::surface_width());

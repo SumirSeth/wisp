@@ -109,7 +109,7 @@ To open Wisp with the Windows key instead, turn on **Use Win key** in Settings. 
 
 Type `now`, or click the status icons in the dock. **Now** shows the time, battery, Wi-Fi, Bluetooth, volume and media.
 
-- **Sound**: select it to adjust volume, choose an output device or change an app?s volume in place. Press <kbd>Esc</kbd> or choose **Back to Now** to return.
+- **Sound**: select it to adjust volume, choose an output device or change an app’s volume in place. Press <kbd>Esc</kbd> or choose **Back to Now** to return.
 - **Wi-Fi**: select a network to connect or disconnect. New networks ask for their password in place. Enterprise networks open Windows Wi-Fi settings.
 - **Bluetooth**: select a paired audio device to connect or disconnect it. Other devices open Bluetooth settings.
 

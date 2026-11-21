@@ -508,7 +508,7 @@ fn widgets(part: &Part, state: &State) -> Vec<Widget> {
         Part::Sound => {
             let detail = match &state.audio {
                 Some(Some(audio)) => format!(
-                    "{} ? {}",
+                    "{} · {}",
                     audio.device,
                     if audio.muted {
                         "Muted".into()
@@ -517,7 +517,7 @@ fn widgets(part: &Part, state: &State) -> Vec<Widget> {
                     }
                 ),
                 Some(None) => "No output device".into(),
-                None => "Checking?".into(),
+                None => "Checking…".into(),
             };
             vec![Widget::new(
                 "Sound",
@@ -715,7 +715,20 @@ mod tests {
         let now = library.specs.iter().position(|s| s.title == "Now").unwrap();
         let sound = library.specs.iter().position(|s| s.title == "Sound").unwrap();
         let widgets = resolve(&library.specs[now], &state(), "");
-        let link = widgets.iter().find(|w| w.label == "Sound").unwrap();
+        let volume = widgets
+            .iter()
+            .position(|w| {
+                matches!(
+                    w.input,
+                    Input::Slider {
+                        target: Target::Master,
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        assert_eq!(widgets[volume + 1].label, "Sound");
+        let link = &widgets[volume + 1];
         assert_eq!(link.activate(0), Some(Action::SoundView));
         assert!(link.detail.contains("40%"));
         assert_eq!(parent_index(&library.specs, Some(now), sound), Some(now));
@@ -741,6 +754,29 @@ mod tests {
         assert_eq!(back.activate(0), Some(Action::SurfaceBack));
         let rects = nav::layout(&[link.clone(), back], 480.0);
         assert_eq!(nav::neighbour(&rects, 0, nav::Direction::Down), Some(1));
+    }
+
+    #[test]
+    fn user_now_without_sound_keeps_its_volume_controls() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("now.toml"),
+            "title = 'Now'\n[[part]]\nkind = 'volume'\n",
+        )
+        .unwrap();
+        let library = Library::load_from(dir.path());
+        assert!(library.errors.is_empty());
+        let now = library.specs.iter().find(|s| s.title == "Now").unwrap();
+        let widgets = resolve(now, &state(), "");
+        assert_eq!(widgets.len(), 1);
+        assert!(matches!(
+            widgets[0].input,
+            Input::Slider {
+                target: Target::Master,
+                ..
+            }
+        ));
+        assert!(library.specs.iter().any(|s| s.title == "Sound"));
     }
 
     #[test]
