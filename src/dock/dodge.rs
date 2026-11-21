@@ -16,6 +16,7 @@ use windows::{
 };
 thread_local! {
     static TARGET: Cell<HWND> = const { Cell::new(HWND(std::ptr::null_mut())) };
+    static FOREGROUND_HOOK: Cell<(HWINEVENTHOOK, u32)> = const { Cell::new((HWINEVENTHOOK(std::ptr::null_mut()), 0)) };
     static PENDING: Cell<bool> = const { Cell::new(false) };
 }
 pub fn ready() {
@@ -31,7 +32,7 @@ impl Watch {
         ready();
         let mut hooks = Vec::new();
         for (first, last) in [
-            (EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE),
+            (EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZEEND),
             (EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND),
             (EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND),
             (EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE),
@@ -52,6 +53,7 @@ impl Watch {
                 hooks.push(hook);
             }
         }
+        track_foreground();
         let desktop = unsafe { CoCreateInstance(&VirtualDesktopManager, None, CLSCTX_INPROC_SERVER) }.ok();
         Self { hooks, desktop }
     }
@@ -71,6 +73,12 @@ impl Drop for Watch {
     fn drop(&mut self) {
         TARGET.set(HWND::default());
         ready();
+        let (hook, _) = FOREGROUND_HOOK.replace((HWINEVENTHOOK::default(), 0));
+        if !hook.is_invalid() {
+            unsafe {
+                let _ = UnhookWinEvent(hook);
+            }
+        }
         for hook in self.hooks.drain(..) {
             unsafe {
                 let _ = UnhookWinEvent(hook);
@@ -78,7 +86,43 @@ impl Drop for Watch {
         }
     }
 }
+/// Follow moves in the active process without subscribing to every process's
+/// cursor and caret events. Background moves catch up on the next global event.
+fn track_foreground() {
+    unsafe {
+        let mut pid = 0;
+        GetWindowThreadProcessId(GetForegroundWindow(), Some(&mut pid));
+        let pid = if pid == std::process::id() { 0 } else { pid };
+        let (hook, hooked) = FOREGROUND_HOOK.get();
+        if pid != hooked || hook.is_invalid() != (pid == 0) {
+            if !hook.is_invalid() {
+                let _ = UnhookWinEvent(hook);
+            }
+            let hook = if pid == 0 {
+                HWINEVENTHOOK::default()
+            } else {
+                SetWinEventHook(
+                    EVENT_OBJECT_LOCATIONCHANGE,
+                    EVENT_OBJECT_LOCATIONCHANGE,
+                    None,
+                    Some(changed),
+                    pid,
+                    0,
+                    WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+                )
+            };
+            FOREGROUND_HOOK.set((hook, pid));
+        }
+    }
+}
 unsafe extern "system" fn changed(_: HWINEVENTHOOK, event: u32, hwnd: HWND, object: i32, child: i32, _: u32, _: u32) {
+    let target = TARGET.get();
+    if target.is_invalid() {
+        return;
+    }
+    if event == EVENT_SYSTEM_FOREGROUND {
+        track_foreground();
+    }
     if event >= EVENT_OBJECT_CREATE
         && (object != OBJID_WINDOW.0
             || child != 0
@@ -86,8 +130,7 @@ unsafe extern "system" fn changed(_: HWINEVENTHOOK, event: u32, hwnd: HWND, obje
     {
         return;
     }
-    let target = TARGET.get();
-    if !target.is_invalid() && !PENDING.replace(true) {
+    if !PENDING.replace(true) {
         unsafe {
             let _ = PostMessageW(Some(target), WM_DOCK_DODGE, WPARAM(0), LPARAM(0));
         }
