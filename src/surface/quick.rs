@@ -131,11 +131,22 @@ pub fn widgets(state: &State) -> Vec<Widget> {
         ),
         (3, "Power saver", glyph::POWER_SAVER, saver, Command::PowerSaver(!saver)),
     ] {
-        out.push(tile(
-            Slot::Small(col),
-            label,
-            Widget::new(label, "", icon, Input::Toggle { on, command: cmd }),
-        ));
+        let mut body = Widget::new(label, "", icon, Input::Toggle { on, command: cmd });
+        if col == 3 {
+            let plugged_in = state
+                .plugged_in
+                .or_else(|| state.battery.flatten().map(|b| b.plugged_in));
+            if plugged_in != Some(false) {
+                body.input = Input::Disabled;
+                body.detail = if plugged_in == Some(true) {
+                    "Plugged in"
+                } else {
+                    "Unavailable"
+                }
+                .into();
+            }
+        }
+        out.push(tile(Slot::Small(col), label, body));
     }
     if let Some(mut volume) = super::widgets(&Part::Volume, state).pop() {
         volume.detail.clear();
@@ -251,6 +262,8 @@ mod tests {
                 muted: false,
                 device: "Speakers".into(),
             })),
+            power_saver: Some(false),
+            plugged_in: Some(false),
             night_light: Some(true),
             color_modes: Some([false; 2]),
             ..State::default()
@@ -303,35 +316,64 @@ mod tests {
         );
     }
     #[test]
-    fn saver_tile_tracks_ac_and_batteryless_states() {
+    fn saver_tile_tracks_supply_changes_and_batteryless_pcs() {
         for battery in [
             None,
             Some(crate::commands::battery::State {
                 percent: 82,
-                plugged_in: true,
-                saver: true,
+                plugged_in: false,
+                saver: false,
             }),
         ] {
-            for on in [false, true] {
-                let state = State {
-                    power_saver: Some(on),
-                    battery: Some(battery),
-                    ..State::default()
-                };
-                let widgets = widgets(&state);
-                let tile = &widgets[index(&widgets, Slot::Small(3))];
-                assert_eq!(tile.label, "Power saver");
-                assert!(
-                    matches!(tile.input, Input::Toggle { on: shown, command: Command::PowerSaver(target) } if shown == on && target != on)
-                );
-                assert!(Command::PowerSaver(!on).stays_open());
-                let footer: Vec<_> = widgets
-                    .iter()
-                    .filter(|w| matches!(w.quick, Some(Slot::Footer(_))))
-                    .map(|w| w.label.as_str())
-                    .collect();
-                assert_eq!(footer, ["Lock", "Sleep", "Restart", "Shut down", "Wisp Settings"]);
+            let mut state = State {
+                battery: Some(battery),
+                ..state()
+            };
+            // Plugging and unplugging rebuild the same tile from fresh supply status.
+            for plugged_in in [false, true, false] {
+                state.plugged_in = Some(plugged_in);
+                for on in [false, true] {
+                    state.power_saver = Some(on);
+                    let widgets = widgets(&state);
+                    let tile = &widgets[index(&widgets, Slot::Small(3))];
+                    assert_eq!(tile.label, "Power saver");
+                    assert_eq!(tile.stops(), 1); // Focusable, including when unavailable.
+                    if plugged_in {
+                        assert_eq!(tile.input, Input::Disabled);
+                        assert_eq!(tile.detail, "Plugged in");
+                        // Enter and click both go through activate.
+                        assert_eq!(tile.activate(0), None);
+                    } else {
+                        assert!(matches!(tile.input, Input::Toggle { on: shown, .. } if shown == on));
+                        assert_eq!(tile.activate(0), Some(Action::Command(Command::PowerSaver(!on))));
+                        assert!(tile.detail.is_empty());
+                    }
+                }
             }
+        }
+    }
+    #[test]
+    fn unknown_supply_is_unavailable_and_battery_supply_is_a_fallback() {
+        let mut state = State {
+            power_saver: Some(false),
+            ..State::default()
+        };
+        let tiles = widgets(&state);
+        let tile = &tiles[index(&tiles, Slot::Small(3))];
+        assert_eq!(tile.input, Input::Disabled);
+        assert_eq!(tile.detail, "Unavailable");
+        assert_eq!(tile.activate(0), None);
+        for plugged_in in [true, false] {
+            state.battery = Some(Some(crate::commands::battery::State {
+                percent: 50,
+                plugged_in,
+                saver: false,
+            }));
+            let tiles = widgets(&state);
+            assert_eq!(
+                matches!(tiles[index(&tiles, Slot::Small(3))].input, Input::Disabled),
+                plugged_in
+            );
         }
     }
     #[test]

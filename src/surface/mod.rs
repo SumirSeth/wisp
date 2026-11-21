@@ -97,6 +97,8 @@ impl Target {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Input {
+    /// Unavailable control; remains focusable to expose its detail.
+    Disabled,
     /// Shows a value, such as the time.
     Info {
         value: String,
@@ -199,7 +201,7 @@ impl Widget {
     /// The command or action Enter runs, with the cursor at `stop`.
     pub fn activate(&self, stop: usize) -> Option<Action> {
         match &self.input {
-            Input::Info { .. } => None,
+            Input::Disabled | Input::Info { .. } => None,
             Input::Toggle { command, .. } => Some(Action::Command(command.clone())),
             Input::Slider { muted, target, .. } => match target {
                 Target::Master => Some(Action::Command(Command::Mute(!muted))),

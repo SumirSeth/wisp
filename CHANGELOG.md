@@ -12,7 +12,7 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 - Now opens the Sound controls in place, under its volume slider. (#130, fixes #100)
 - Apps can be pinned to the dock from the launcher without opening them: select one and press Tab. (#127, part of #109)
 - Right-click a result, or press Tab, for more actions such as Pin to dock. The selected result shows Tab when it has more. (#127)
-- Now is laid out like quick settings: tiles for Wi-Fi, Bluetooth, Night light, Dark mode, Mute and Power saver, what's playing, and volume with its output. Lock, Sleep, Restart and Shut down sit along the bottom. (#132, #134, fixes #109)
+- Now is laid out like quick settings: tiles for Wi-Fi, Bluetooth, Night light, Dark mode, Mute and Power saver, what's playing, and volume with its output. Power saver is greyed out while plugged in. Lock, Sleep, Restart and Shut down sit along the bottom. (#132, #134, fixes #109)
 
 ## 0.8.2 - 2026-11-20
 

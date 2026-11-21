@@ -256,6 +256,10 @@ pub(super) unsafe fn draw(
             }
             Slot::Radio(_) | Slot::Small(_) => {
                 let small = matches!(slot, Slot::Small(_));
+                let disabled = matches!(widget.input, Input::Disabled);
+                let mut muted = p.subtext;
+                muted.a *= 0.55;
+                let label_color = if disabled { &muted } else { &p.text };
                 let on = matches!(widget.input, Input::Toggle { on: true, .. });
                 let (cx, cy) = if small {
                     ((l + right) / 2.0, top + 26.0)
@@ -275,15 +279,38 @@ pub(super) unsafe fn draw(
                     widget.glyph,
                     2,
                     rect(cx - 12.0, cy - 12.0, cx + 12.0, cy + 12.0),
-                    if on { &p.background_solid } else { &p.subtext },
+                    if disabled {
+                        &muted
+                    } else if on {
+                        &p.background_solid
+                    } else {
+                        &p.subtext
+                    },
                 )?;
                 if small {
                     text(
                         &widget.label,
                         4,
-                        rect(l + 8.0, top + 48.0, right - 8.0, bottom - 4.0),
-                        &p.text,
+                        rect(
+                            l + 8.0,
+                            top + 48.0,
+                            right - 8.0,
+                            if widget.detail.is_empty() {
+                                bottom - 4.0
+                            } else {
+                                top + 65.0
+                            },
+                        ),
+                        label_color,
                     )?;
+                    if !widget.detail.is_empty() {
+                        text(
+                            &widget.detail,
+                            4,
+                            rect(l + 8.0, top + 65.0, right - 8.0, bottom),
+                            &p.subtext,
+                        )?;
+                    }
                 } else {
                     text(
                         &widget.label,

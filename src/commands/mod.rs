@@ -126,6 +126,8 @@ pub struct State {
     pub night_light: Option<bool>,
     /// Saver state is independent of battery presence and AC/DC supply.
     pub power_saver: Option<bool>,
+    /// AC supply, also reported on PCs without a battery.
+    pub plugged_in: Option<bool>,
     pub color_modes: Option<[bool; 2]>,
     pub wifi: Option<Option<wifi::State>>,
     pub bluetooth: Option<Option<bluetooth::State>>,
@@ -321,6 +323,7 @@ fn read_state() -> State {
     if crate::util::perf::hook_on("WISP_CAPTURE") {
         return State {
             power_saver: Some(false),
+            plugged_in: Some(true),
             night_light: Some(true),
             color_modes: Some([false; 2]),
             wifi: Some(Some(wifi::State {
@@ -353,6 +356,7 @@ fn read_state() -> State {
     }
     State {
         power_saver: power_saver::read(),
+        plugged_in: power_saver::plugged_in(),
         night_light: night_light::read(),
         color_modes: appearance::read(),
         wifi: Some(wifi::state()),

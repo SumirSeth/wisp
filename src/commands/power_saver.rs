@@ -1,8 +1,8 @@
-//! Energy Saver status (including AC on 24H2+) and the legacy threshold fallback.
+//! Energy Saver status (including AC on 24H2+) and the battery threshold fallback.
 //!
 //! There is no documented direct saver setter. Unlike a power-mode overlay,
 //! ESBATTTHRESHOLD actually requests saver. On systems exposing that setting,
-//! requests apply 100% (on) or 0% (off), then restore the stored threshold
+//! battery requests apply 100% (on) or 0% (off), then restore the stored threshold
 //! without reapplying it. A subsequent plan reload resumes the user's policy.
 //! Failed requests also reapply the original threshold. We never change brightness,
 //! switch plans, elevate, or invent settings missing on newer Windows builds.
@@ -92,6 +92,22 @@ pub fn read() -> Option<bool> {
     })
 }
 
+/// Supply status is independent of battery presence (including desktop PCs).
+pub fn plugged_in() -> Option<bool> {
+    if crate::util::perf::hook_on("WISP_CAPTURE") {
+        return Some(true);
+    }
+    let mut status = SYSTEM_POWER_STATUS::default();
+    unsafe {
+        GetSystemPowerStatus(&mut status).ok()?;
+    }
+    match status.ACLineStatus {
+        0 => Some(false),
+        1 => Some(true),
+        _ => None,
+    }
+}
+
 pub fn set(on: bool) -> Result<(), String> {
     let Some(current) = read() else {
         return Ok(());
@@ -104,9 +120,11 @@ pub fn set(on: bool) -> Result<(), String> {
     unsafe {
         GetSystemPowerStatus(&mut status).map_err(|e| e.message())?;
     }
-    // Only touch a setting Windows exposes, on a known supply. This also
-    // allows batteryless PCs with AC Energy Saver support to try the fallback.
-    if status.ACLineStatus > 1 {
+    // Windows supports AC saver through Settings on 24H2+, but does not
+    // document a direct setter. Live non-elevated testing on build 26300
+    // ignored AC ESBATTTHRESHOLD=100, even with ESPOLICY=Aggressive.
+    // Exposing those settings is not evidence that a toggle is supported.
+    if status.ACLineStatus != 0 {
         return Err(unsupported.into());
     }
     unsafe {
@@ -116,32 +134,24 @@ pub fn set(on: bool) -> Result<(), String> {
             .map_err(|e| e.message())?;
         let scheme = *allocated;
         let _ = LocalFree(Some(HLOCAL(allocated.cast())));
-        let ac = status.ACLineStatus == 1;
         let mut original = 0;
-        let result = if ac {
-            PowerReadACValueIndex(None, Some(&scheme), Some(&SUBGROUP), Some(&THRESHOLD), &mut original)
-        } else {
-            WIN32_ERROR(PowerReadDCValueIndex(
+        WIN32_ERROR(PowerReadDCValueIndex(
+            None,
+            Some(&scheme),
+            Some(&SUBGROUP),
+            Some(&THRESHOLD),
+            &mut original,
+        ))
+        .ok()
+        .map_err(|_| unsupported.to_string())?;
+        let write = |value| {
+            WIN32_ERROR(PowerWriteDCValueIndex(
                 None,
-                Some(&scheme),
+                &scheme,
                 Some(&SUBGROUP),
                 Some(&THRESHOLD),
-                &mut original,
+                value,
             ))
-        };
-        result.ok().map_err(|_| unsupported.to_string())?;
-        let write = |value| {
-            if ac {
-                PowerWriteACValueIndex(None, &scheme, Some(&SUBGROUP), Some(&THRESHOLD), value)
-            } else {
-                WIN32_ERROR(PowerWriteDCValueIndex(
-                    None,
-                    &scheme,
-                    Some(&SUBGROUP),
-                    Some(&THRESHOLD),
-                    value,
-                ))
-            }
             .ok()
         };
         write(if on { 100 } else { 0 }).map_err(|e| e.message())?;

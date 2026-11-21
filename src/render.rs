@@ -996,6 +996,23 @@ unsafe fn draw_surface(
             let text_x = left + 48.0;
 
             match &widget.input {
+                Input::Disabled => {
+                    brush.SetColor(&p.subtext);
+                    draw_text(
+                        rt,
+                        &widget.label,
+                        &fm.title,
+                        rect(text_x, top + 10.0, right - 12.0, top + 32.0),
+                        brush,
+                    );
+                    draw_text(
+                        rt,
+                        &widget.detail,
+                        &fm.subtitle,
+                        rect(text_x, top + 32.0, right - 12.0, top + 54.0),
+                        brush,
+                    );
+                }
                 Input::Info { value } => {
                     brush.SetColor(&p.subtext);
                     let label = if widget.detail.is_empty() {
