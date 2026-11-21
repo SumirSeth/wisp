@@ -290,7 +290,7 @@ mod tests {
     #[test]
     fn hidden_indices_exclude_the_dock_row() {
         assert_eq!(hidden_indices(5, &[1, 3]), [0, 2, 4]);
-        assert_eq!(hidden_indices(3, &[0, 1, 2]), []);
+        assert!(hidden_indices(3, &[0, 1, 2]).is_empty());
         assert_eq!(hidden_indices(2, &[]), [0, 1]);
     }
 

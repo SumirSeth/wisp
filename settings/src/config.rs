@@ -4,11 +4,8 @@ use std::{io::Write, path::PathBuf};
 
 use toml_edit::{DocumentMut, Value};
 
-#[allow(dead_code)]
-#[path = "../../src/dock/status_options.rs"]
-pub mod status_options;
-#[path = "../../src/config_write.rs"]
-mod write;
+use crate::config_write as write;
+use crate::status_options;
 use status_options::StatusPlacement;
 
 /// The launcher creates its config from the same file.
@@ -303,7 +300,8 @@ fn validate_edit(key: &str, value: &Value) -> Result<(), String> {
         "dock_margin" if !value.as_integer().is_some_and(|gap| (0..=24).contains(&gap)) => {
             return Err("Choose a gap between 0 and 24 DIP.".into());
         }
-        "theme"
+        "check_for_updates"
+        | "theme"
         | "backdrop"
         | "max_results"
         | "show_recent"

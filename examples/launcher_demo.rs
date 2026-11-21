@@ -7,6 +7,17 @@ mod calc;
 mod commands;
 #[path = "../src/config.rs"]
 mod config;
+#[path = "../src/config_write.rs"]
+mod config_write;
+#[path = "../src/native_settings.rs"]
+mod native_settings;
+#[path = "../settings/src/config.rs"]
+mod settings_config;
+#[path = "../settings/src/system.rs"]
+mod settings_system;
+#[path = "../src/dock/status_options.rs"]
+mod status_options;
+
 #[path = "../src/deferred.rs"]
 mod deferred;
 #[path = "../src/dock.rs"]
@@ -59,6 +70,8 @@ mod util;
 mod win_key;
 mod channel {
     use windows::core::{PCWSTR, w};
+    pub const NATIVE_SETTINGS_MESSAGE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 10;
+    pub const SETTINGS_CLASS: PCWSTR = w!("Wisp.Capture.Settings.Native");
     pub const NIGHTLY: bool = true;
     pub const NAME: &str = "Wisp capture";
     pub const DATA_DIR: &str = "wisp-demo";

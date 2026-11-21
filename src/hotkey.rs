@@ -2,6 +2,7 @@
 
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct Hotkey {
     pub modifiers: HOT_KEY_MODIFIERS,
     pub vk: u32,

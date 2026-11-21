@@ -154,8 +154,19 @@ pub fn run() -> Result<()> {
                     let mut pid = 0;
                     GetWindowThreadProcessId(existing, Some(&mut pid));
                     let _ = AllowSetForegroundWindow(pid);
-                    let msg = if flag("--quit") { WM_APP_QUIT } else { WM_APP_SHOW };
-                    let _ = PostMessageW(Some(existing), msg, WPARAM(0), LPARAM(0));
+                    let msg = if flag("--quit") {
+                        WM_APP_QUIT
+                    } else if flag("--settings-native") {
+                        crate::channel::NATIVE_SETTINGS_MESSAGE
+                    } else {
+                        WM_APP_SHOW
+                    };
+                    let _ = PostMessageW(
+                        Some(existing),
+                        msg,
+                        WPARAM(crate::native_settings::page_arg(&args)),
+                        LPARAM(0),
+                    );
                     return Ok(());
                 }
                 std::thread::sleep(Duration::from_millis(100));
@@ -306,7 +317,14 @@ pub fn run() -> Result<()> {
             if let Some(error) = config_error {
                 tray::notify(l.hwnd, "Wisp config", &error, true);
             }
-            if flag("--show") {
+            if flag("--settings-native") {
+                let _ = PostMessageW(
+                    Some(l.hwnd),
+                    crate::channel::NATIVE_SETTINGS_MESSAGE,
+                    WPARAM(crate::native_settings::page_arg(&args)),
+                    LPARAM(0),
+                );
+            } else if flag("--show") {
                 l.show();
             } else if first_run && let Err(error) = launch::settings(true) {
                 // Onboarding is optional. Without the settings app, Wisp starts as usual.
@@ -2908,7 +2926,14 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
         WM_NCHITTEST => return LRESULT(HTCLIENT as isize),
         WM_HOTKEY => {
             util::perf::input("hotkey_to_content");
-            with_launcher(Launcher::toggle);
+            if !crate::native_settings::record_hotkey(lparam) {
+                with_launcher(Launcher::toggle);
+            }
+        }
+        crate::channel::NATIVE_SETTINGS_MESSAGE => {
+            if let Err(error) = crate::native_settings::open(wparam.0) {
+                tray::notify(hwnd, "Could not open native Settings", &error.message(), true);
+            }
         }
         WM_APP_SHOW => {
             with_launcher(Launcher::show);

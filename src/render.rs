@@ -256,6 +256,56 @@ impl Renderer {
         }
     }
 
+    /// An independent, on-demand target for the retained Settings window.
+    pub fn settings_canvas(
+        &mut self,
+        hwnd: HWND,
+        logo: Option<&IconPixels>,
+        draw: impl FnOnce(
+            &ID2D1HwndRenderTarget,
+            &IDWriteFactory,
+            &IDWriteTextFormat,
+            &IDWriteTextFormat,
+            &IDWriteTextFormat,
+            &IDWriteTextFormat,
+        ) -> Result<()>,
+    ) -> Result<()> {
+        if self.target.is_none() {
+            self.target = Some(self.create_target(hwnd)?);
+        }
+        let Some(target) = &mut self.target else { return Ok(()) };
+        let rt = target.rt.clone();
+        unsafe {
+            rt.BeginDraw();
+        }
+        let result = draw(
+            &rt,
+            &self.dwrite,
+            &self.formats.title,
+            &self.formats.subtitle,
+            &self.formats.query,
+            &self.formats.glyph,
+        );
+        if let Some(logo) = logo {
+            unsafe {
+                if let Some(image) = bitmap(&mut target.bitmaps, &rt, "native-settings-logo", logo) {
+                    rt.DrawBitmap(
+                        &image,
+                        Some(&rect(24., 20., 46., 42.)),
+                        1.,
+                        D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                        None,
+                    );
+                }
+            }
+        }
+        let end = unsafe { rt.EndDraw(None, None) };
+        if end.as_ref().is_err_and(|e| e.code() == D2DERR_RECREATE_TARGET) {
+            self.target = None;
+        }
+        result.and(end)
+    }
+
     pub fn clear_icons(&mut self) {
         if let Some(target) = &mut self.target {
             target.bitmaps.clear();

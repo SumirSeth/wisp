@@ -1,7 +1,6 @@
 //! Matching and DIP geometry.
 
-#[path = "status_options.rs"]
-mod status_options;
+use crate::status_options;
 pub use status_options::{STATUS_ITEMS, StatusItem, StatusPlacement};
 
 use crate::config::WindowListMode;

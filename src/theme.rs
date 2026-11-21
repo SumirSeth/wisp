@@ -123,6 +123,19 @@ pub struct Palette {
 }
 
 impl Palette {
+    /// Settings keeps its existing black/paper palette and cyan focus treatment.
+    pub fn settings(dark: bool) -> Self {
+        let mut p = Self::new(dark, false);
+        p.background = rgba(if dark { 0x000000 } else { 0xfaf9f6 }, 0.96);
+        p.background_solid = rgba(if dark { 0x000000 } else { 0xffffff }, 1.);
+        p.tile = rgba(if dark { 0x0e0e0e } else { 0xffffff }, 1.);
+        p.divider = rgba(if dark { 0x232323 } else { 0xe6e4de }, 1.);
+        p.text = rgba(if dark { 0xf5f5f5 } else { 0x111111 }, 1.);
+        p.subtext = rgba(if dark { 0x8f8f8f } else { 0x6b6a66 }, 1.);
+        p.accent = rgba(if dark { 0x22d3ee } else { 0x0891b2 }, 1.);
+        p
+    }
+
     /// The palette for `dark` and `translucent`, recolored by `tint`. A
     /// translucent surface keeps the theme's own acrylic and lays the color
     /// over it at the tint's strength: at none it looks like the theme, at

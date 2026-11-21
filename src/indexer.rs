@@ -347,6 +347,24 @@ pub(crate) unsafe fn load_icon(item: &IShellItem, size: i32) -> Option<IconPixel
     }
 }
 
+/// The embedded Wisp icon, decoded through the same premultiplied pixel path as app icons.
+pub(crate) fn resource_icon() -> Option<IconPixels> {
+    use windows::Win32::{
+        System::LibraryLoader::GetModuleHandleW,
+        UI::WindowsAndMessaging::{GetIconInfo, ICONINFO, LoadIconW},
+    };
+    unsafe {
+        let module = GetModuleHandleW(None).ok()?;
+        let icon = LoadIconW(Some(module.into()), windows::core::PCWSTR(1 as _)).ok()?;
+        let mut info = ICONINFO::default();
+        GetIconInfo(icon, &mut info).ok()?;
+        let pixels = bitmap_pixels(info.hbmColor);
+        let _ = DeleteObject(info.hbmColor.into());
+        let _ = DeleteObject(info.hbmMask.into());
+        pixels
+    }
+}
+
 unsafe fn bitmap_pixels(bitmap: HBITMAP) -> Option<IconPixels> {
     unsafe {
         let mut info = BITMAP::default();

@@ -7,8 +7,7 @@ use serde::Deserialize;
 
 use crate::util;
 
-#[path = "config_write.rs"]
-mod write;
+use crate::config_write as write;
 
 /// wisp-settings includes the same file, so both apps create the same config.
 const DEFAULT_CONFIG: &str = include_str!("default-config.toml");

@@ -62,6 +62,7 @@ mod tests {
             WM_APP_COMMANDS,
             WM_APP_FRAME,
             crate::update_notice::MESSAGE,
+            crate::channel::NATIVE_SETTINGS_MESSAGE,
             WM_SHOW_LAUNCHER,
             WM_REFRESH,
             WM_TRAY_CHANGED,

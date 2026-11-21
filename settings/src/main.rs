@@ -11,10 +11,15 @@ mod pins;
 #[path = "../../src/channel.rs"]
 mod channel;
 mod config;
+#[path = "../../src/config_write.rs"]
+mod config_write;
 mod hotkey;
 #[path = "../../src/install.rs"]
 mod install;
 mod palette;
+#[allow(dead_code)]
+#[path = "../../src/dock/status_options.rs"]
+mod status_options;
 // Shared with the launcher, which also finds a screen by its ID.
 #[allow(dead_code)]
 #[path = "../../src/screens.rs"]
