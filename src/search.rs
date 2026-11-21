@@ -48,6 +48,8 @@ pub enum Action {
         path: Option<String>,
         admin: bool,
     },
+    SoundView,
+    SurfaceBack,
     Update,
     Copy(String),
     Open(String),

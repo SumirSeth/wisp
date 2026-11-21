@@ -59,6 +59,8 @@ pub enum Part {
     Bluetooth,
     /// The default output device's volume.
     Volume,
+    /// Opens the Sound controls inside the current surface.
+    Sound,
     /// Output devices to switch between.
     Outputs,
     /// One volume per app that plays sound.
@@ -334,6 +336,36 @@ impl Library {
     }
 }
 
+/// The same Back control works with mouse, Enter and the surface's arrow navigation.
+pub fn back_widget() -> Widget {
+    let mut widget = Widget::new(
+        "Back to Now",
+        "",
+        "\u{E72B}",
+        Input::Link {
+            action: Action::SurfaceBack,
+        },
+    );
+    widget.id = "surface:back".into();
+    widget.wide = true;
+    widget.footer = true;
+    widget
+}
+
+/// Radio lists return to Now as before; Sound returns only when opened from Now.
+pub fn parent_index(specs: &[Spec], current: Option<usize>, target: usize) -> Option<usize> {
+    let spec = specs.get(target)?;
+    let now = specs.iter().position(|s| s.title == "Now");
+    if spec.title == "Sound" && current == now {
+        return now;
+    }
+    spec.parts
+        .iter()
+        .any(|p| matches!(p, Part::Networks | Part::Devices))
+        .then_some(now)
+        .flatten()
+}
+
 /// Where the focus starts: the first widget that does something, so a
 /// clock or battery reading at the top does not hold it.
 pub fn first_control(widgets: &[Widget]) -> usize {
@@ -473,6 +505,29 @@ fn widgets(part: &Part, state: &State) -> Vec<Widget> {
                 )]
             }
         },
+        Part::Sound => {
+            let detail = match &state.audio {
+                Some(Some(audio)) => format!(
+                    "{} ? {}",
+                    audio.device,
+                    if audio.muted {
+                        "Muted".into()
+                    } else {
+                        format!("{}%", audio.volume)
+                    }
+                ),
+                Some(None) => "No output device".into(),
+                None => "Checking?".into(),
+            };
+            vec![Widget::new(
+                "Sound",
+                detail,
+                glyph::VOLUME,
+                Input::Link {
+                    action: Action::SoundView,
+                },
+            )]
+        }
         Part::Volume => match &state.audio {
             None => vec![checking("Volume", glyph::VOLUME)],
             Some(None) => Vec::new(),
@@ -651,6 +706,41 @@ mod tests {
             }],
             ..State::default()
         }
+    }
+
+    #[test]
+    fn now_opens_the_existing_sound_view_and_back_is_keyboard_accessible() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::load_from(dir.path());
+        let now = library.specs.iter().position(|s| s.title == "Now").unwrap();
+        let sound = library.specs.iter().position(|s| s.title == "Sound").unwrap();
+        let widgets = resolve(&library.specs[now], &state(), "");
+        let link = widgets.iter().find(|w| w.label == "Sound").unwrap();
+        assert_eq!(link.activate(0), Some(Action::SoundView));
+        assert!(link.detail.contains("40%"));
+        assert_eq!(parent_index(&library.specs, Some(now), sound), Some(now));
+        assert_eq!(parent_index(&library.specs, None, sound), None);
+        assert_eq!(parent_index(&library.specs, Some(sound), now), None);
+        let controls = resolve(&library.specs[sound], &state(), "");
+        assert!(controls.iter().any(|w| matches!(
+            w.input,
+            Input::Slider {
+                target: Target::Master,
+                ..
+            }
+        )));
+        assert!(controls.iter().any(|w| matches!(
+            w.input,
+            Input::Slider {
+                target: Target::App(7),
+                ..
+            }
+        )));
+        let back = back_widget();
+        assert_eq!(first_control(std::slice::from_ref(&back)), 0);
+        assert_eq!(back.activate(0), Some(Action::SurfaceBack));
+        let rects = nav::layout(&[link.clone(), back], 480.0);
+        assert_eq!(nav::neighbour(&rects, 0, nav::Direction::Down), Some(1));
     }
 
     #[test]

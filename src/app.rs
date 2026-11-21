@@ -470,6 +470,7 @@ struct OpenSurface {
     /// Index into `Launcher::surfaces`.
     index: usize,
     parent: Option<usize>,
+    parent_focus: Option<String>,
     widgets: Vec<Widget>,
     rects: Vec<Rect>,
     focus: usize,
@@ -1538,6 +1539,16 @@ impl Launcher {
                 }
                 result
             }
+            Action::SoundView => {
+                if let Some(index) = self.surfaces.specs.iter().position(|s| s.title == "Sound") {
+                    self.open_surface(index);
+                }
+                return;
+            }
+            Action::SurfaceBack => {
+                self.leave_surface();
+                return;
+            }
             Action::Update => launch::update_settings(),
             Action::Copy(text) => system::set_clipboard(self.hwnd, text),
             Action::Open(target) => launch::open(target),
@@ -2140,7 +2151,13 @@ impl Launcher {
                 _ => None,
             })
         });
-        let parent = radio.and_then(|_| self.surfaces.specs.iter().position(|s| s.title == "Now"));
+        let parent = surface::parent_index(&self.surfaces.specs, self.surface.as_ref().map(|s| s.index), index);
+        let parent_focus = self
+            .surface
+            .as_ref()
+            .filter(|s| Some(s.index) == parent)
+            .and_then(|s| s.widgets.get(s.focus))
+            .map(|w| w.id.clone());
         let query = self
             .surface
             .as_ref()
@@ -2154,6 +2171,7 @@ impl Launcher {
         self.surface = Some(OpenSurface {
             index,
             parent,
+            parent_focus,
             widgets: Vec::new(),
             rects: Vec::new(),
             focus: 0,
@@ -2187,6 +2205,14 @@ impl Launcher {
             self.editor.select_all();
             self.editor.insert(&open.query);
             self.open_surface(parent);
+            if let Some(id) = open.parent_focus
+                && let Some(index) = self
+                    .surface
+                    .as_ref()
+                    .and_then(|s| s.widgets.iter().position(|w| w.id == id))
+            {
+                self.focus_widget(index);
+            }
             return true;
         }
         unsafe {
@@ -2216,6 +2242,9 @@ impl Launcher {
         } else {
             surface::resolve(spec, &self.command_state, self.editor.text())
         };
+        if open.parent.is_some() && self.radios.wifi.is_none() {
+            open.widgets.push(surface::back_widget());
+        }
         open.rects = nav::layout(&open.widgets, crate::render::surface_width());
         let same = focused
             .as_ref()
