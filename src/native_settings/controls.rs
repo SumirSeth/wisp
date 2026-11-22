@@ -84,6 +84,8 @@ pub fn layout(controls: &mut [Control], width: f32) -> f32 {
                 112.
             } else if y == 72. && c.hint.is_empty() {
                 28.
+            } else if section(c) {
+                48.
             } else {
                 56.
             }
@@ -106,6 +108,24 @@ pub fn layout(controls: &mut [Control], width: f32) -> f32 {
         y += height;
     }
     y + 24.
+}
+/// The box a select row draws its value in, at the row's right edge.
+pub fn select_field(r: &D2D_RECT_F) -> D2D_RECT_F {
+    let mid = (r.top + r.bottom) / 2.;
+    D2D_RECT_F {
+        left: r.right - 240.,
+        top: mid - 16.,
+        right: r.right - 16.,
+        bottom: mid + 16.,
+    }
+}
+/// A short heading without a hint names the card below it.
+pub fn section(c: &Control) -> bool {
+    matches!(c.kind, Kind::Heading)
+        && c.hint.is_empty()
+        && !c.label.is_empty()
+        && c.label.len() < 40
+        && c.id != "version"
 }
 /// Buttons drawn beside the text field above them, such as Record and Add.
 pub fn inline(id: &str) -> bool {

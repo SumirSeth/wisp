@@ -84,7 +84,7 @@ impl Settings {
         }
         match self.page {
             1 => {
-                add("look", "LOOK", "", Kind::Heading);
+                add("look", "Look", "", Kind::Heading);
                 for (id, label, hint, values, current) in [
                     (
                         "theme",
@@ -164,7 +164,7 @@ impl Settings {
                         }
                     }
                 }
-                add("results", "RESULTS", "", Kind::Heading);
+                add("results", "Results", "", Kind::Heading);
                 add(
                     "max_results",
                     "Visible results",
@@ -177,7 +177,7 @@ impl Settings {
                 );
             }
             2 => {
-                add("apps-web", "APPS AND WEB", "", Kind::Heading);
+                add("apps-web", "Apps and web", "", Kind::Heading);
                 add(
                     "show_recent",
                     "Recent apps",
@@ -190,7 +190,7 @@ impl Settings {
                     "Wisp replaces {query} with your search text.",
                     Kind::Text(c.search_url.clone()),
                 );
-                add("files", "FILES", "", Kind::Heading);
+                add("files", "Files", "", Kind::Heading);
                 add("file_search", "File search", "", Kind::Toggle(c.file_search));
                 add(
                     "file_search_everything",

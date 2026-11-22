@@ -78,6 +78,8 @@ struct Settings {
     pending_color: Option<String>,
     welcome: Option<usize>,
     hover: Option<usize>,
+    /// The focus ring shows only after Tab, never after a click.
+    focus_visible: bool,
     pressed: Option<usize>,
     updates: Updates,
     update_rx: Option<std::sync::mpsc::Receiver<UpdateEvent>>,
@@ -112,7 +114,7 @@ impl Formats {
                 body: f(fonts.text, 14.0, DWRITE_FONT_WEIGHT_NORMAL)?,
                 center,
                 hint,
-                section: f(fonts.text, 12.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?,
+                section: f(fonts.text, 14.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?,
                 title: f(fonts.display, 20.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?,
                 brand: f(fonts.display, 17.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?,
                 chevron,
@@ -238,6 +240,7 @@ fn open_path(page: usize, path: PathBuf, preview: bool) -> Result<()> {
             pending_color: None,
             welcome: (page == 4).then_some(0),
             hover: None,
+            focus_visible: false,
             pressed: None,
             updates: Updates::Idle,
             update_rx: None,
@@ -358,7 +361,7 @@ impl Settings {
             let mut add = |id: &str, label: &str, hint: &str, kind: Kind, enabled: bool| {
                 rows.push(Control::new(id, label, hint, kind, enabled))
             };
-            add("launcher", "LAUNCHER", "", Kind::Heading, true);
+            add("launcher", "Launcher", "", Kind::Heading, true);
             add(
                 "hotkey",
                 "Shortcut",
@@ -400,7 +403,7 @@ impl Settings {
                 Kind::Toggle(c.win_key),
                 true,
             );
-            add("dock-group", "DOCK", "", Kind::Heading, true);
+            add("dock-group", "Dock", "", Kind::Heading, true);
             add("dock", "Show the dock", "", Kind::Toggle(c.dock), true);
             add(
                 "dock_autohide",
@@ -495,7 +498,7 @@ impl Settings {
                 Kind::Toggle(c.position == "bottom"),
                 true,
             );
-            add("status", "STATUS", "", Kind::Heading, true);
+            add("status", "Status", "", Kind::Heading, true);
             add(
                 "group-status",
                 "Group status icons",
@@ -531,7 +534,7 @@ impl Settings {
                     true,
                 );
             }
-            add("updates", "UPDATES", "", Kind::Heading, true);
+            add("updates", "Updates", "", Kind::Heading, true);
             add(
                 "check_for_updates",
                 "Check for updates",
@@ -543,7 +546,7 @@ impl Settings {
                 Kind::Toggle(c.check_for_updates),
                 true,
             );
-            add("startup", "STARTUP", "", Kind::Heading, true);
+            add("startup", "Startup", "", Kind::Heading, true);
             add(
                 "autostart",
                 "Start with Windows",
@@ -786,13 +789,40 @@ impl Settings {
                     PCWSTR(label.as_ptr()),
                 );
             }
+            // The menu opens under the select box, or above it near the screen's bottom.
             let scale = GetDpiForWindow(self.hwnd) as f32 / 96.;
-            let mut pt = POINT {
-                x: (r.left * scale) as i32,
-                y: ((r.bottom - self.scroll) * scale) as i32,
+            let field = controls::select_field(r);
+            let mut corners = [
+                POINT {
+                    x: (field.left * scale) as i32,
+                    y: ((field.top - self.scroll) * scale) as i32,
+                },
+                POINT {
+                    x: (field.right * scale) as i32,
+                    y: ((field.bottom - self.scroll) * scale) as i32,
+                },
+            ];
+            for pt in &mut corners {
+                let _ = ClientToScreen(self.hwnd, pt);
+            }
+            let params = TPMPARAMS {
+                cbSize: std::mem::size_of::<TPMPARAMS>() as u32,
+                rcExclude: RECT {
+                    left: corners[0].x,
+                    top: corners[0].y,
+                    right: corners[1].x,
+                    bottom: corners[1].y,
+                },
             };
-            let _ = ClientToScreen(self.hwnd, &mut pt);
-            let result = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, None, self.hwnd, None).0;
+            let result = TrackPopupMenuEx(
+                menu,
+                (TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_VERTICAL).0,
+                corners[0].x,
+                corners[1].y + (2. * scale) as i32,
+                self.hwnd,
+                Some(&params),
+            )
+            .0;
             let _ = DestroyMenu(menu);
             if result > 0 { Some(result as usize - 1) } else { None }
         }
@@ -882,6 +912,7 @@ impl Settings {
             return;
         }
         if vk == VK_TAB.0 {
+            self.focus_visible = true;
             let next = controls::next_focus(&self.controls, self.focus, shift);
             self.focus_to(next);
             return;
@@ -1153,29 +1184,49 @@ impl Settings {
                             &brush,
                         );
                     }
-                    if c.focusable() && (self.hover == Some(i) || self.pressed == Some(i)) {
-                        let mut fill = p.divider;
-                        fill.a *= if self.pressed == Some(i) { 0.8 } else { 0.4 };
+                    // Rows inside a card highlight as an inset pill; nav items and
+                    // inline buttons fill their own shape.
+                    let pill = if i < 4 || controls::inline(&c.id) {
+                        r
+                    } else {
+                        D2D_RECT_F {
+                            left: r.left + 4.,
+                            top: r.top + 3.,
+                            right: r.right - 4.,
+                            bottom: r.bottom - 3.,
+                        }
+                    };
+                    let hovered = self.hover == Some(i) && self.dragging.is_none();
+                    if c.focusable() && !matches!(c.kind, Kind::Text(_)) && (hovered || self.pressed == Some(i)) {
+                        let mut fill = p.text;
+                        fill.a = if self.pressed == Some(i) { 0.07 } else { 0.04 };
                         brush.SetColor(&fill);
                         rt.FillRoundedRectangle(
                             &D2D1_ROUNDED_RECT {
-                                rect: r,
-                                radiusX: 6.,
-                                radiusY: 6.,
+                                rect: pill,
+                                radiusX: 5.,
+                                radiusY: 5.,
                             },
                             &brush,
                         );
                     }
-                    if focus == Some(i) {
-                        brush.SetColor(&p.accent);
+                    if focus == Some(i) && self.focus_visible && !matches!(c.kind, Kind::Text(_)) {
+                        let mut ring = p.text;
+                        ring.a = 0.45;
+                        brush.SetColor(&ring);
                         rt.DrawRoundedRectangle(
                             &D2D1_ROUNDED_RECT {
-                                rect: r,
-                                radiusX: 6.,
-                                radiusY: 6.,
+                                rect: D2D_RECT_F {
+                                    left: pill.left + 0.75,
+                                    top: pill.top + 0.75,
+                                    right: pill.right - 0.75,
+                                    bottom: pill.bottom - 0.75,
+                                },
+                                radiusX: 5.,
+                                radiusY: 5.,
                             },
                             &brush,
-                            2.,
+                            1.5,
                             None,
                         );
                     }
@@ -1216,14 +1267,14 @@ impl Settings {
                                 },
                                 if c.id == "version" {
                                     &fm.brand
-                                } else if c.label.chars().any(|ch| ch.is_lowercase()) {
-                                    small
-                                } else {
+                                } else if controls::section(c) {
                                     &fm.section
+                                } else {
+                                    small
                                 },
                                 if c.id == "error" {
                                     &p.accent
-                                } else if c.id == "version" || c.id == "intro" {
+                                } else if c.id == "version" || c.id == "intro" || controls::section(c) {
                                     &p.text
                                 } else {
                                     &p.subtext
@@ -1287,15 +1338,37 @@ impl Settings {
                                 right: r.right - 16.,
                                 bottom: mid + 10.,
                             };
-                            brush.SetColor(if *v { &p.accent } else { &p.divider });
-                            rt.FillRoundedRectangle(
-                                &D2D1_ROUNDED_RECT {
-                                    rect: track,
-                                    radiusX: 10.,
-                                    radiusY: 10.,
-                                },
-                                &brush,
-                            );
+                            let on_color = if c.enabled { p.accent } else { p.placeholder };
+                            if *v {
+                                brush.SetColor(&on_color);
+                                rt.FillRoundedRectangle(
+                                    &D2D1_ROUNDED_RECT {
+                                        rect: track,
+                                        radiusX: 10.,
+                                        radiusY: 10.,
+                                    },
+                                    &brush,
+                                );
+                            } else {
+                                brush.SetColor(if c.enabled { &p.subtext } else { &p.placeholder });
+                                rt.DrawRoundedRectangle(
+                                    &D2D1_ROUNDED_RECT {
+                                        rect: D2D_RECT_F {
+                                            left: track.left + 0.5,
+                                            top: track.top + 0.5,
+                                            right: track.right - 0.5,
+                                            bottom: track.bottom - 0.5,
+                                        },
+                                        radiusX: 9.5,
+                                        radiusY: 9.5,
+                                    },
+                                    &brush,
+                                    1.,
+                                    None,
+                                );
+                            }
+                            // The knob grows a little under the pointer, like Windows' own switches.
+                            let knob = if hovered { 7. } else { 6. } - if *v { 0. } else { 1. };
                             brush.SetColor(if *v { &p.background_solid } else { &p.subtext });
                             rt.FillEllipse(
                                 &D2D1_ELLIPSE {
@@ -1303,8 +1376,8 @@ impl Settings {
                                         X: if *v { track.right - 10. } else { track.left + 10. },
                                         Y: mid,
                                     },
-                                    radiusX: 6.,
-                                    radiusY: 6.,
+                                    radiusX: knob,
+                                    radiusY: knob,
                                 },
                                 &brush,
                             );
@@ -1324,8 +1397,8 @@ impl Settings {
                             );
                         }
                         Kind::Button(s) if controls::inline(&c.id) => {
-                            let mut fill = p.divider;
-                            fill.a *= 0.6;
+                            let mut fill = p.text;
+                            fill.a = 0.05;
                             brush.SetColor(&fill);
                             rt.FillRoundedRectangle(
                                 &D2D1_ROUNDED_RECT {
@@ -1406,13 +1479,18 @@ impl Settings {
                                 &fg,
                             );
                             if let Some((_, s)) = choices.get(*selected) {
-                                let mid = (r.top + r.bottom) / 2.;
-                                let field = D2D_RECT_F {
-                                    left: r.right - 240.,
-                                    top: mid - 16.,
-                                    right: r.right - 16.,
-                                    bottom: mid + 16.,
-                                };
+                                let field = controls::select_field(&r);
+                                let mut fill = p.text;
+                                fill.a = 0.04;
+                                brush.SetColor(&fill);
+                                rt.FillRoundedRectangle(
+                                    &D2D1_ROUNDED_RECT {
+                                        rect: field,
+                                        radiusX: 6.,
+                                        radiusY: 6.,
+                                    },
+                                    &brush,
+                                );
                                 brush.SetColor(&p.divider);
                                 rt.DrawRoundedRectangle(
                                     &D2D1_ROUNDED_RECT {
@@ -1518,6 +1596,18 @@ impl Settings {
                                 right: label.right,
                                 bottom: field_top + 32.,
                             };
+                            let editing = focus == Some(i);
+                            let mut fill = p.text;
+                            fill.a = if editing { 0.02 } else { 0.04 };
+                            brush.SetColor(&fill);
+                            rt.FillRoundedRectangle(
+                                &D2D1_ROUNDED_RECT {
+                                    rect: field,
+                                    radiusX: 6.,
+                                    radiusY: 6.,
+                                },
+                                &brush,
+                            );
                             brush.SetColor(&p.divider);
                             rt.DrawRoundedRectangle(
                                 &D2D1_ROUNDED_RECT {
@@ -1534,7 +1624,24 @@ impl Settings {
                                 1.,
                                 None,
                             );
-                            let shown = if focus == Some(i) { edit } else { s };
+                            if editing {
+                                // Windows' text boxes mark the active field with an accent underline.
+                                brush.SetColor(&p.accent);
+                                rt.FillRoundedRectangle(
+                                    &D2D1_ROUNDED_RECT {
+                                        rect: D2D_RECT_F {
+                                            left: field.left + 1.,
+                                            top: field.bottom - 2.,
+                                            right: field.right - 1.,
+                                            bottom: field.bottom,
+                                        },
+                                        radiusX: 1.,
+                                        radiusY: 1.,
+                                    },
+                                    &brush,
+                                );
+                            }
+                            let shown = if editing { edit } else { s };
                             // Text and caret share this inset box.
                             let label = D2D_RECT_F {
                                 left: field.left + 12.,
@@ -1614,8 +1721,9 @@ impl Settings {
                                     bottom: label.bottom + 18.,
                                 }
                             } else if matches!(c.kind, Kind::Heading) {
+                                // Under a heading the hint lines up with the heading's text.
                                 D2D_RECT_F {
-                                    left: r.left + 16.,
+                                    left: r.left + 4.,
                                     top: r.bottom - 24.,
                                     right: r.right - 12.,
                                     bottom: r.bottom - 6.,
@@ -1654,11 +1762,16 @@ impl Settings {
                                 .get(i + 1)
                                 .is_some_and(|c| !matches!(c.kind, Kind::Heading))
                         {
-                            brush.SetColor(&p.divider);
+                            let mut line = p.divider;
+                            line.a *= 0.7;
+                            brush.SetColor(&line);
                             rt.DrawLine(
-                                windows_numerics::Vector2 { X: r.left, Y: r.bottom },
                                 windows_numerics::Vector2 {
-                                    X: r.right,
+                                    X: r.left + 16.,
+                                    Y: r.bottom,
+                                },
+                                windows_numerics::Vector2 {
+                                    X: r.right - 16.,
                                     Y: r.bottom,
                                 },
                                 &brush,
@@ -1851,6 +1964,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         && yy < c.rect.bottom
                 });
                 s.pressed = hit;
+                s.focus_visible = false;
                 if let Some(i) = hit {
                     s.focus_to(Some(i));
                     if let Some(Control {
@@ -1921,6 +2035,7 @@ mod tests {
             pending_color: None,
             welcome: None,
             hover: None,
+            focus_visible: false,
             pressed: None,
             updates: Updates::Idle,
             update_rx: None,

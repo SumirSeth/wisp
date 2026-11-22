@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$Exe,[Parameter(Mandatory=$true)][string]$Name,[switch]$Native,[int]$Wheel=0,[ValidateSet("general","appearance","search","about")][string]$Page="general",[switch]$Welcome,[switch]$Advanced,[switch]$Picker,[ValidateSet("none","latest","available","error")][string]$UpdateState="none")
+param([Parameter(Mandatory=$true)][string]$Exe,[Parameter(Mandatory=$true)][string]$Name,[switch]$Native,[int]$Wheel=0,[ValidateSet("general","appearance","search","about")][string]$Page="general",[switch]$Welcome,[switch]$Advanced,[switch]$Picker,[ValidateSet("none","latest","available","error")][string]$UpdateState="none",[int]$Tab=0)
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName System.Drawing
 Add-Type @'
@@ -64,6 +64,9 @@ foreach($theme in 'dark','light') {
    [void][SettingsWindowCapture]::PostMessageW($script:settingsCaptureHandle,0x0202,[IntPtr]0,$point)
    Start-Sleep -Milliseconds 300
   }
+  # -Tab N presses Tab N times in the child's window to show the keyboard focus ring.
+  for($k=0;$k -lt $Tab;$k++) {[void][SettingsWindowCapture]::PostMessageW($script:settingsCaptureHandle,0x0100,[IntPtr]9,[IntPtr]::Zero)}
+  if($Tab) {Start-Sleep -Milliseconds 200}
   # -Wheel N scrolls the window down N notches before the capture.
   for($k=0;$k -lt $Wheel;$k++) {[void][SettingsWindowCapture]::PostMessageW($script:settingsCaptureHandle,0x020A,[IntPtr](-120 -shl 16),[IntPtr]::Zero)}
   if($Wheel) {Start-Sleep -Milliseconds 400}
