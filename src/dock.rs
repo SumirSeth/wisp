@@ -1979,7 +1979,12 @@ impl State {
             || self.press.is_some()
             || self.flyout_open
             || over_windows
-            || cursor.x >= rect.left - slack && cursor.x < rect.right + slack && cursor.y >= rect.top - slack;
+            || cursor.x >= rect.left - slack && cursor.x < rect.right + slack && cursor.y >= rect.top - slack
+            // The whole bottom edge reveals the dock, so resting anywhere on it keeps it up.
+            // Otherwise a pointer beside the dock hides it and shows it again in a loop.
+            || cursor_monitor(cursor).is_some_and(|m| {
+                cursor.y >= m.bottom - 2 && rect.left < m.right && rect.right > m.left
+            });
         if near {
             self.away = 0;
         } else {
