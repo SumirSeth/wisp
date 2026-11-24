@@ -14,6 +14,10 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 - Right-click a result, or press Tab, for more actions such as Pin to dock. The selected result shows Tab when it has more. (#127)
 - Now is laid out like quick settings: tiles for Wi-Fi, Bluetooth, Night light, Dark mode, Mute and Power saver, what's playing, and volume with its output. Power saver is greyed out while plugged in. Lock, Sleep, Restart and Shut down sit along the bottom. (#132, #134, fixes #109)
 
+### Fixes
+
+- With autohide on, the dock stays up while the pointer rests on the bottom edge beside it, instead of hiding and coming back in a loop. (#139, fixes #138)
+
 ## 0.8.2 - 2026-11-20
 
 ### Fixes
