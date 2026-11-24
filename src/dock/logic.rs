@@ -751,21 +751,59 @@ pub const CLOCK_W: f32 = 88.0;
 pub const LIST_PAD: (f32, f32) = (7.0, 3.0);
 pub const LIST_ROW: f32 = 22.0;
 pub const LIST_TEXT_MAX: f32 = 280.0;
+/// Live window previews, in DIPs: previews sit side by side with titles below.
+pub const THUMB_W: f32 = 200.0;
+pub const THUMB_H: f32 = 112.5;
+pub const THUMB_TITLE_H: f32 = 20.0;
+pub const THUMB_TILE_H: f32 = THUMB_H + THUMB_TITLE_H;
+/// The overflow tile is text only, so it need not be as wide as a preview.
+pub const THUMB_MORE_W: f32 = 76.0;
+pub const THUMB_PAD: f32 = 6.0;
+/// Width of a row of `tiles` previews plus an optional slim overflow tile.
+pub fn thumbnail_width(tiles: usize, more: bool, scale: f32) -> i32 {
+    let dip = tiles as f32 * THUMB_W
+        + if more { THUMB_MORE_W } else { 0.0 }
+        + (tiles + usize::from(more) + 1) as f32 * THUMB_PAD;
+    (dip * scale).ceil() as i32
+}
 
+/// Physical-pixel height of a preview popup: one tile plus both paddings.
+pub fn thumbnail_height(scale: f32) -> i32 {
+    ((THUMB_TILE_H + 2.0 * THUMB_PAD) * scale).ceil() as i32
+}
+
+/// How many preview tiles fit in a physical-pixel width, including paddings.
+pub fn thumbnail_columns(available: i32, scale: f32) -> usize {
+    let dip = available.max(0) as f32 / scale;
+    let columns = ((dip - THUMB_PAD) / (THUMB_W + THUMB_PAD)).floor() as usize;
+    if columns > 0 && thumbnail_width(columns, false, scale) > available {
+        columns - 1
+    } else {
+        columns
+    }
+}
 /// Whole rows that fit in a physical-pixel height, including both DIP paddings.
-pub fn window_list_rows(available: i32, scale: f32, padding: f32) -> usize {
+/// The popup rounds to whole physical pixels at fractional scales.
+fn list_rows(available: i32, scale: f32, padding: f32, row: f32) -> usize {
     let available = available.max(0) as f32;
-    let rows = ((available / scale - 2.0 * padding).max(0.0) / LIST_ROW).floor() as usize;
-    // Match the popup's rounding to whole physical pixels at fractional scales.
-    if rows > 0 && ((rows as f32 * LIST_ROW + 2.0 * padding) * scale).ceil() > available {
+    let rows = ((available / scale - 2.0 * padding).max(0.0) / row).floor() as usize;
+    if rows > 0 && ((rows as f32 * row + 2.0 * padding) * scale).ceil() > available {
         rows - 1
     } else {
         rows
     }
 }
 
+/// Whole rows of window titles that fit in a physical-pixel height.
+pub fn window_list_rows(available: i32, scale: f32, padding: f32) -> usize {
+    list_rows(available, scale, padding, LIST_ROW)
+}
+
 pub fn show_window_list(mode: WindowListMode, windows: usize) -> bool {
-    windows > 0 && (mode == WindowListMode::Always || mode == WindowListMode::Multiple && windows > 1)
+    windows > 0
+        && (mode == WindowListMode::Always
+            || mode == WindowListMode::Multiple && windows > 1
+            || mode == WindowListMode::Thumbnails)
 }
 /// Notification-area icons shown in the dock; the rest are behind the chevron.
 pub const MAX_INLINE: usize = 5;
@@ -1513,11 +1551,36 @@ mod tests {
     }
 
     #[test]
+    fn thumbnails_fit_whole_columns_with_padding_at_each_scale() {
+        for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+            for columns in [1, 2, 3] {
+                let width = thumbnail_width(columns, false, scale);
+                assert_eq!(thumbnail_columns(width, scale), columns);
+                assert_eq!(thumbnail_columns(width - 1, scale), columns - 1);
+            }
+        }
+        assert_eq!(thumbnail_columns(0, 1.0), 0);
+    }
+
+    #[test]
+    fn overflow_tile_is_narrower_than_a_preview() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let one = thumbnail_width(1, false, scale);
+            let with_more = thumbnail_width(1, true, scale);
+            assert!(with_more > one);
+            assert!(with_more < thumbnail_width(2, false, scale));
+        }
+    }
+
+    #[test]
     fn window_list_modes_follow_the_selected_policy() {
         assert!(show_window_list(WindowListMode::Always, 1));
         assert!(show_window_list(WindowListMode::Always, 3));
         assert!(!show_window_list(WindowListMode::Multiple, 1));
         assert!(show_window_list(WindowListMode::Multiple, 2));
+        assert!(show_window_list(WindowListMode::Thumbnails, 1));
+        assert!(show_window_list(WindowListMode::Thumbnails, 2));
+        assert!(!show_window_list(WindowListMode::Thumbnails, 0));
         assert!(!show_window_list(WindowListMode::Off, 1));
         assert!(!show_window_list(WindowListMode::Off, 2));
         assert!(!show_window_list(WindowListMode::Always, 0));

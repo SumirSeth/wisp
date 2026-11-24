@@ -67,7 +67,8 @@ dock_screen = "pointer"
 dock_search_button = true
 
 # App window list shown when hovering a running app icon:
-# "multiple" (only when the app has multiple windows), "always", or "off".
+# "multiple" (only when the app has multiple windows), "always", "thumbnails"
+# (live previews of the app's windows), or "off".
 window_list = "multiple"
 
 # App icons in the dock, in DIPs (24 to 40).

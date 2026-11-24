@@ -27,9 +27,10 @@ const ICON_SVG: &[u8] = include_bytes!("../../assets/icon.svg");
 /// Config values and the labels the dropdowns show for them.
 const THEMES: [(&str, &str); 3] = [("system", "System"), ("dark", "Dark"), ("light", "Light")];
 const BACKDROPS: [(&str, &str); 3] = [("acrylic", "Acrylic"), ("mica", "Mica"), ("solid", "Solid")];
-const WINDOW_LISTS: [(&str, &str); 3] = [
+const WINDOW_LISTS: [(&str, &str); 4] = [
     ("multiple", "Only for multiple windows"),
     ("always", "Always"),
+    ("thumbnails", "Previews for every app"),
     ("off", "Off"),
 ];
 const ONBOARDING_STEPS: usize = 3;

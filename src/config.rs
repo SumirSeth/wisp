@@ -47,6 +47,7 @@ pub enum WindowListMode {
     #[default]
     Multiple,
     Always,
+    Thumbnails,
     Off,
 }
 
@@ -276,6 +277,7 @@ mod tests {
         for (value, expected) in [
             ("multiple", super::WindowListMode::Multiple),
             ("always", super::WindowListMode::Always),
+            ("thumbnails", super::WindowListMode::Thumbnails),
             ("off", super::WindowListMode::Off),
         ] {
             let config = Config::parse(&format!("window_list = '{value}'")).unwrap();
