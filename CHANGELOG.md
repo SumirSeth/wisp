@@ -4,11 +4,6 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ## Unreleased
 
-### Changes
-
-- Settings is built into Wisp: it opens faster, uses less memory, and Wisp is now a single `wisp.exe` of about 2.5 MB instead of two files of 12 MB. Run `wisp.exe --settings` to open it from a script.
-- Updates from 0.8 install as usual and remove the old `wisp-settings.exe`.
-
 ### New
 
 - `dock_margin` in the config, or **Gap below the dock** under Appearance › Advanced in Settings, sets the gap below the dock, from 0 to 24 DIP. At 0 the dock sits on the screen edge, and with the dock kept visible, maximized windows get the space back. (#126, by @SorbetMango, fixes #125)
@@ -18,6 +13,11 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 - Apps can be pinned to the dock from the launcher without opening them: select one and press Tab. (#127, part of #109)
 - Right-click a result, or press Tab, for more actions such as Pin to dock. The selected result shows Tab when it has more. (#127)
 - Now is laid out like quick settings: tiles for Wi-Fi, Bluetooth, Night light, Dark mode, Mute and Power saver, what's playing, and volume with its output. Power saver is greyed out while plugged in. Lock, Sleep, Restart and Shut down sit along the bottom. (#132, #134, fixes #109)
+
+### Changes
+
+- Settings is built into Wisp: it opens faster, uses less memory, and Wisp is now a single `wisp.exe` of about 2.5 MB instead of two files of 12 MB. Run `wisp.exe --settings` to open it from a script. (#135, fixes #59)
+- Updates from 0.8 install as usual and remove the old `wisp-settings.exe`. (#135)
 
 ### Fixes
 
