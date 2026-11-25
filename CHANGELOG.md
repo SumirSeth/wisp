@@ -2,7 +2,7 @@
 
 User-facing changes in each release. Each release on GitHub lists these notes and its pull requests.
 
-## Unreleased
+## 0.9.0 - 2026-11-25
 
 ### New
 
@@ -22,6 +22,10 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 ### Fixes
 
 - With autohide on, the dock stays up while the pointer rests on the bottom edge beside it, instead of hiding and coming back in a loop. (#139, fixes #138)
+
+### Thanks
+
+@SorbetMango added the gap below the dock in #126.
 
 ## 0.8.2 - 2026-11-20
 
