@@ -2,6 +2,12 @@
 
 User-facing changes in each release. Each release on GitHub lists these notes and its pull requests.
 
+## Unreleased
+
+### Fixes
+
+- Turning off **Launcher at the bottom** or **Show the dock** no longer leaves a still picture of the old dock at the bottom of the screen, which stayed there even while autohide hid the new dock.
+
 ## 0.9.0 - 2026-11-25
 
 ### New

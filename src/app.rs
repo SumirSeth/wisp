@@ -681,10 +681,10 @@ impl Launcher {
     fn sync_shell(&mut self) {
         self.sync_taskbar();
         if self.dock.as_ref().is_some_and(|d| d.shared() != self.bottom()) {
-            self.dock = None;
+            self.drop_dock();
         }
         if !self.config.dock {
-            self.dock = None;
+            self.drop_dock();
             self.sync_reserve();
             return;
         }
@@ -709,6 +709,16 @@ impl Launcher {
             if self.visible { dock.hide() } else { dock.show() }
         }
         self.sync_reserve();
+    }
+
+    /// A dock on the launcher's window leaves its last frame there, so the
+    /// window is hidden too unless the launcher is open.
+    fn drop_dock(&mut self) {
+        if self.dock.take().is_some_and(|dock| dock.shared()) && !self.visible {
+            unsafe {
+                let _ = ShowWindow(self.hwnd, SW_HIDE);
+            }
+        }
     }
 
     /// Keeps maximized windows above a dock that stays visible while the
