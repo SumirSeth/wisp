@@ -1497,6 +1497,7 @@ impl State {
     }
 
     fn paint(&mut self, rt: Option<&windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget>) -> Result<()> {
+        let _span = crate::util::perf::Span::new("dock_paint");
         let hwnd = self.hwnd;
         let parts = self.parts();
         let layout = self.row_layout();

@@ -328,7 +328,10 @@ pub fn run() -> Result<()> {
         };
         LAUNCHER.with(|cell| *cell.borrow_mut() = Some(launcher));
         with_launcher(|l| {
-            l.start();
+            {
+                let _span = util::perf::Span::new("start");
+                l.start();
+            }
             if !crate::channel::NIGHTLY {
                 SetTimer(Some(l.hwnd), UPDATE_TIMER, 120_000, None);
                 l.read_update_notice();

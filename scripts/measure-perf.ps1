@@ -13,6 +13,7 @@ $variables = @('APPDATA', 'WISP_CAPTURE', 'WISP_CAPTURE_QUERY', 'WISP_CAPTURE_RO
 $saved = @{}
 foreach ($name in $variables) { $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 try {
+    $demoPath = if ([IO.Path]::IsPathRooted($Demo)) { $Demo } else { Join-Path $repo $Demo }
     $output = Join-Path $repo 'target/perf'
     New-Item -ItemType Directory -Force $output | Out-Null
     $metadata = Join-Path $output "$Phase-process.jsonl"
@@ -33,7 +34,7 @@ try {
                 $env:WISP_PERF_SCENARIO = $scenario
                 $env:WISP_PERF_TRACE = Join-Path $output "$Phase-$dpi-$scenario-$i.csv"
                 $log = Join-Path $output "$Phase-$dpi-$scenario-$i.log"
-                $p = Start-Process (Join-Path $repo $Demo) -PassThru -WindowStyle Hidden -RedirectStandardError $log
+                $p = Start-Process $demoPath -PassThru -WindowStyle Hidden -RedirectStandardError $log
                 $sw = [Diagnostics.Stopwatch]::StartNew()
                 $maxWorking = 0
                 $cpu = 0
@@ -68,5 +69,10 @@ try {
         }
     }
 } finally {
-    foreach ($name in $variables) { [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process') }
+    foreach ($name in $variables) {
+        # PowerShell passes $null on as an empty string, and Wisp's test hooks
+        # see an empty variable as set, so remove the ones that weren't there.
+        if ($null -eq $saved[$name]) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }
+        else { [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process') }
+    }
 }
